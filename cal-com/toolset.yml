@@ -2,4 +2,74 @@ version: 1.0.0
 kind: captain_toolset
 name: Cal.com
 category: Scheduling
-description: View booking details and status.
+description: Find bookings and available times in Cal.com.
+
+secrets:
+  api_key:
+    label: Cal.com API key
+    type: password
+    required: true
+
+tools:
+  - id: find_bookings_by_email
+    title: Find Bookings by Email
+    description: Find a customer's Cal.com bookings using their email address.
+    http_method: GET
+    endpoint_url: https://api.cal.com/v2/bookings?attendeeEmail={{ attendee_email | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: attendee_email
+        type: string
+        description: The email address used for the booking.
+        required: true
+
+  - id: get_booking
+    title: Get Booking
+    description: Check the time, status, and details of a Cal.com booking when its UID is known.
+    http_method: GET
+    endpoint_url: https://api.cal.com/v2/bookings/{{ booking_uid | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: booking_uid
+        type: string
+        description: The Cal.com booking UID.
+        required: true
+
+  - id: list_event_types
+    title: List Event Types
+    description: List Cal.com event types to see which kinds of appointments are available.
+    http_method: GET
+    endpoint_url: https://api.cal.com/v2/event-types
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+
+  - id: get_available_slots
+    title: Get Available Slots
+    description: Find open times for a Cal.com event type within a date range.
+    http_method: GET
+    endpoint_url: https://api.cal.com/v2/slots?eventTypeId={{ event_type_id }}&start={{ start_date | url_encode }}&end={{ end_date | url_encode }}&timeZone={{ time_zone | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: event_type_id
+        type: integer
+        description: The numeric ID of the Cal.com event type.
+        required: true
+      - name: start_date
+        type: string
+        description: The first date to check, in YYYY-MM-DD format.
+        required: true
+      - name: end_date
+        type: string
+        description: The last date to check, in YYYY-MM-DD format.
+        required: true
+      - name: time_zone
+        type: string
+        description: The time zone for the available times, such as America/New_York.
+        required: true
