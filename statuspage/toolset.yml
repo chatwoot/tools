@@ -1,5 +1,0 @@
-version: 1.0.0
-kind: captain_toolset
-name: Statuspage
-category: Engineering & status
-description: View incidents and service health.

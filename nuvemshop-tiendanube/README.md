@@ -1,1 +1,0 @@
-# Nuvemshop / Tiendanube

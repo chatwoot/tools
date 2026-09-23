@@ -1,5 +1,0 @@
-version: 1.0.0
-kind: captain_toolset
-name: GitHub
-category: Engineering & status
-description: View known bugs and issue status.
