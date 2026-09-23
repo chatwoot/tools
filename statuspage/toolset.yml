@@ -1,0 +1,77 @@
+version: 1.0.0
+kind: captain_toolset
+name: Statuspage
+category: Engineering & status
+description: Check Statuspage components and incidents.
+
+inputs:
+  page_id:
+    label: Statuspage page ID
+    type: string
+    required: true
+
+secrets:
+  api_key:
+    label: Statuspage API key
+    type: password
+    required: true
+
+tools:
+  - id: list_pages
+    title: List Pages
+    description: Find Statuspage pages and their IDs when checking service health.
+    http_method: GET
+    endpoint_url: https://api.statuspage.io/v1/pages
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: OAuth ${{ secrets.api_key }}
+
+  - id: list_components
+    title: List Components
+    description: Check the status of components on the configured Statuspage. Start with page 1.
+    http_method: GET
+    endpoint_url: https://api.statuspage.io/v1/pages/${{ inputs.page_id }}/components?per_page=50&page={{ page }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: OAuth ${{ secrets.api_key }}
+    param_schema:
+      - name: page
+        type: integer
+        description: The page number to fetch, starting at 1.
+        required: true
+
+  - id: list_unresolved_incidents
+    title: List Unresolved Incidents
+    description: Check incidents that are still open on the configured Statuspage. Start with page 1.
+    http_method: GET
+    endpoint_url: https://api.statuspage.io/v1/pages/${{ inputs.page_id }}/incidents/unresolved?per_page=50&page={{ page }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: OAuth ${{ secrets.api_key }}
+    param_schema:
+      - name: page
+        type: integer
+        description: The page number to fetch, starting at 1.
+        required: true
+
+  - id: list_incidents
+    title: List Incidents
+    description: Check recent incidents and updates on the configured Statuspage. Start with page 1.
+    http_method: GET
+    endpoint_url: https://api.statuspage.io/v1/pages/${{ inputs.page_id }}/incidents?per_page=50&page={{ page }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: OAuth ${{ secrets.api_key }}
+    param_schema:
+      - name: page
+        type: integer
+        description: The page number to fetch, starting at 1.
+        required: true

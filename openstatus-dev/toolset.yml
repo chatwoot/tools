@@ -1,0 +1,114 @@
+version: 1.0.0
+kind: captain_toolset
+name: OpenStatus.dev
+category: Engineering & status
+description: Check OpenStatus pages, monitors, and status reports.
+
+secrets:
+  api_key:
+    label: OpenStatus API key
+    type: password
+    required: true
+
+tools:
+  - id: list_status_pages
+    title: List Status Pages
+    description: Find status pages in the connected OpenStatus workspace. Start with offset 0.
+    http_method: POST
+    endpoint_url: https://api.openstatus.dev/rpc/openstatus.status_page.v1.StatusPageService/ListStatusPages
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-openstatus-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: offset
+        type: integer
+        description: Number of pages to skip, starting at 0.
+        required: true
+    request_template: '{"limit":20,"offset":{{ offset }}}'
+
+  - id: get_page_status
+    title: Get Page Status
+    description: Check the overall status of an OpenStatus status page by ID.
+    http_method: POST
+    endpoint_url: https://api.openstatus.dev/rpc/openstatus.status_page.v1.StatusPageService/GetOverallStatus
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-openstatus-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: page_id
+        type: string
+        description: The OpenStatus status page ID.
+        required: true
+    request_template: '{"id":"{{ page_id | url_encode }}"}'
+
+  - id: list_monitors
+    title: List Monitors
+    description: Find monitors in the connected OpenStatus workspace. Start with offset 0.
+    http_method: POST
+    endpoint_url: https://api.openstatus.dev/rpc/openstatus.monitor.v1.MonitorService/ListMonitors
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-openstatus-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: offset
+        type: integer
+        description: Number of monitors to skip, starting at 0.
+        required: true
+    request_template: '{"limit":20,"offset":{{ offset }}}'
+
+  - id: get_monitor_status
+    title: Get Monitor Status
+    description: Check the current status of an OpenStatus monitor by ID.
+    http_method: POST
+    endpoint_url: https://api.openstatus.dev/rpc/openstatus.monitor.v1.MonitorService/GetMonitorStatus
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-openstatus-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: monitor_id
+        type: string
+        description: The OpenStatus monitor ID.
+        required: true
+    request_template: '{"id":"{{ monitor_id | url_encode }}"}'
+
+  - id: list_status_reports
+    title: List Status Reports
+    description: Find OpenStatus incident reports. Start with offset 0.
+    http_method: POST
+    endpoint_url: https://api.openstatus.dev/rpc/openstatus.status_report.v1.StatusReportService/ListStatusReports
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-openstatus-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: offset
+        type: integer
+        description: Number of reports to skip, starting at 0.
+        required: true
+    request_template: '{"limit":20,"offset":{{ offset }}}'
+
+  - id: get_status_report
+    title: Get Status Report
+    description: Check one OpenStatus incident report and its updates by ID.
+    http_method: POST
+    endpoint_url: https://api.openstatus.dev/rpc/openstatus.status_report.v1.StatusReportService/GetStatusReport
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-openstatus-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: report_id
+        type: string
+        description: The OpenStatus status report ID.
+        required: true
+    request_template: '{"id":"{{ report_id | url_encode }}"}'
