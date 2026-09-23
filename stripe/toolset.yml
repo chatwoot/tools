@@ -1,0 +1,124 @@
+version: 1.0.0
+kind: captain_toolset
+name: Stripe
+category: Payments & billing
+description: Check customer payments, invoices, and subscriptions in Stripe.
+
+secrets:
+  api_key:
+    label: Stripe restricted API key
+    type: password
+    required: true
+
+tools:
+  - id: find_customers_by_email
+    title: Find Customers by Email
+    description: Find Stripe customers with an exact email address.
+    http_method: GET
+    endpoint_url: https://api.stripe.com/v1/customers?email={{ email | url_encode }}&limit=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+
+  - id: get_customer
+    title: Get Customer
+    description: Check a Stripe customer's details by ID.
+    http_method: GET
+    endpoint_url: https://api.stripe.com/v1/customers/{{ customer_id | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Stripe customer ID, starting with cus_.
+        required: true
+
+  - id: list_payments
+    title: List Payments
+    description: Check a customer's recent payment attempts and their status.
+    http_method: GET
+    endpoint_url: https://api.stripe.com/v1/payment_intents?customer={{ customer_id | url_encode }}&limit=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Stripe customer ID, starting with cus_.
+        required: true
+
+  - id: get_payment
+    title: Get Payment
+    description: Check a payment attempt by its Stripe PaymentIntent ID.
+    http_method: GET
+    endpoint_url: https://api.stripe.com/v1/payment_intents/{{ payment_intent_id | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: payment_intent_id
+        type: string
+        description: The Stripe PaymentIntent ID, starting with pi_.
+        required: true
+
+  - id: list_invoices
+    title: List Invoices
+    description: Check a customer's recent invoices and payment status.
+    http_method: GET
+    endpoint_url: https://api.stripe.com/v1/invoices?customer={{ customer_id | url_encode }}&limit=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Stripe customer ID, starting with cus_.
+        required: true
+
+  - id: get_invoice
+    title: Get Invoice
+    description: Check a Stripe invoice by ID.
+    http_method: GET
+    endpoint_url: https://api.stripe.com/v1/invoices/{{ invoice_id | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: invoice_id
+        type: string
+        description: The Stripe invoice ID, starting with in_.
+        required: true
+
+  - id: list_subscriptions
+    title: List Subscriptions
+    description: Check all of a customer's subscriptions, including canceled ones.
+    http_method: GET
+    endpoint_url: https://api.stripe.com/v1/subscriptions?customer={{ customer_id | url_encode }}&status=all&limit=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Stripe customer ID, starting with cus_.
+        required: true
+
+  - id: get_subscription
+    title: Get Subscription
+    description: Check a Stripe subscription by ID.
+    http_method: GET
+    endpoint_url: https://api.stripe.com/v1/subscriptions/{{ subscription_id | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: subscription_id
+        type: string
+        description: The Stripe subscription ID, starting with sub_.
+        required: true
