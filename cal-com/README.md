@@ -13,4 +13,4 @@ Create an API key in Cal.com and enter it when installing this toolset. The key 
 - **List Event Types:** List appointment types for the connected account.
 - **Get Available Slots:** Check open times for an event type and date range.
 
-Without a `cal-api-version` header, Cal.com uses an older version of these endpoints. Captain's current HTTP tool cannot set this header, so the responses may differ from the versions shown in Cal.com's current API docs.
+This toolset sets `cal-api-version: 2026-05-01` for all requests. That is the version Cal.com requires for booking search. Cal.com documents different versions for the other endpoints, so those may still return an older response until Captain supports headers for individual tools.

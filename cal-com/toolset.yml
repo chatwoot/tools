@@ -4,6 +4,9 @@ name: Cal.com
 category: Scheduling
 description: Find bookings and available times in Cal.com.
 
+headers:
+  cal-api-version: '2026-05-01'
+
 secrets:
   api_key:
     label: Cal.com API key
