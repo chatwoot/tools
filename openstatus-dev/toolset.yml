@@ -1,0 +1,5 @@
+version: 1.0.0
+kind: captain_toolset
+name: OpenStatus.dev
+category: Engineering & status
+description: View monitor status and incidents.

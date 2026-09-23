@@ -1,0 +1,5 @@
+version: 1.0.0
+kind: captain_toolset
+name: Cal.com
+category: Scheduling
+description: View booking details and status.

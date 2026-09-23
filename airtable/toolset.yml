@@ -1,0 +1,5 @@
+version: 1.0.0
+kind: captain_toolset
+name: Airtable
+category: Business data & research
+description: View records in a business table.

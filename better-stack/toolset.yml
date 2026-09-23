@@ -1,0 +1,5 @@
+version: 1.0.0
+kind: captain_toolset
+name: Better Stack
+category: Engineering & status
+description: View monitors and uptime incidents.

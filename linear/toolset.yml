@@ -1,0 +1,5 @@
+version: 1.0.0
+kind: captain_toolset
+name: Linear
+category: Engineering & status
+description: View issue progress and recent activity.

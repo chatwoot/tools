@@ -1,0 +1,5 @@
+version: 1.0.0
+kind: captain_toolset
+name: Stripe
+category: Payments & billing
+description: View payments, invoices, and subscriptions.

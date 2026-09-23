@@ -1,0 +1,5 @@
+version: 1.0.0
+kind: captain_toolset
+name: Twenty CRM
+category: CRM
+description: View customers, companies, and opportunities.

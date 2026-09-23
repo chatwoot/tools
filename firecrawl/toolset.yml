@@ -1,0 +1,5 @@
+version: 1.0.0
+kind: captain_toolset
+name: Firecrawl
+category: Business data & research
+description: Retrieve and extract website content.

@@ -1,0 +1,5 @@
+version: 1.0.0
+kind: captain_toolset
+name: Context.dev
+category: Business data & research
+description: Search the web and view live pages.

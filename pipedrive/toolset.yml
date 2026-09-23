@@ -1,0 +1,5 @@
+version: 1.0.0
+kind: captain_toolset
+name: Pipedrive
+category: CRM
+description: View contacts and related deals.
