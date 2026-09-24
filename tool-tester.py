@@ -2,6 +2,7 @@
 # requires-python = ">=3.11"
 # dependencies = [
 #   "httpx>=0.27",
+#   "python-dotenv>=1.0",
 #   "python-liquid>=2.0",
 #   "pyyaml>=6.0",
 #   "rich>=13.7",
@@ -14,8 +15,10 @@
 <toolset> is a folder in this repository, such as stripe or cal-com.
 Without a tool_id, every tool in the toolset runs one after another.
 
-Inputs and secrets are prompted once per run. Set <TOOLSET>_<NAME>
-(for example STRIPE_API_KEY or CAL_COM_API_KEY) to skip the prompt.
+Inputs and secrets are prompted once per run. Secrets are read from
+.env as <TOOLSET>_<NAME> (for example STRIPE_API_KEY or CAL_COM_API_KEY)
+and offered as the default; press Enter to keep one or type a new value.
+New secrets can be saved back to .env, which is git-ignored.
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ from pathlib import Path
 import httpx
 import liquid
 import yaml
+from dotenv import dotenv_values, load_dotenv, set_key
 from rich.console import Console, Group
 from rich.markup import escape
 from rich.padding import Padding
@@ -42,6 +46,8 @@ from rich.table import Table
 from rich.text import Text
 
 ROOT = Path(__file__).resolve().parent
+ENV_FILE = ROOT / ".env"
+FILE_VARS: set[str] = set()  # env vars that came from .env, not the shell
 PREVIEW_LINES = 40
 
 console = Console(highlight=False)
@@ -93,14 +99,10 @@ def env_name(folder: str, key: str) -> str:
     return f"{folder}_{key}".upper().replace("-", "_")
 
 
-def ask_field(key: str, spec: dict, env_var: str | None = None) -> object:
-    """Prompt for one input, secret, or tool parameter."""
+def ask_field(key: str, spec: dict, default: str | None = None, source: str = "") -> object:
+    """Prompt for one input, secret, or tool parameter. Blank keeps the default."""
     kind = spec.get("type", "string")
     required = spec.get("required", False)
-
-    if env_var and os.environ.get(env_var):
-        console.print(f"  [bold]{spec.get('label', key)}[/]  [dim]from ${env_var}[/]")
-        return coerce(os.environ[env_var], kind, key)
 
     title = spec.get("label", key)
     label = Text.assemble(
@@ -111,6 +113,9 @@ def ask_field(key: str, spec: dict, env_var: str | None = None) -> object:
     console.print(label)
     if description := spec.get("description"):
         console.print(f"  [dim]{escape(description)}[/]")
+    if default:
+        shown = mask(default) if kind == "password" else default
+        console.print(f"  [dim]Enter to keep[/] [green]{escape(shown)}[/] [dim]from {source}[/]")
 
     if kind == "boolean":
         return Confirm.ask("  [cyan]›[/]", default=False)
@@ -125,6 +130,8 @@ def ask_field(key: str, spec: dict, env_var: str | None = None) -> object:
             show_default=False,
         )
         raw = (raw or "").strip()
+        if not raw and default:
+            return coerce(default, kind, key)
         if not raw:
             if required:
                 console.print("  [red]This value is required.[/]")
@@ -156,12 +163,35 @@ def collect_install_values(folder: str, toolset: dict) -> tuple[dict, dict]:
         return {}, {}
 
     section("Setup")
-    inputs = {k: ask_field(k, v, env_name(folder, k)) for k, v in inputs_spec.items()}
-    secrets = {
-        k: ask_field(k, {"type": "password", **v}, env_name(folder, k))
-        for k, v in secrets_spec.items()
-    }
+    inputs = {}
+    for key, spec in inputs_spec.items():
+        var = env_name(folder, key)
+        inputs[key] = ask_field(key, spec, os.environ.get(var), f"${var}")
+
+    secrets, changed = {}, {}
+    for key, spec in secrets_spec.items():
+        var = env_name(folder, key)
+        current = os.environ.get(var)
+        value = ask_field(key, {"type": "password", **spec}, current, env_source(var))
+        secrets[key] = value
+        if value and str(value) != current:
+            changed[var] = str(value)
+
+    if changed and Confirm.ask(f"\n  Save {len(changed)} secret{'s' * (len(changed) != 1)} to .env?", default=True):
+        save_secrets(changed)
     return inputs, secrets
+
+
+def env_source(var: str) -> str:
+    return ".env" if var in FILE_VARS else f"${var}"
+
+
+def save_secrets(values: dict[str, str]) -> None:
+    ENV_FILE.touch(mode=0o600, exist_ok=True)
+    ENV_FILE.chmod(0o600)
+    for var, value in values.items():
+        set_key(ENV_FILE, var, value, quote_mode="always")
+    console.print(f"  [green]✓[/] Saved {', '.join(values)} to .env")
 
 
 # ── Rendering & requests ─────────────────────────────────────────────────────
@@ -211,11 +241,15 @@ def build_request(toolset: dict, tool: dict, context: dict) -> httpx.Request:
     return httpx.Request(tool["http_method"], url, headers=headers, content=body)
 
 
+def mask(value: str) -> str:
+    return f"{value[:3]}…••••" if len(value) >= 8 else "••••"
+
+
 def redact(text: str, secrets: dict) -> str:
     for value in secrets.values():
         value = str(value)
         if len(value) >= 4:
-            text = text.replace(value, f"{value[:3]}…••••")
+            text = text.replace(value, mask(value))
     return text
 
 
@@ -378,6 +412,11 @@ def main() -> None:
     if not args.toolset:
         parser.print_usage()
         fail(f"Choose a toolset: {', '.join(available_toolsets())}")
+
+    global FILE_VARS
+    if ENV_FILE.exists():
+        FILE_VARS = {k for k in dotenv_values(ENV_FILE) if k not in os.environ}
+        load_dotenv(ENV_FILE, override=False)
 
     toolset = load_toolset(args.toolset)
     tools = [t for t in toolset.get("tools") or [] if t.get("enabled", True)]
