@@ -2,7 +2,13 @@ version: 1.0.0
 kind: captain_toolset
 name: OpenStatus.dev
 category: Engineering & status
-description: Check OpenStatus pages, monitors, and status reports.
+description: Check OpenStatus page status, monitors, and active incidents.
+
+inputs:
+  page_slug:
+    label: Status page slug
+    placeholder: acme
+    required: true
 
 secrets:
   api_key:
@@ -11,26 +17,9 @@ secrets:
     required: true
 
 tools:
-  - id: list_status_pages
-    title: List Status Pages
-    description: Find status pages in the connected OpenStatus workspace. Start with offset 0.
-    http_method: POST
-    endpoint_url: https://api.openstatus.dev/rpc/openstatus.status_page.v1.StatusPageService/ListStatusPages
-    auth_type: api_key
-    auth_config:
-      location: header
-      name: x-openstatus-key
-      key: ${{ secrets.api_key }}
-    param_schema:
-      - name: offset
-        type: integer
-        description: Number of pages to skip, starting at 0.
-        required: true
-    request_template: '{"limit":20,"offset":{{ offset }}}'
-
   - id: get_page_status
     title: Get Page Status
-    description: Check the overall status of an OpenStatus status page by ID.
+    description: Check the overall status of the configured OpenStatus status page. Use this first when a customer reports that a service is down or slow.
     http_method: POST
     endpoint_url: https://api.openstatus.dev/rpc/openstatus.status_page.v1.StatusPageService/GetOverallStatus
     auth_type: api_key
@@ -38,16 +27,14 @@ tools:
       location: header
       name: x-openstatus-key
       key: ${{ secrets.api_key }}
-    param_schema:
-      - name: page_id
-        type: string
-        description: The OpenStatus status page ID.
-        required: true
-    request_template: '{"id":"{{ page_id | url_encode }}"}'
+    request_template: '{"slug":"${{ inputs.page_slug }}"}'
+    response_template: |-
+      {% if response.code %}OpenStatus returned an error: {{ response.message }}{% else %}{% assign affected = 0 %}{% for component in response.componentStatuses %}{% unless component.status == "OVERALL_STATUS_OPERATIONAL" %}{% assign affected = affected | plus: 1 %}{% endunless %}{% endfor %}Overall status: {{ response.overallStatus | default: "OVERALL_STATUS_UNKNOWN" | remove: "OVERALL_STATUS_" | replace: "_", " " | downcase }}
+      Components not operational: {{ affected }}{% endif %}
 
   - id: list_monitors
     title: List Monitors
-    description: Find monitors in the connected OpenStatus workspace. Start with offset 0.
+    description: List monitors in the connected OpenStatus workspace with their current status. Start with offset 0.
     http_method: POST
     endpoint_url: https://api.openstatus.dev/rpc/openstatus.monitor.v1.MonitorService/ListMonitors
     auth_type: api_key
@@ -61,10 +48,18 @@ tools:
         description: Number of monitors to skip, starting at 0.
         required: true
     request_template: '{"limit":20,"offset":{{ offset }}}'
+    response_template: |-
+      {% if response.code %}OpenStatus returned an error: {{ response.message }}{% else %}Total monitors: {{ response.totalSize | default: 0 }}
+      {% for monitor in response.httpMonitors %}- {{ monitor.name }} (HTTP, ID {{ monitor.id }}): {{ monitor.status | default: "unknown" | remove: "MONITOR_STATUS_" | downcase }}{% if monitor.active == false %}, paused{% endif %} · {{ monitor.url }}
+      {% endfor %}{% for monitor in response.tcpMonitors %}- {{ monitor.name }} (TCP, ID {{ monitor.id }}): {{ monitor.status | default: "unknown" | remove: "MONITOR_STATUS_" | downcase }}{% if monitor.active == false %}, paused{% endif %} · {{ monitor.uri }}
+      {% endfor %}{% for monitor in response.dnsMonitors %}- {{ monitor.name }} (DNS, ID {{ monitor.id }}): {{ monitor.status | default: "unknown" | remove: "MONITOR_STATUS_" | downcase }}{% if monitor.active == false %}, paused{% endif %} · {{ monitor.uri }}
+      {% endfor %}{% for monitor in response.icmpMonitors %}- {{ monitor.name }} (ICMP, ID {{ monitor.id }}): {{ monitor.status | default: "unknown" | remove: "MONITOR_STATUS_" | downcase }}{% if monitor.active == false %}, paused{% endif %} · {{ monitor.uri }}
+      {% endfor %}{% for monitor in response.grpcMonitors %}- {{ monitor.name }} (gRPC, ID {{ monitor.id }}): {{ monitor.status | default: "unknown" | remove: "MONITOR_STATUS_" | downcase }}{% if monitor.active == false %}, paused{% endif %} · {{ monitor.uri }}
+      {% endfor %}{% endif %}
 
   - id: get_monitor_status
     title: Get Monitor Status
-    description: Check the current status of an OpenStatus monitor by ID.
+    description: Check the current status of an OpenStatus monitor in each region by ID.
     http_method: POST
     endpoint_url: https://api.openstatus.dev/rpc/openstatus.monitor.v1.MonitorService/GetMonitorStatus
     auth_type: api_key
@@ -74,14 +69,19 @@ tools:
       key: ${{ secrets.api_key }}
     param_schema:
       - name: monitor_id
-        type: string
-        description: The OpenStatus monitor ID.
+        type: integer
+        description: The numeric OpenStatus monitor ID from List Monitors.
         required: true
-    request_template: '{"id":"{{ monitor_id | url_encode }}"}'
+    request_template: '{"id":"{{ monitor_id }}"}'
+    response_template: |-
+      {% if response.code %}OpenStatus returned an error: {{ response.message }}{% else %}Monitor {{ response.id }}:
+      {% for region in response.regions %}- {{ region.region | remove: "REGION_" | replace: "_", " " | downcase }}: {{ region.status | default: "unknown" | remove: "MONITOR_STATUS_" | downcase }}
+      {% else %}No regional status is available yet.
+      {% endfor %}{% endif %}
 
-  - id: list_status_reports
-    title: List Status Reports
-    description: Find OpenStatus incident reports. Start with offset 0.
+  - id: list_active_incidents
+    title: List Active Incidents
+    description: Find OpenStatus incident reports that are not yet resolved. Use this when a customer reports a problem that may be a known incident.
     http_method: POST
     endpoint_url: https://api.openstatus.dev/rpc/openstatus.status_report.v1.StatusReportService/ListStatusReports
     auth_type: api_key
@@ -89,16 +89,15 @@ tools:
       location: header
       name: x-openstatus-key
       key: ${{ secrets.api_key }}
-    param_schema:
-      - name: offset
-        type: integer
-        description: Number of reports to skip, starting at 0.
-        required: true
-    request_template: '{"limit":20,"offset":{{ offset }}}'
+    request_template: '{"limit":20,"offset":0,"statuses":["STATUS_REPORT_STATUS_INVESTIGATING","STATUS_REPORT_STATUS_IDENTIFIED","STATUS_REPORT_STATUS_MONITORING"]}'
+    response_template: |-
+      {% if response.code %}OpenStatus returned an error: {{ response.message }}{% else %}{% for report in response.statusReports %}- {{ report.title }} (ID {{ report.id }}): {{ report.status | remove: "STATUS_REPORT_STATUS_" | downcase }}, updated {{ report.updatedAt }}
+      {% else %}No active incidents.
+      {% endfor %}{% endif %}
 
   - id: get_status_report
     title: Get Status Report
-    description: Check one OpenStatus incident report and its updates by ID.
+    description: Read an OpenStatus incident report and all of its updates by ID.
     http_method: POST
     endpoint_url: https://api.openstatus.dev/rpc/openstatus.status_report.v1.StatusReportService/GetStatusReport
     auth_type: api_key
@@ -108,7 +107,15 @@ tools:
       key: ${{ secrets.api_key }}
     param_schema:
       - name: report_id
-        type: string
-        description: The OpenStatus status report ID.
+        type: integer
+        description: The numeric OpenStatus status report ID from List Active Incidents.
         required: true
-    request_template: '{"id":"{{ report_id | url_encode }}"}'
+    request_template: '{"id":"{{ report_id }}"}'
+    response_template: |-
+      {% if response.code %}OpenStatus returned an error: {{ response.message }}{% else %}{% assign report = response.statusReport %}{{ report.title }}
+      Status: {{ report.status | remove: "STATUS_REPORT_STATUS_" | downcase }}
+      Started: {{ report.createdAt }}
+      Updates:
+      {% for update in report.updates %}- {{ update.date }} · {{ update.status | remove: "STATUS_REPORT_STATUS_" | downcase }}: {{ update.message }}
+      {% else %}No updates posted yet.
+      {% endfor %}{% endif %}

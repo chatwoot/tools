@@ -1,18 +1,21 @@
 # OpenStatus.dev
 
-Connect an OpenStatus workspace to help Captain check status pages, monitors, and incident reports.
+Connect an OpenStatus workspace to help Captain check page status, monitors, and active incidents.
 
 ## Setup
 
-Create an API key in OpenStatus Settings > API Tokens and enter it when installing this toolset. The key must have access to the workspace you want Captain to check.
+1. Create an API key in OpenStatus under Settings > API Tokens. The key must have access to the workspace you want Captain to check.
+2. Find your status page slug. It is the subdomain of your OpenStatus status page, such as `acme` for `acme.openstatus.dev`.
+3. Enter the API key and status page slug when installing this toolset.
 
 ## Tools
 
-- **List Status Pages:** Find status pages and their IDs.
-- **Get Page Status:** Check the overall status of a page.
-- **List Monitors:** Find monitors and their IDs.
-- **Get Monitor Status:** Check a monitor's current status.
-- **List Status Reports:** Find incident reports.
-- **Get Status Report:** Read one report and its updates.
+- **Get Page Status:** Check the overall status of the configured status page and how many components are affected.
+- **List Monitors:** List monitors with their IDs and current status, 20 at a time.
+- **Get Monitor Status:** Check a monitor's status in each region.
+- **List Active Incidents:** Find incident reports that are still investigating, identified, or monitoring.
+- **Get Status Report:** Read one incident report and its updates.
 
-For list tools, start with offset 0 and add 20 to read the next group.
+For List Monitors, start with offset 0 and add 20 to read the next group.
+
+Responses include only the fields Captain needs. Monitor request headers and other configuration are left out, so credentials for monitored services are never shown to Captain.
