@@ -5,7 +5,14 @@ category: Scheduling
 description: Find bookings and available times in Cal.com.
 
 headers:
-  cal-api-version: '2026-05-01'
+  cal-api-version: '2024-08-13'
+
+inputs:
+  event_type_id:
+    label: Event type ID
+    type: number
+    placeholder: '1234567'
+    required: true
 
 secrets:
   api_key:
@@ -16,9 +23,9 @@ secrets:
 tools:
   - id: find_bookings_by_email
     title: Find Bookings by Email
-    description: Find a customer's Cal.com bookings using their email address.
+    description: Find a customer's Cal.com bookings using their email address. Use this when a customer asks about an appointment, its status, or how to reschedule or cancel it.
     http_method: GET
-    endpoint_url: https://api.cal.com/v2/bookings?attendeeEmail={{ attendee_email | url_encode }}
+    endpoint_url: https://api.cal.com/v2/bookings?attendeeEmail={{ attendee_email | url_encode }}&sortStart=desc&take=10
     auth_type: bearer
     auth_config:
       token: ${{ secrets.api_key }}
@@ -27,52 +34,44 @@ tools:
         type: string
         description: The email address used for the booking.
         required: true
-
-  - id: get_booking
-    title: Get Booking
-    description: Check the time, status, and details of a Cal.com booking when its UID is known.
-    http_method: GET
-    endpoint_url: https://api.cal.com/v2/bookings/{{ booking_uid | url_encode }}
-    auth_type: bearer
-    auth_config:
-      token: ${{ secrets.api_key }}
-    param_schema:
-      - name: booking_uid
-        type: string
-        description: The Cal.com booking UID.
-        required: true
-
-  - id: list_event_types
-    title: List Event Types
-    description: List Cal.com event types to see which kinds of appointments are available.
-    http_method: GET
-    endpoint_url: https://api.cal.com/v2/event-types
-    auth_type: bearer
-    auth_config:
-      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.status != "success" %}Cal.com returned an error: {{ response.error.message }}{% elsif response.data.size == 0 %}No bookings found for this email address.{% else %}{% for booking in response.data %}- {{ booking.title }}
+        Status: {{ booking.status }}
+        Time: {{ booking.start }} to {{ booking.end }} ({{ booking.duration }} minutes)
+        Hosts: {% for host in booking.hosts %}{{ host.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}
+        Attendees: {% for attendee in booking.attendees %}{{ attendee.name }} <{{ attendee.email }}>, {{ attendee.timeZone }}{% unless forloop.last %}; {% endunless %}{% endfor %}
+        Location: {{ booking.location }}
+      {%- if booking.status == "cancelled" and booking.cancellationReason %}
+        Cancellation reason: {{ booking.cancellationReason }}
+      {%- endif %}
+      {%- if booking.status == "accepted" or booking.status == "pending" %}
+        Reschedule: https://cal.com/reschedule/{{ booking.uid }}
+        Cancel: https://cal.com/booking/{{ booking.uid }}?cancel=true
+      {%- endif %}
+      {% endfor %}{% endif %}
 
   - id: get_available_slots
     title: Get Available Slots
-    description: Find open times for a Cal.com event type within a date range.
+    description: Find open appointment times within a date range. Use this when a customer wants to book or reschedule and asks which times are available.
     http_method: GET
-    endpoint_url: https://api.cal.com/v2/slots?eventTypeId={{ event_type_id }}&start={{ start_date | url_encode }}&end={{ end_date | url_encode }}&timeZone={{ time_zone | url_encode }}
+    endpoint_url: https://api.cal.com/v2/slots/available?eventTypeId=${{ inputs.event_type_id }}&startTime={{ start_date | url_encode }}T00:00:00.000Z&endTime={{ end_date | url_encode }}T23:59:59.999Z&timeZone={{ time_zone | url_encode }}
     auth_type: bearer
     auth_config:
       token: ${{ secrets.api_key }}
     param_schema:
-      - name: event_type_id
-        type: integer
-        description: The numeric ID of the Cal.com event type.
-        required: true
       - name: start_date
         type: string
         description: The first date to check, in YYYY-MM-DD format.
         required: true
       - name: end_date
         type: string
-        description: The last date to check, in YYYY-MM-DD format.
+        description: The last date to check, in YYYY-MM-DD format. Keep the range to 14 days or less.
         required: true
       - name: time_zone
         type: string
-        description: The time zone for the available times, such as America/New_York.
+        description: The customer's IANA time zone, such as America/New_York. Use UTC if it is unknown.
         required: true
+    response_template: |-
+      {% if response.status != "success" %}Cal.com returned an error: {{ response.error.message }}{% elsif response.data.slots.size == 0 %}No open times in this date range.{% else %}Open times, in the requested time zone:
+      {% for day in response.data.slots %}{{ day[0] }}: {% for slot in day[1] %}{{ slot.time | slice: 11, 5 }}{% unless forloop.last %}, {% endunless %}{% endfor %}
+      {% endfor %}{% endif %}
