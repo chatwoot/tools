@@ -148,7 +148,8 @@ def coerce(raw: str, kind: str, key: str) -> object:
         if kind == "integer":
             return int(raw)
         if kind == "number":
-            return float(raw)
+            number = float(raw)
+            return int(number) if number.is_integer() else number
     except ValueError:
         raise ToolError(f"{key} must be {'an' if kind[0] in 'aeiou' else 'a'} {kind}.") from None
     if kind == "boolean":
