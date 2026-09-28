@@ -1,0 +1,56 @@
+name: Validate manifests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '**/toolset.yml'
+  push:
+    branches: [main]
+    paths:
+      - '**/toolset.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  pull-request:
+    name: Validate changed manifests (pull request)
+    # Disabled for now. Remove this line to turn the check on.
+    if: false && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Validate manifests added or changed in this pull request
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          mapfile -t manifests < <(git diff --name-only --diff-filter=ACMR "$BASE_SHA...$HEAD_SHA" -- '*toolset.yml')
+          python3 .github/scripts/validate_manifests.py "${manifests[@]}"
+
+  default-branch:
+    name: Validate changed manifests (main)
+    # Disabled for now. Remove this line to turn the check on.
+    if: false && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Validate manifests added or changed in this push
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          if git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
+            mapfile -t manifests < <(git diff --name-only --diff-filter=ACMR "$BEFORE_SHA" "$AFTER_SHA" -- '*toolset.yml')
+          else
+            # No usable previous commit (first push or force push), so check every manifest
+            mapfile -t manifests < <(git ls-files -- '*toolset.yml')
+          fi
+          python3 .github/scripts/validate_manifests.py "${manifests[@]}"
