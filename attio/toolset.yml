@@ -1,0 +1,129 @@
+version: 1.0.0
+kind: captain_toolset
+name: Attio
+category: CRM
+description: Look up people, companies, deals, and notes in Attio, and add notes to records.
+
+secrets:
+  access_token:
+    label: Attio access token
+    type: password
+    required: true
+
+tools:
+  - id: find_person
+    title: Find Person
+    description: Find people in Attio by email address or phone number. Use this first to get the person ID and company ID the other Attio tools need.
+    http_method: POST
+    endpoint_url: https://api.attio.com/v2/objects/people/records/query
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: email
+        type: string
+        description: The person's email address.
+        required: false
+      - name: phone
+        type: string
+        description: The person's phone number in international format, such as +15558675309.
+        required: false
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% assign email = email | strip_newlines | strip | downcase | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign phone = phone | strip_newlines | remove: " " | remove: "-" | remove: "(" | remove: ")" | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% capture conditions %}{% if email != "" %},{"email_addresses":{"email_address":{"$eq":"{{ email }}"}}}{% endif %}{% if phone != "" %},{"phone_numbers":{"phone_number":{"$eq":"{{ phone }}"}}}{% endif %}{% endcapture %}{"filter":{% if conditions != "" %}{"$or":[{{ conditions | remove_first: "," }}]}{% else %}{"record_id":"00000000-0000-0000-0000-000000000000"}{% endif %},"limit":5}
+    response_template: |-
+      {% if response.data %}{% for record in response.data %}{{ record.values.name[0].full_name | default: "Unnamed person" }} (person ID {{ record.id.record_id }})
+      Open in Attio: {{ record.web_url }}{% for attribute in record.values %}{% if attribute[0] != "name" and attribute[1].size > 0 and attribute[1][0].attribute_type != "actor-reference" %}{% capture shown %}{% for v in attribute[1] limit: 5 %}{% case v.attribute_type %}{% when "personal-name" %}{{ v.full_name }}{% when "email-address" %}{{ v.email_address }}{% when "phone-number" %}{{ v.original_phone_number | default: v.phone_number }}{% when "domain" %}{{ v.domain }}{% when "currency" %}{{ v.currency_value }} {{ v.currency_code }}{% when "select" %}{{ v.option.title }}{% when "status" %}{{ v.status.title }}{% when "location" %}{% capture location %}{{ v.line_1 }} {{ v.locality }} {{ v.region }} {{ v.postcode }} {{ v.country_code }}{% endcapture %}{{ location | split: " " | join: " " }}{% when "record-reference" %}{{ v.target_object }} record {{ v.target_record_id }}{% when "interaction" %}{{ v.interaction_type }} on {{ v.interacted_at | slice: 0, 10 }}{% else %}{{ v.value }}{% endcase %}{% unless forloop.last %}; {% endunless %}{% endfor %}{% endcapture %}{% assign shown = shown | strip %}{% if shown != "" %}
+      - {{ attribute[0] }}: {{ shown | truncate: 300 }}{% endif %}{% endif %}{% endfor %}
+      {% unless forloop.last %}
+      {% endunless %}{% else %}No person found with that email address or phone number.{% endfor %}{% else %}Attio returned an unexpected response.{% endif %}
+
+  - id: get_company
+    title: Get Company
+    description: Get a company's details from Attio, including custom fields such as plan, tier, or renewal date. Use the company ID from Find Person.
+    http_method: GET
+    endpoint_url: https://api.attio.com/v2/objects/companies/records/{{ company_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: company_id
+        type: string
+        description: The Attio company ID, a UUID from the person's company field in Find Person.
+        required: true
+    response_template: |-
+      {% if response.data.id %}{% assign record = response.data %}{{ record.values.name[0].value | default: "Unnamed company" }} (company ID {{ record.id.record_id }})
+      Open in Attio: {{ record.web_url }}{% for attribute in record.values %}{% if attribute[0] != "name" and attribute[1].size > 0 and attribute[1][0].attribute_type != "actor-reference" %}{% capture shown %}{% for v in attribute[1] limit: 5 %}{% case v.attribute_type %}{% when "personal-name" %}{{ v.full_name }}{% when "email-address" %}{{ v.email_address }}{% when "phone-number" %}{{ v.original_phone_number | default: v.phone_number }}{% when "domain" %}{{ v.domain }}{% when "currency" %}{{ v.currency_value }} {{ v.currency_code }}{% when "select" %}{{ v.option.title }}{% when "status" %}{{ v.status.title }}{% when "location" %}{% capture location %}{{ v.line_1 }} {{ v.locality }} {{ v.region }} {{ v.postcode }} {{ v.country_code }}{% endcapture %}{{ location | split: " " | join: " " }}{% when "record-reference" %}{{ v.target_object }} record {{ v.target_record_id }}{% when "interaction" %}{{ v.interaction_type }} on {{ v.interacted_at | slice: 0, 10 }}{% else %}{{ v.value }}{% endcase %}{% unless forloop.last %}; {% endunless %}{% endfor %}{% endcapture %}{% assign shown = shown | strip %}{% if shown != "" %}
+      - {{ attribute[0] }}: {{ shown | truncate: 300 }}{% endif %}{% endif %}{% endfor %}{% else %}Attio returned an unexpected response.{% endif %}
+
+  - id: list_deals
+    title: List Deals
+    description: List the 10 most recent deals in Attio linked to a person or company, with stage, value, and other deal fields. Use a person ID or company ID from Find Person.
+    http_method: POST
+    endpoint_url: https://api.attio.com/v2/objects/deals/records/query
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: record_id
+        type: string
+        description: The Attio person ID or company ID to list deals for.
+        required: true
+    request_template: |-
+      {% assign record_id = record_id | strip | remove: '"' %}{"filter":{"$or":[{"associated_company":{"target_object":"companies","target_record_id":"{{ record_id }}"}},{"associated_people":{"target_object":"people","target_record_id":"{{ record_id }}"}}]},"sorts":[{"direction":"desc","attribute":"created_at"}],"limit":10}
+    response_template: |-
+      {% if response.data %}{% for record in response.data %}{{ record.values.name[0].value | default: "Unnamed deal" }} (deal ID {{ record.id.record_id }})
+      Open in Attio: {{ record.web_url }}{% for attribute in record.values %}{% if attribute[0] != "name" and attribute[1].size > 0 and attribute[1][0].attribute_type != "actor-reference" %}{% capture shown %}{% for v in attribute[1] limit: 5 %}{% case v.attribute_type %}{% when "personal-name" %}{{ v.full_name }}{% when "email-address" %}{{ v.email_address }}{% when "phone-number" %}{{ v.original_phone_number | default: v.phone_number }}{% when "domain" %}{{ v.domain }}{% when "currency" %}{{ v.currency_value }} {{ v.currency_code }}{% when "select" %}{{ v.option.title }}{% when "status" %}{{ v.status.title }}{% when "location" %}{% capture location %}{{ v.line_1 }} {{ v.locality }} {{ v.region }} {{ v.postcode }} {{ v.country_code }}{% endcapture %}{{ location | split: " " | join: " " }}{% when "record-reference" %}{{ v.target_object }} record {{ v.target_record_id }}{% when "interaction" %}{{ v.interaction_type }} on {{ v.interacted_at | slice: 0, 10 }}{% else %}{{ v.value }}{% endcase %}{% unless forloop.last %}; {% endunless %}{% endfor %}{% endcapture %}{% assign shown = shown | strip %}{% if shown != "" %}
+      - {{ attribute[0] }}: {{ shown | truncate: 300 }}{% endif %}{% endif %}{% endfor %}
+      {% unless forloop.last %}
+      {% endunless %}{% else %}No deals are linked to this record.{% endfor %}{% else %}Attio returned an unexpected response.{% endif %}
+
+  - id: list_notes
+    title: List Notes
+    description: Read the 5 most recent notes on a person, company, or deal in Attio, such as call summaries or promises made by the team. Use a record ID from the other Attio tools.
+    http_method: GET
+    endpoint_url: '{% assign record_type = record_type | strip | downcase %}{% case record_type %}{% when "person" %}{% assign record_type = "people" %}{% when "company" %}{% assign record_type = "companies" %}{% when "deal" %}{% assign record_type = "deals" %}{% endcase %}https://api.attio.com/v2/notes?parent_object={{ record_type | url_encode }}&parent_record_id={{ record_id | strip | url_encode }}&limit=50'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: record_type
+        type: string
+        description: 'The type of record: people, companies, or deals.'
+        required: true
+      - name: record_id
+        type: string
+        description: The Attio ID of the person, company, or deal.
+        required: true
+    response_template: |-
+      {% if response.data %}{% assign notes = response.data | sort: "created_at" | reverse %}{% for note in notes limit: 5 %}- {{ note.created_at | slice: 0, 10 }} · {{ note.title | default: "Untitled note" }}: {{ note.content_plaintext | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}
+      {% else %}No notes on this record.{% endfor %}{% else %}Attio returned an unexpected response.{% endif %}
+
+  - id: add_note
+    title: Add Note
+    description: Add a note to a person, company, or deal in Attio, for example a summary of this conversation or a follow-up request for the account owner. Only add a note when the conversation needs one.
+    http_method: POST
+    endpoint_url: https://api.attio.com/v2/notes
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: record_type
+        type: string
+        description: 'The type of record: people, companies, or deals.'
+        required: true
+      - name: record_id
+        type: string
+        description: The Attio ID of the person, company, or deal.
+        required: true
+      - name: title
+        type: string
+        description: A short title for the note.
+        required: true
+      - name: content
+        type: string
+        description: The note text. Plain text only.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% capture escaped_newline %}\\n{% endcapture %}{% assign record_type = record_type | strip | downcase | remove: '"' %}{% case record_type %}{% when "person" %}{% assign record_type = "people" %}{% when "company" %}{% assign record_type = "companies" %}{% when "deal" %}{% assign record_type = "deals" %}{% endcase %}{"data":{"parent_object":"{{ record_type }}","parent_record_id":"{{ record_id | strip | remove: '"' }}","title":"{{ title | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}","format":"plaintext","content":"{{ content | strip | replace: bs, escaped_bs | replace: '"', escaped_quote | newline_to_br | strip_newlines | replace: "<br />", escaped_newline }}"}}
+    response_template: |-
+      {% if response.data.id %}Added the note "{{ response.data.title }}" to the {{ response.data.parent_object }} record.{% else %}Attio returned an unexpected response.{% endif %}
