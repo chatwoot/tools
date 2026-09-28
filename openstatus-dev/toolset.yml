@@ -29,8 +29,8 @@ tools:
       key: ${{ secrets.api_key }}
     request_template: '{"slug":"${{ inputs.page_slug }}"}'
     response_template: |-
-      {% if response.code %}OpenStatus returned an error: {{ response.message }}{% else %}{% assign affected = 0 %}{% for component in response.componentStatuses %}{% unless component.status == "OVERALL_STATUS_OPERATIONAL" %}{% assign affected = affected | plus: 1 %}{% endunless %}{% endfor %}Overall status: {{ response.overallStatus | default: "OVERALL_STATUS_UNKNOWN" | remove: "OVERALL_STATUS_" | replace: "_", " " | downcase }}
-      Components not operational: {{ affected }}{% endif %}
+      {% if response.overallStatus %}{% assign affected = 0 %}{% for component in response.componentStatuses %}{% unless component.status == "OVERALL_STATUS_OPERATIONAL" %}{% assign affected = affected | plus: 1 %}{% endunless %}{% endfor %}Overall status: {{ response.overallStatus | remove: "OVERALL_STATUS_" | replace: "_", " " | downcase }}
+      Components not operational: {{ affected }}{% else %}OpenStatus returned an unexpected response.{% endif %}
 
   - id: list_monitors
     title: List Monitors
@@ -49,13 +49,13 @@ tools:
         required: true
     request_template: '{"limit":20,"offset":{{ offset }}}'
     response_template: |-
-      {% if response.code %}OpenStatus returned an error: {{ response.message }}{% else %}Total monitors: {{ response.totalSize | default: 0 }}
+      {% if response == empty %}No monitors found.{% elsif response.totalSize %}Total monitors: {{ response.totalSize }}
       {% for monitor in response.httpMonitors %}- {{ monitor.name }} (HTTP, ID {{ monitor.id }}): {{ monitor.status | default: "unknown" | remove: "MONITOR_STATUS_" | downcase }}{% if monitor.active == false %}, paused{% endif %} · {{ monitor.url }}
       {% endfor %}{% for monitor in response.tcpMonitors %}- {{ monitor.name }} (TCP, ID {{ monitor.id }}): {{ monitor.status | default: "unknown" | remove: "MONITOR_STATUS_" | downcase }}{% if monitor.active == false %}, paused{% endif %} · {{ monitor.uri }}
       {% endfor %}{% for monitor in response.dnsMonitors %}- {{ monitor.name }} (DNS, ID {{ monitor.id }}): {{ monitor.status | default: "unknown" | remove: "MONITOR_STATUS_" | downcase }}{% if monitor.active == false %}, paused{% endif %} · {{ monitor.uri }}
       {% endfor %}{% for monitor in response.icmpMonitors %}- {{ monitor.name }} (ICMP, ID {{ monitor.id }}): {{ monitor.status | default: "unknown" | remove: "MONITOR_STATUS_" | downcase }}{% if monitor.active == false %}, paused{% endif %} · {{ monitor.uri }}
       {% endfor %}{% for monitor in response.grpcMonitors %}- {{ monitor.name }} (gRPC, ID {{ monitor.id }}): {{ monitor.status | default: "unknown" | remove: "MONITOR_STATUS_" | downcase }}{% if monitor.active == false %}, paused{% endif %} · {{ monitor.uri }}
-      {% endfor %}{% endif %}
+      {% endfor %}{% else %}OpenStatus returned an unexpected response.{% endif %}
 
   - id: get_monitor_status
     title: Get Monitor Status
@@ -74,10 +74,10 @@ tools:
         required: true
     request_template: '{"id":"{{ monitor_id }}"}'
     response_template: |-
-      {% if response.code %}OpenStatus returned an error: {{ response.message }}{% else %}Monitor {{ response.id }}:
+      {% if response.id %}Monitor {{ response.id }}:
       {% for region in response.regions %}- {{ region.region | remove: "REGION_" | replace: "_", " " | downcase }}: {{ region.status | default: "unknown" | remove: "MONITOR_STATUS_" | downcase }}
       {% else %}No regional status is available yet.
-      {% endfor %}{% endif %}
+      {% endfor %}{% else %}OpenStatus returned an unexpected response.{% endif %}
 
   - id: list_active_incidents
     title: List Active Incidents
@@ -91,9 +91,8 @@ tools:
       key: ${{ secrets.api_key }}
     request_template: '{"limit":20,"offset":0,"statuses":["STATUS_REPORT_STATUS_INVESTIGATING","STATUS_REPORT_STATUS_IDENTIFIED","STATUS_REPORT_STATUS_MONITORING"]}'
     response_template: |-
-      {% if response.code %}OpenStatus returned an error: {{ response.message }}{% else %}{% for report in response.statusReports %}- {{ report.title }} (ID {{ report.id }}): {{ report.status | remove: "STATUS_REPORT_STATUS_" | downcase }}, updated {{ report.updatedAt }}
-      {% else %}No active incidents.
-      {% endfor %}{% endif %}
+      {% if response == empty %}No active incidents.{% elsif response.statusReports %}{% for report in response.statusReports %}- {{ report.title }} (ID {{ report.id }}): {{ report.status | remove: "STATUS_REPORT_STATUS_" | downcase }}, updated {{ report.updatedAt }}
+      {% endfor %}{% else %}OpenStatus returned an unexpected response.{% endif %}
 
   - id: get_status_report
     title: Get Status Report
@@ -112,10 +111,10 @@ tools:
         required: true
     request_template: '{"id":"{{ report_id }}"}'
     response_template: |-
-      {% if response.code %}OpenStatus returned an error: {{ response.message }}{% else %}{% assign report = response.statusReport %}{{ report.title }}
+      {% if response.statusReport %}{% assign report = response.statusReport %}{{ report.title }}
       Status: {{ report.status | remove: "STATUS_REPORT_STATUS_" | downcase }}
       Started: {{ report.createdAt }}
       Updates:
       {% for update in report.updates %}- {{ update.date }} · {{ update.status | remove: "STATUS_REPORT_STATUS_" | downcase }}: {{ update.message }}
       {% else %}No updates posted yet.
-      {% endfor %}{% endif %}
+      {% endfor %}{% else %}OpenStatus returned an unexpected response.{% endif %}

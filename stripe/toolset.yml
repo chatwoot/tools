@@ -18,7 +18,7 @@ tools:
     title: Find Customers by Email
     description: Find Stripe customers by email address, ignoring case. Use this first to get the customer ID the other Stripe tools need.
     http_method: GET
-    endpoint_url: 'https://api.stripe.com/v1/customers/search?query=email%3A%22{{ email | remove: ''"'' | url_encode }}%22&limit=10'
+    endpoint_url: 'https://api.stripe.com/v1/customers/search?query=email%3A%22{{ email | strip | remove: ''"'' | url_encode }}%22&limit=10'
     auth_type: bearer
     auth_config:
       token: ${{ secrets.api_key }}
@@ -28,12 +28,12 @@ tools:
         description: The customer's email address.
         required: true
     response_template: |-
-      {% if response.error %}Stripe returned an error: {{ response.error.message }}{% else %}{% for customer in response.data %}- {{ customer.name | default: "No name" }} <{{ customer.email }}>
+      {% if response.object == "search_result" %}{% for customer in response.data %}- {{ customer.name | default: "No name" }} <{{ customer.email }}>
         Customer ID: {{ customer.id }}
         Customer since: {{ customer.created | date: "%Y-%m-%d" }}{% if customer.delinquent %}
-        Has an overdue invoice{% endif %}
+        Has a failed or overdue invoice{% endif %}
       {% else %}No Stripe customer found with this email address.
-      {% endfor %}{% endif %}
+      {% endfor %}{% else %}Stripe returned an unexpected response.{% endif %}
 
   - id: list_payments
     title: List Payments
@@ -49,20 +49,20 @@ tools:
         description: The Stripe customer ID from Find Customers by Email, starting with cus_.
         required: true
     response_template: |-
-      {% if response.error %}Stripe returned an error: {{ response.error.message }}{% else %}{% assign zero_decimal = "bif clp djf gnf jpy kmf krw mga pyg rwf ugx vnd vuv xaf xof xpf" | split: " " %}{% assign three_decimal = "bhd jod kwd omr tnd" | split: " " %}{% for payment in response.data %}{% if zero_decimal contains payment.currency %}{% assign divisor = 1 %}{% elsif three_decimal contains payment.currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}{% assign charge = payment.latest_charge %}- {{ payment.created | date: "%Y-%m-%d" }} · {{ payment.amount | divided_by: divisor }} {{ payment.currency | upcase }} · {{ payment.status | replace: "_", " " }}{% if payment.description %} · {{ payment.description }}{% endif %}{% if payment.status != "succeeded" and payment.last_payment_error %}
+      {% if response.object == "list" %}{% assign zero_decimal = "bif clp djf gnf jpy kmf krw mga pyg rwf vnd vuv xaf xof xpf" | split: " " %}{% assign three_decimal = "bhd jod kwd omr tnd" | split: " " %}{% for payment in response.data %}{% if zero_decimal contains payment.currency %}{% assign divisor = 1 %}{% elsif three_decimal contains payment.currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}{% assign charge = payment.latest_charge %}- {{ payment.created | date: "%Y-%m-%d" }} · {{ payment.amount | divided_by: divisor }} {{ payment.currency | upcase }} · {{ payment.status | replace: "_", " " }}{% if payment.description and payment.description != "" %} · {{ payment.description }}{% endif %}{% if payment.status != "succeeded" and payment.last_payment_error %}
         Failure: {{ payment.last_payment_error.message }}{% if payment.last_payment_error.decline_code %} (decline code: {{ payment.last_payment_error.decline_code }}){% endif %}{% endif %}{% if charge %}{% if charge.payment_method_details.card %}
         Card: {{ charge.payment_method_details.card.brand }} ending {{ charge.payment_method_details.card.last4 }}{% endif %}{% if charge.refunded %}
         Refund: fully refunded{% elsif charge.amount_refunded > 0 %}
         Refund: {{ charge.amount_refunded | divided_by: divisor }} {{ payment.currency | upcase }} refunded{% endif %}{% if charge.receipt_url %}
         Receipt: {{ charge.receipt_url }}{% endif %}{% endif %}
       {% else %}No payments found for this customer.
-      {% endfor %}{% endif %}
+      {% endfor %}{% else %}Stripe returned an unexpected response.{% endif %}
 
   - id: list_invoices
     title: List Invoices
-    description: Check a customer's 10 most recent invoices, their payment status, and links to view or download them.
+    description: Check a customer's 10 most recent finalized invoices, amounts due, and links to view, pay, or download them.
     http_method: GET
-    endpoint_url: https://api.stripe.com/v1/invoices?customer={{ customer_id | url_encode }}&limit=10
+    endpoint_url: https://api.stripe.com/v1/invoices?customer={{ customer_id | url_encode }}&limit=100
     auth_type: bearer
     auth_config:
       token: ${{ secrets.api_key }}
@@ -72,11 +72,11 @@ tools:
         description: The Stripe customer ID from Find Customers by Email, starting with cus_.
         required: true
     response_template: |-
-      {% if response.error %}Stripe returned an error: {{ response.error.message }}{% else %}{% assign zero_decimal = "bif clp djf gnf jpy kmf krw mga pyg rwf ugx vnd vuv xaf xof xpf" | split: " " %}{% assign three_decimal = "bhd jod kwd omr tnd" | split: " " %}{% assign shown = 0 %}{% for invoice in response.data %}{% unless invoice.status == "draft" %}{% assign shown = shown | plus: 1 %}{% if zero_decimal contains invoice.currency %}{% assign divisor = 1 %}{% elsif three_decimal contains invoice.currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}- Invoice {{ invoice.number }} · {{ invoice.created | date: "%Y-%m-%d" }} · {{ invoice.status }} · total {{ invoice.total | divided_by: divisor }} {{ invoice.currency | upcase }}{% if invoice.status == "open" %}
+      {% if response.object == "list" %}{% assign zero_decimal = "bif clp djf gnf jpy kmf krw mga pyg rwf vnd vuv xaf xof xpf" | split: " " %}{% assign three_decimal = "bhd jod kwd omr tnd" | split: " " %}{% assign shown = 0 %}{% for invoice in response.data %}{% if shown >= 10 %}{% break %}{% endif %}{% unless invoice.status == "draft" %}{% assign shown = shown | plus: 1 %}{% if zero_decimal contains invoice.currency %}{% assign divisor = 1 %}{% elsif three_decimal contains invoice.currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}{% if invoice.status == "open" or invoice.status == "uncollectible" %}{% assign payable = true %}{% else %}{% assign payable = false %}{% endif %}- Invoice {{ invoice.number }} · {{ invoice.created | date: "%Y-%m-%d" }} · {{ invoice.status }} · total {{ invoice.total | divided_by: divisor }} {{ invoice.currency | upcase }}{% if payable %}
         Amount due: {{ invoice.amount_remaining | divided_by: divisor }} {{ invoice.currency | upcase }}{% if invoice.due_date %}, due {{ invoice.due_date | date: "%Y-%m-%d" }}{% endif %}{% endif %}{% if invoice.hosted_invoice_url %}
-        View or pay: {{ invoice.hosted_invoice_url }}{% endif %}{% if invoice.invoice_pdf %}
+        {% if payable %}View or pay{% else %}View{% endif %}: {{ invoice.hosted_invoice_url }}{% endif %}{% if invoice.invoice_pdf %}
         PDF: {{ invoice.invoice_pdf }}{% endif %}
-      {% endunless %}{% endfor %}{% if shown == 0 %}No invoices found for this customer.{% endif %}{% endif %}
+      {% endunless %}{% endfor %}{% if shown == 0 %}No finalized invoices found for this customer.{% endif %}{% else %}Stripe returned an unexpected response.{% endif %}
 
   - id: list_subscriptions
     title: List Subscriptions
@@ -92,12 +92,12 @@ tools:
         description: The Stripe customer ID from Find Customers by Email, starting with cus_.
         required: true
     response_template: |-
-      {% if response.error %}Stripe returned an error: {{ response.error.message }}{% else %}{% assign zero_decimal = "bif clp djf gnf jpy kmf krw mga pyg rwf ugx vnd vuv xaf xof xpf" | split: " " %}{% assign three_decimal = "bhd jod kwd omr tnd" | split: " " %}{% for subscription in response.data %}- Subscription {{ subscription.id }} · {{ subscription.status | replace: "_", " " }} · started {{ subscription.created | date: "%Y-%m-%d" }}{% if subscription.description %}
+      {% if response.object == "list" %}{% assign zero_decimal = "bif clp djf gnf jpy kmf krw mga pyg rwf vnd vuv xaf xof xpf" | split: " " %}{% assign three_decimal = "bhd jod kwd omr tnd" | split: " " %}{% for subscription in response.data %}{% if subscription.status == "canceled" or subscription.status == "incomplete_expired" %}{% assign ended = true %}{% else %}{% assign ended = false %}{% endif %}- Subscription {{ subscription.id }} · {{ subscription.status | replace: "_", " " }} · started {{ subscription.start_date | default: subscription.created | date: "%Y-%m-%d" }}{% if subscription.description %}
         Description: {{ subscription.description }}{% endif %}{% for item in subscription.items.data %}{% assign price = item.price %}{% if zero_decimal contains price.currency %}{% assign divisor = 1 %}{% elsif three_decimal contains price.currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}
-        Plan: {{ price.nickname | default: price.product }} · {% if price.unit_amount %}{{ price.unit_amount | divided_by: divisor }} {{ price.currency | upcase }}{% else %}usage-based price{% endif %}{% if price.recurring %} every {% if price.recurring.interval_count > 1 %}{{ price.recurring.interval_count }} {{ price.recurring.interval }}s{% else %}{{ price.recurring.interval }}{% endif %}{% endif %}{% if item.quantity %}{% if item.quantity > 1 %} × {{ item.quantity }}{% endif %}{% endif %}{% if subscription.status != "canceled" %} · current period ends {{ item.current_period_end | date: "%Y-%m-%d" }}{% endif %}{% endfor %}{% if subscription.status == "trialing" and subscription.trial_end %}
-        Trial ends: {{ subscription.trial_end | date: "%Y-%m-%d" }}{% endif %}{% if subscription.status != "canceled" and subscription.cancel_at_period_end %}
-        Cancels at the end of the current period{% elsif subscription.status != "canceled" and subscription.cancel_at %}
-        Scheduled to cancel on {{ subscription.cancel_at | date: "%Y-%m-%d" }}{% endif %}{% if subscription.canceled_at %}
-        Canceled on: {{ subscription.canceled_at | date: "%Y-%m-%d" }}{% endif %}
+        Plan: {{ price.nickname | default: price.product }} · {% if price.unit_amount %}{{ price.unit_amount | divided_by: divisor }} {{ price.currency | upcase }}{% elsif price.billing_scheme == "tiered" %}tiered price{% else %}custom price{% endif %}{% if price.recurring %} every {% if price.recurring.interval_count > 1 %}{{ price.recurring.interval_count }} {{ price.recurring.interval }}s{% else %}{{ price.recurring.interval }}{% endif %}{% endif %}{% if item.quantity %}{% if item.quantity > 1 %} × {{ item.quantity }}{% endif %}{% endif %}{% unless ended %} · current period ends {{ item.current_period_end | date: "%Y-%m-%d" }}{% endunless %}{% endfor %}{% if subscription.status == "trialing" and subscription.trial_end %}
+        Trial ends: {{ subscription.trial_end | date: "%Y-%m-%d" }}{% endif %}{% unless ended %}{% if subscription.cancel_at_period_end %}
+        Cancels at the end of the current period ({{ subscription.cancel_at | default: subscription.items.data.first.current_period_end | date: "%Y-%m-%d" }}){% elsif subscription.cancel_at %}
+        Scheduled to cancel on {{ subscription.cancel_at | date: "%Y-%m-%d" }}{% endif %}{% endunless %}{% if subscription.status == "canceled" %}
+        Ended on: {{ subscription.ended_at | default: subscription.canceled_at | date: "%Y-%m-%d" }}{% endif %}
       {% else %}No subscriptions found for this customer.
-      {% endfor %}{% endif %}
+      {% endfor %}{% else %}Stripe returned an unexpected response.{% endif %}
