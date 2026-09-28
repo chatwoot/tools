@@ -4,7 +4,7 @@ Connect Context.dev to help Captain search the web, research questions, and look
 
 ## Setup
 
-Create a Context.dev API key on the [API keys](https://context.dev/dashboard/api-keys) page and enter it when installing this toolset. A Restricted key with only the **Data APIs: Use** permission (`data:execute`) is enough.
+Create a Context.dev API key on the [API keys](https://context.dev/dashboard/api-keys) page and enter it when installing. A Restricted key with only the **Data APIs: Use** permission (`data:execute`) is enough.
 
 ## Tools
 

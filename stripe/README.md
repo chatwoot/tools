@@ -4,7 +4,7 @@ Connect Stripe to help Captain check customer payments, invoices, and subscripti
 
 ## Setup
 
-Create a Stripe restricted API key with read access to Customers, Payment Intents, Charges, Invoices, and Subscriptions. Enter the key when installing this toolset.
+Create a Stripe restricted API key with read access to Customers, Payment Intents, Charges, Invoices, and Subscriptions. Enter the key when installing.
 
 ## Tools
 
@@ -17,5 +17,5 @@ Start with Find Customers by Email, then use the customer ID with the list tools
 
 ## Notes
 
-- This toolset sets `Stripe-Version: 2026-08-26.dahlia` for all requests, so responses have the same shape regardless of your account's default API version.
+- These tools set `Stripe-Version: 2026-08-26.dahlia` for all requests, so responses have the same shape regardless of your account's default API version.
 - Customer search uses the Stripe Search API. Stripe does not offer search to businesses in India, and new or updated customers can take up to a minute to appear.

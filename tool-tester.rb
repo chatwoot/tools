@@ -1,14 +1,14 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Run Captain toolset tools against their real APIs, the way Captain runs them.
+# Run Captain tools against their real APIs, the way Captain runs them.
 #
-#   ruby tool-tester.rb <toolset> [tool_id] [--dry-run] [--full] [--strict-variables]
+#   ruby tool-tester.rb <folder> [tool_id] [--dry-run] [--full] [--strict-variables]
 #
-# <toolset> is a folder in this repository, such as stripe or cal-com.
-# Without a tool_id, every tool in the toolset runs one after another.
+# <folder> is an integration folder in this repository, such as stripe or cal-com.
+# Without a tool_id, every tool in the folder runs one after another.
 #
-# Secrets are read from .env as <TOOLSET>_<NAME> (for example STRIPE_API_KEY)
+# Secrets are read from .env as <FOLDER>_<NAME> (for example STRIPE_API_KEY)
 # and offered as the default; press Enter to keep one or type a new value.
 # New secrets can be saved back to .env, which is git-ignored.
 #
@@ -248,7 +248,7 @@ end
 
 # ── Loading ───────────────────────────────────────────────────────────────────
 
-def available_toolsets
+def available_integrations
   Dir.glob(File.join(ROOT, '*', 'toolset.yml')).map { |path| File.basename(File.dirname(path)) }.sort
 end
 
@@ -257,9 +257,9 @@ def fail!(message)
   exit 1
 end
 
-def load_toolset(folder)
+def load_manifest(folder)
   path = File.join(ROOT, folder, 'toolset.yml')
-  fail!("No toolset named #{Term.style(folder, :bold)}. Available: #{available_toolsets.join(', ')}") unless File.exist?(path)
+  fail!("No integration named #{Term.style(folder, :bold)}. Available: #{available_integrations.join(', ')}") unless File.exist?(path)
   YAML.safe_load(File.read(path), aliases: false)
 end
 
@@ -544,7 +544,7 @@ end
 def parse_options
   options = { full: false, dry_run: false, strict_variables: false }
   parser = OptionParser.new do |opts|
-    opts.banner = 'Usage: ruby tool-tester.rb <toolset> [tool_id] [options]'
+    opts.banner = 'Usage: ruby tool-tester.rb <folder> [tool_id] [options]'
     opts.on('--full', 'Show complete response bodies') { options[:full] = true }
     opts.on('--dry-run', 'Print requests without sending them') { options[:dry_run] = true }
     opts.on('--strict-variables', 'Render with strict_variables, like Captain before it was removed') do
@@ -554,7 +554,7 @@ def parse_options
   args = parser.parse(ARGV)
   if args.empty?
     puts parser.banner
-    fail!("Choose a toolset: #{available_toolsets.join(', ')}")
+    fail!("Choose an integration: #{available_integrations.join(', ')}")
   end
   [args[0], args[1], options]
 end
@@ -568,7 +568,7 @@ def main
     Dotenv.load(ENV_FILE) # Does not override variables already set in the shell
   end
 
-  manifest = load_toolset(folder)
+  manifest = load_manifest(folder)
   tools = manifest['tools'] || []
   disabled = tools.reject { |tool| tool.fetch('enabled', true) }
   if tool_id

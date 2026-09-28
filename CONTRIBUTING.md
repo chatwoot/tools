@@ -1,10 +1,10 @@
 # Contributing
 
-Toolsets are added to the [Captain tools catalog](https://www.chatwoot.com/captain/tools) by pull request to this repository. The Chatwoot team reviews each one before it's published, so anyone can contribute a toolset for a service they use.
+Integrations are added to the [Captain tools catalog](https://www.chatwoot.com/captain/tools) by pull request to this repository. The Chatwoot team reviews each one before it's published, so anyone can contribute tools for a service they use.
 
-Before starting a new toolset, check the existing folders and [open issues](https://github.com/chatwoot/tools/issues) to avoid duplicating work. For a large toolset or an unusual service, open an issue first to agree on the scope.
+Before starting a new integration, check the existing folders and [open issues](https://github.com/chatwoot/tools/issues) to avoid duplicating work. For a large integration or an unusual service, open an issue first to agree on the scope.
 
-## Add a toolset
+## Add an integration
 
 1. Fork this repository and create a branch.
 2. Add a folder at the repository root named after the service. Use lowercase letters, numbers, and hyphens, for example `cal-com`.
@@ -19,7 +19,7 @@ Before starting a new toolset, check the existing folders and [open issues](http
    ```
 
 4. [Test your tools](#test-your-tools) against the real API and [validate the manifest](#validate-the-manifest).
-5. Add a row for the toolset to the table in the root [README.md](README.md).
+5. Add a row for the integration to the table in the root [README.md](README.md).
 6. Open a pull request.
 
 ## Write the manifest
@@ -42,14 +42,14 @@ Captain's limits also shape what works:
 
 ## Write the README
 
-The README becomes the toolset's page in the catalog. Follow the same shape as the existing toolsets:
+The README becomes the integration's page in the catalog. Follow the same shape as the existing integrations:
 
 - **Title and one sentence** on what Captain can do with the service.
 - **Setup:** where to create the credential, and the exact scopes or permissions it needs. Recommend the narrowest access that works.
 - **Tools:** one bullet per tool, using its `title`, saying what it checks and any limits, such as "the 10 most recent".
 - **Notes (optional):** plan requirements, API versions, and known limits.
 
-Only document what the toolset does today. Leave out placeholder sections such as "Coming soon".
+Only document what the integration does today. Leave out placeholder sections such as "Coming soon".
 
 ## Add a logo
 
@@ -72,7 +72,7 @@ ruby tool-tester.rb your-service tool_id    # run one tool, even if it's disable
 ruby tool-tester.rb your-service --dry-run  # print requests without sending them
 ```
 
-Credentials are read from `.env` as `<TOOLSET>_<SECRET>`, for example `STRIPE_API_KEY`. Add an empty entry for your toolset to `.env.example`. `.env` is ignored by git.
+Credentials are read from `.env` as `<FOLDER>_<SECRET>`, for example `STRIPE_API_KEY`. Add an empty entry for your integration to `.env.example`. `.env` is ignored by git.
 
 Test each tool with real data, including a lookup that finds nothing, and check that the rendered output reads well.
 
@@ -86,9 +86,9 @@ curl -X POST https://www.chatwoot.com/api/captain/tools/validate \
   --data-binary @your-service/toolset.yml
 ```
 
-Fix every issue until the response has `"valid": true`. The validator runs the same checks as the catalog, so an invalid manifest keeps the toolset out of the catalog.
+Fix every issue until the response has `"valid": true`. The validator runs the same checks as the catalog, so an invalid manifest keeps the integration out of the catalog.
 
-## Update an existing toolset
+## Update an existing integration
 
 - **Bump `version`** in `toolset.yml` for every change: patch for fixes, minor for new tools or options, major for changes that need accounts to act, such as a new required secret.
 - **Keep tool IDs stable.** Installed tools are matched to the manifest by `id` when an account updates, which keeps each tool's enabled setting. Renaming an ID adds a new tool instead of updating the old one.
@@ -101,11 +101,11 @@ Fix every issue until the response has `"valid": true`. The validator runs the s
 - [ ] Every tool was run with `tool-tester.rb` against the real API.
 - [ ] No credentials, account IDs, or personal data are committed.
 - [ ] The README covers setup, required permissions, and every tool.
-- [ ] `version` is bumped (for updates to an existing toolset).
-- [ ] The root README table and `.env.example` include the toolset (for new toolsets).
+- [ ] `version` is bumped (for updates to an existing integration).
+- [ ] The root README table and `.env.example` include the integration (for new integrations).
 
 In the pull request description, say which tools you added or changed and how you tested them.
 
 ## Commit messages
 
-Use [Conventional Commits](https://www.conventionalcommits.org/), for example `feat: add Attio toolset` or `fix: correct Stripe invoice template`.
+Use [Conventional Commits](https://www.conventionalcommits.org/), for example `feat: add Attio integration` or `fix: correct Stripe invoice template`.

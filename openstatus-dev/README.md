@@ -6,7 +6,7 @@ Connect an OpenStatus workspace to help Captain check page status, monitors, and
 
 1. Create an API key in OpenStatus under Settings > API Tokens. The key must have access to the workspace you want Captain to check.
 2. Find your status page slug. It is the subdomain of your OpenStatus status page, such as `acme` for `acme.openstatus.dev`.
-3. Enter the API key and status page slug when installing this toolset.
+3. Enter the API key and status page slug when installing.
 
 ## Tools
 

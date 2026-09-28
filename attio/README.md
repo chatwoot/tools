@@ -4,7 +4,7 @@ Connect Attio to help Captain look up people, companies, and deals in your CRM, 
 
 ## Setup
 
-A workspace admin can create an access token in Attio under **Workspace settings → Developers → New access token**. Give the token these scopes, then enter it when installing this toolset:
+A workspace admin can create an access token in Attio under **Workspace settings → Developers → New access token**. Give the token these scopes, then enter it when installing:
 
 - **Records:** Read (`record_permission:read`)
 - **Object configuration:** Read (`object_configuration:read`)

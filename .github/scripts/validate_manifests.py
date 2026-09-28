@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate toolset manifests against Captain's validate endpoint.
+"""Validate tool manifests against Captain's validate endpoint.
 
     python3 .github/scripts/validate_manifests.py <toolset.yml>...
 
@@ -70,7 +70,7 @@ def validate(path):
 
 def main(paths):
     if not paths:
-        print("No toolset manifests changed.")
+        print("No tool manifests changed.")
         return 0
     results = [validate(path) for path in paths]
     return 0 if all(results) else 1

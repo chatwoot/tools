@@ -4,7 +4,7 @@ Connect Better Stack Uptime to help Captain check service health and incidents.
 
 ## Setup
 
-Create a Better Stack Uptime API token and enter it when installing this toolset. The token must have access to the monitors and incidents you want Captain to check.
+Create a Better Stack Uptime API token and enter it when installing. The token must have access to the monitors and incidents you want Captain to check.
 
 ## Tools
 
