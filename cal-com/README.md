@@ -1,5 +1,3 @@
-# Cal.com
-
 Connect a Cal.com API key to help Captain find a customer's bookings and open appointment times.
 
 ## Setup

@@ -1,5 +1,3 @@
-# Stripe
-
 Connect Stripe to help Captain check customer payments, invoices, and subscriptions.
 
 ## Setup

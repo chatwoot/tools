@@ -44,7 +44,7 @@ Captain's limits also shape what works:
 
 The README becomes the integration's page in the catalog. Follow the same shape as the existing integrations:
 
-- **Title and one sentence** on what Captain can do with the service.
+- **One sentence** on what Captain can do with the service. Leave out a `#` title; the catalog shows the name from the manifest.
 - **Setup:** where to create the credential, and the exact scopes or permissions it needs. Recommend the narrowest access that works.
 - **Tools:** one bullet per tool, using its `title`, saying what it checks and any limits, such as "the 10 most recent".
 - **Notes (optional):** plan requirements, API versions, and known limits.

@@ -1,5 +1,3 @@
-# Attio
-
 Connect Attio to help Captain look up people, companies, and deals in your CRM, and log notes on them.
 
 ## Setup

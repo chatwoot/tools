@@ -1,5 +1,3 @@
-# OpenStatus.dev
-
 Connect an OpenStatus workspace to help Captain check page status, monitors, and active incidents.
 
 ## Setup

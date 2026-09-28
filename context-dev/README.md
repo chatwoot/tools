@@ -1,5 +1,3 @@
-# Context.dev
-
 Connect Context.dev to help Captain search the web, research questions, and look up people.
 
 ## Setup

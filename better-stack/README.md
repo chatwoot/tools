@@ -1,5 +1,3 @@
-# Better Stack
-
 Connect Better Stack Uptime to help Captain check service health and incidents.
 
 ## Setup
