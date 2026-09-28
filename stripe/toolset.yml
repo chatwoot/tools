@@ -4,6 +4,9 @@ name: Stripe
 category: Payments & billing
 description: Check customer payments, invoices, and subscriptions in Stripe.
 
+headers:
+  Stripe-Version: '2026-08-26.dahlia'
+
 secrets:
   api_key:
     label: Stripe restricted API key
@@ -13,9 +16,9 @@ secrets:
 tools:
   - id: find_customers_by_email
     title: Find Customers by Email
-    description: Find Stripe customers with an exact email address.
+    description: Find Stripe customers by email address, ignoring case. Use this first to get the customer ID the other Stripe tools need.
     http_method: GET
-    endpoint_url: https://api.stripe.com/v1/customers?email={{ email | url_encode }}&limit=20
+    endpoint_url: 'https://api.stripe.com/v1/customers/search?query=email%3A%22{{ email | remove: ''"'' | url_encode }}%22&limit=10'
     auth_type: bearer
     auth_config:
       token: ${{ secrets.api_key }}
@@ -24,101 +27,77 @@ tools:
         type: string
         description: The customer's email address.
         required: true
-
-  - id: get_customer
-    title: Get Customer
-    description: Check a Stripe customer's details by ID.
-    http_method: GET
-    endpoint_url: https://api.stripe.com/v1/customers/{{ customer_id | url_encode }}
-    auth_type: bearer
-    auth_config:
-      token: ${{ secrets.api_key }}
-    param_schema:
-      - name: customer_id
-        type: string
-        description: The Stripe customer ID, starting with cus_.
-        required: true
+    response_template: |-
+      {% if response.error %}Stripe returned an error: {{ response.error.message }}{% else %}{% for customer in response.data %}- {{ customer.name | default: "No name" }} <{{ customer.email }}>
+        Customer ID: {{ customer.id }}
+        Customer since: {{ customer.created | date: "%Y-%m-%d" }}{% if customer.delinquent %}
+        Has an overdue invoice{% endif %}
+      {% else %}No Stripe customer found with this email address.
+      {% endfor %}{% endif %}
 
   - id: list_payments
     title: List Payments
-    description: Check a customer's recent payment attempts and their status.
+    description: Check a customer's 10 most recent payments, including failures, decline reasons, refunds, and receipt links.
     http_method: GET
-    endpoint_url: https://api.stripe.com/v1/payment_intents?customer={{ customer_id | url_encode }}&limit=20
+    endpoint_url: https://api.stripe.com/v1/payment_intents?customer={{ customer_id | url_encode }}&limit=10&expand%5B%5D=data.latest_charge
     auth_type: bearer
     auth_config:
       token: ${{ secrets.api_key }}
     param_schema:
       - name: customer_id
         type: string
-        description: The Stripe customer ID, starting with cus_.
+        description: The Stripe customer ID from Find Customers by Email, starting with cus_.
         required: true
-
-  - id: get_payment
-    title: Get Payment
-    description: Check a payment attempt by its Stripe PaymentIntent ID.
-    http_method: GET
-    endpoint_url: https://api.stripe.com/v1/payment_intents/{{ payment_intent_id | url_encode }}
-    auth_type: bearer
-    auth_config:
-      token: ${{ secrets.api_key }}
-    param_schema:
-      - name: payment_intent_id
-        type: string
-        description: The Stripe PaymentIntent ID, starting with pi_.
-        required: true
+    response_template: |-
+      {% if response.error %}Stripe returned an error: {{ response.error.message }}{% else %}{% assign zero_decimal = "bif clp djf gnf jpy kmf krw mga pyg rwf ugx vnd vuv xaf xof xpf" | split: " " %}{% assign three_decimal = "bhd jod kwd omr tnd" | split: " " %}{% for payment in response.data %}{% if zero_decimal contains payment.currency %}{% assign divisor = 1 %}{% elsif three_decimal contains payment.currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}{% assign charge = payment.latest_charge %}- {{ payment.created | date: "%Y-%m-%d" }} · {{ payment.amount | divided_by: divisor }} {{ payment.currency | upcase }} · {{ payment.status | replace: "_", " " }}{% if payment.description %} · {{ payment.description }}{% endif %}{% if payment.status != "succeeded" and payment.last_payment_error %}
+        Failure: {{ payment.last_payment_error.message }}{% if payment.last_payment_error.decline_code %} (decline code: {{ payment.last_payment_error.decline_code }}){% endif %}{% endif %}{% if charge %}{% if charge.payment_method_details.card %}
+        Card: {{ charge.payment_method_details.card.brand }} ending {{ charge.payment_method_details.card.last4 }}{% endif %}{% if charge.refunded %}
+        Refund: fully refunded{% elsif charge.amount_refunded > 0 %}
+        Refund: {{ charge.amount_refunded | divided_by: divisor }} {{ payment.currency | upcase }} refunded{% endif %}{% if charge.receipt_url %}
+        Receipt: {{ charge.receipt_url }}{% endif %}{% endif %}
+      {% else %}No payments found for this customer.
+      {% endfor %}{% endif %}
 
   - id: list_invoices
     title: List Invoices
-    description: Check a customer's recent invoices and payment status.
+    description: Check a customer's 10 most recent invoices, their payment status, and links to view or download them.
     http_method: GET
-    endpoint_url: https://api.stripe.com/v1/invoices?customer={{ customer_id | url_encode }}&limit=20
+    endpoint_url: https://api.stripe.com/v1/invoices?customer={{ customer_id | url_encode }}&limit=10
     auth_type: bearer
     auth_config:
       token: ${{ secrets.api_key }}
     param_schema:
       - name: customer_id
         type: string
-        description: The Stripe customer ID, starting with cus_.
+        description: The Stripe customer ID from Find Customers by Email, starting with cus_.
         required: true
-
-  - id: get_invoice
-    title: Get Invoice
-    description: Check a Stripe invoice by ID.
-    http_method: GET
-    endpoint_url: https://api.stripe.com/v1/invoices/{{ invoice_id | url_encode }}
-    auth_type: bearer
-    auth_config:
-      token: ${{ secrets.api_key }}
-    param_schema:
-      - name: invoice_id
-        type: string
-        description: The Stripe invoice ID, starting with in_.
-        required: true
+    response_template: |-
+      {% if response.error %}Stripe returned an error: {{ response.error.message }}{% else %}{% assign zero_decimal = "bif clp djf gnf jpy kmf krw mga pyg rwf ugx vnd vuv xaf xof xpf" | split: " " %}{% assign three_decimal = "bhd jod kwd omr tnd" | split: " " %}{% assign shown = 0 %}{% for invoice in response.data %}{% unless invoice.status == "draft" %}{% assign shown = shown | plus: 1 %}{% if zero_decimal contains invoice.currency %}{% assign divisor = 1 %}{% elsif three_decimal contains invoice.currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}- Invoice {{ invoice.number }} · {{ invoice.created | date: "%Y-%m-%d" }} · {{ invoice.status }} · total {{ invoice.total | divided_by: divisor }} {{ invoice.currency | upcase }}{% if invoice.status == "open" %}
+        Amount due: {{ invoice.amount_remaining | divided_by: divisor }} {{ invoice.currency | upcase }}{% if invoice.due_date %}, due {{ invoice.due_date | date: "%Y-%m-%d" }}{% endif %}{% endif %}{% if invoice.hosted_invoice_url %}
+        View or pay: {{ invoice.hosted_invoice_url }}{% endif %}{% if invoice.invoice_pdf %}
+        PDF: {{ invoice.invoice_pdf }}{% endif %}
+      {% endunless %}{% endfor %}{% if shown == 0 %}No invoices found for this customer.{% endif %}{% endif %}
 
   - id: list_subscriptions
     title: List Subscriptions
-    description: Check all of a customer's subscriptions, including canceled ones.
+    description: Check a customer's subscriptions, including plan, price, renewal date, trial, and cancellation status.
     http_method: GET
-    endpoint_url: https://api.stripe.com/v1/subscriptions?customer={{ customer_id | url_encode }}&status=all&limit=20
+    endpoint_url: https://api.stripe.com/v1/subscriptions?customer={{ customer_id | url_encode }}&status=all&limit=10
     auth_type: bearer
     auth_config:
       token: ${{ secrets.api_key }}
     param_schema:
       - name: customer_id
         type: string
-        description: The Stripe customer ID, starting with cus_.
+        description: The Stripe customer ID from Find Customers by Email, starting with cus_.
         required: true
-
-  - id: get_subscription
-    title: Get Subscription
-    description: Check a Stripe subscription by ID.
-    http_method: GET
-    endpoint_url: https://api.stripe.com/v1/subscriptions/{{ subscription_id | url_encode }}
-    auth_type: bearer
-    auth_config:
-      token: ${{ secrets.api_key }}
-    param_schema:
-      - name: subscription_id
-        type: string
-        description: The Stripe subscription ID, starting with sub_.
-        required: true
+    response_template: |-
+      {% if response.error %}Stripe returned an error: {{ response.error.message }}{% else %}{% assign zero_decimal = "bif clp djf gnf jpy kmf krw mga pyg rwf ugx vnd vuv xaf xof xpf" | split: " " %}{% assign three_decimal = "bhd jod kwd omr tnd" | split: " " %}{% for subscription in response.data %}- Subscription {{ subscription.id }} · {{ subscription.status | replace: "_", " " }} · started {{ subscription.created | date: "%Y-%m-%d" }}{% if subscription.description %}
+        Description: {{ subscription.description }}{% endif %}{% for item in subscription.items.data %}{% assign price = item.price %}{% if zero_decimal contains price.currency %}{% assign divisor = 1 %}{% elsif three_decimal contains price.currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}
+        Plan: {{ price.nickname | default: price.product }} · {% if price.unit_amount %}{{ price.unit_amount | divided_by: divisor }} {{ price.currency | upcase }}{% else %}usage-based price{% endif %}{% if price.recurring %} every {% if price.recurring.interval_count > 1 %}{{ price.recurring.interval_count }} {{ price.recurring.interval }}s{% else %}{{ price.recurring.interval }}{% endif %}{% endif %}{% if item.quantity %}{% if item.quantity > 1 %} × {{ item.quantity }}{% endif %}{% endif %}{% if subscription.status != "canceled" %} · current period ends {{ item.current_period_end | date: "%Y-%m-%d" }}{% endif %}{% endfor %}{% if subscription.status == "trialing" and subscription.trial_end %}
+        Trial ends: {{ subscription.trial_end | date: "%Y-%m-%d" }}{% endif %}{% if subscription.status != "canceled" and subscription.cancel_at_period_end %}
+        Cancels at the end of the current period{% elsif subscription.status != "canceled" and subscription.cancel_at %}
+        Scheduled to cancel on {{ subscription.cancel_at | date: "%Y-%m-%d" }}{% endif %}{% if subscription.canceled_at %}
+        Canceled on: {{ subscription.canceled_at | date: "%Y-%m-%d" }}{% endif %}
+      {% else %}No subscriptions found for this customer.
+      {% endfor %}{% endif %}
