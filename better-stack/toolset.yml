@@ -1,6 +1,7 @@
-version: 1.0.0
+version: 0.0.1
 kind: captain_toolset
 name: Better Stack
+author: chatwoot
 category: Engineering & status
 description: View monitors and uptime incidents.
 

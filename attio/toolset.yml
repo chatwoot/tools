@@ -1,6 +1,7 @@
-version: 1.0.0
+version: 0.0.1
 kind: captain_toolset
 name: Attio
+author: chatwoot
 category: CRM
 description: Look up people, companies, deals, and notes in Attio, and add notes to records.
 

@@ -1,6 +1,7 @@
-version: 1.0.0
+version: 0.0.1
 kind: captain_toolset
 name: Context.dev
+author: chatwoot
 category: Business data & research
 description: Search the web, research questions, and look up people with Context.dev.
 

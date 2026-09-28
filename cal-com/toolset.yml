@@ -1,6 +1,7 @@
-version: 1.0.0
+version: 0.0.1
 kind: captain_toolset
 name: Cal.com
+author: chatwoot
 category: Scheduling
 description: Find bookings and available times in Cal.com.
 
