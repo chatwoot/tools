@@ -516,6 +516,17 @@ def show_header(folder, manifest, options)
   puts "  #{Term.style('Strict variables:', :yellow)} rendering like Captain before strict_variables was removed." if options[:strict_variables]
 end
 
+def show_disabled(tools, named:)
+  return if tools.empty?
+
+  if named
+    puts "  #{Term.style("! #{tools.first['id']} is disabled in the manifest", :yellow)}, so Captain installs it turned off. Running it anyway."
+  else
+    ids = tools.map { |tool| tool['id'] }.join(', ')
+    puts "  #{Term.style("Skipping disabled #{tools.size == 1 ? 'tool' : 'tools'}:", :yellow)} #{ids}. Name one to run it."
+  end
+end
+
 def show_summary(results)
   Term.rule('Summary')
   icons = { ok: Term.style('✓', :green), warned: Term.style('!', :yellow), failed: Term.style('✗', :red),
@@ -558,13 +569,19 @@ def main
   end
 
   manifest = load_toolset(folder)
-  tools = (manifest['tools'] || []).select { |tool| tool.fetch('enabled', true) }
+  tools = manifest['tools'] || []
+  disabled = tools.reject { |tool| tool.fetch('enabled', true) }
   if tool_id
+    # A named tool runs even when the manifest ships it disabled
     tools = tools.select { |tool| tool['id'] == tool_id }
     fail!("No tool #{Term.style(tool_id, :bold)} in #{folder}. Available: #{manifest['tools'].map { |tool| tool['id'] }.join(', ')}") if tools.empty?
+    disabled &= tools
+  else
+    tools -= disabled
   end
 
   show_header(folder, manifest, options)
+  show_disabled(disabled, named: tool_id)
   values = collect_install_values(folder, manifest, file_vars)
   installed_manifest = manifest.merge('tools' => tools.map do |tool|
     tool.merge(%w[endpoint_url auth_config request_template].to_h { |field| [field, interpolate(tool[field], values)] })
