@@ -1,0 +1,99 @@
+version: 1.0.0
+kind: captain_toolset
+name: Context.dev
+category: Business data & research
+description: Search the web, research questions, and look up people with Context.dev.
+
+secrets:
+  api_key:
+    label: Context.dev API key
+    type: password
+    required: true
+
+tools:
+  - id: search_web
+    title: Search Web
+    description: Search the web and get the top 10 results with titles, links, and snippets. Supports operators such as site:, quoted phrases, and OR.
+    http_method: POST
+    endpoint_url: https://api.context.dev/v1/web/search
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: query
+        type: string
+        description: The search query, up to 500 characters.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"query":"{{ query | newline_to_br | replace: "<br />", " " | strip_newlines | replace: bs, escaped_bs | replace: '"', escaped_quote }}","numResults":10,"timeoutOpts":{"milliseconds":15000,"behavior":"return-partial"}}
+    response_template: |-
+      {% if response.results %}{% for result in response.results %}- {{ result.title }} ({{ result.relevance }} relevance): {{ result.url }}{% if result.description != "" %}
+        {{ result.description }}{% endif %}
+      {% else %}No results found.
+      {% endfor %}{% else %}Context.dev returned an unexpected response.{% endif %}
+
+  - id: research_question
+    title: Research Question
+    description: Research a question on the live web and get a short sourced answer. Use this for facts that need reading several pages, such as a company's pricing or policies. Name a website in the question to have it read first.
+    http_method: POST
+    endpoint_url: https://api.context.dev/v1/web/answers
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: task
+        type: string
+        description: The question to research, up to 2000 characters.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"mode":"fast","task":"{{ task | newline_to_br | replace: "<br />", " " | strip_newlines | replace: bs, escaped_bs | replace: '"', escaped_quote }}","json_format":{"answer":""},"timeoutOpts":{"milliseconds":18000,"behavior":"return-partial"}}
+    response_template: |-
+      {% if response.json_content %}{{ response.json_content.answer | default: "No answer found." }}{% if response.partial %}
+      (Research stopped early, so this answer may be incomplete.){% endif %}
+      {% if response.sources.size > 0 %}
+      Sources:
+      {% for source in response.sources limit: 5 %}- {{ source }}
+      {% endfor %}{% endif %}{% else %}Context.dev returned an unexpected response.{% endif %}
+
+  - id: enrich_person
+    title: Enrich Person
+    description: Look up a person's profile, current role, and work history. Give a work email, a LinkedIn URL, or a first and last name with their company. Personal emails such as Gmail are rejected.
+    http_method: POST
+    endpoint_url: https://api.context.dev/v1/people/enrich
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The person's work email address.
+        required: false
+      - name: profile_url
+        type: string
+        description: A public profile URL for the person, such as their LinkedIn URL.
+        required: false
+      - name: first_name
+        type: string
+        description: The person's first name. Use with last_name and company.
+        required: false
+      - name: last_name
+        type: string
+        description: The person's last name. Use with first_name and company.
+        required: false
+      - name: company
+        type: string
+        description: The company's name or website domain, such as acme.com.
+        required: false
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% assign email = email | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign profile_url = profile_url | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign first_name = first_name | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign last_name = last_name | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign company = company | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% capture name %}{% if first_name != "" %},"first":"{{ first_name }}"{% endif %}{% if last_name != "" %},"last":"{{ last_name }}"{% endif %}{% endcapture %}{"timeoutOpts":{"milliseconds":18000,"behavior":"return-partial"}{% if email != "" %},"email":"{{ email }}"{% endif %}{% if profile_url != "" %},"social_urls":["{{ profile_url }}"]{% endif %}{% if name != "" %},"name":{ {{ name | remove_first: "," }} }{% endif %}{% if company != "" %}{% assign company_is_domain = false %}{% if company contains "." %}{% unless company contains " " %}{% assign company_is_domain = true %}{% endunless %}{% endif %}{% if company_is_domain %},"company":{"domain":"{{ company | remove: "https://" | remove: "http://" | remove: "www." | split: "/" | first }}"}{% else %},"company":{"name":"{{ company }}"}{% endif %}{% endif %}}
+    response_template: |-
+      {% if response.match.status == "candidate" %}{% assign person = response.match.person %}{{ person.name.full | default: "Unknown name" }} (match score {{ response.match.score }}/100)
+      {% if person.email %}Email: {{ person.email }}
+      {% endif %}{% if person.current_role %}Current role: {{ person.current_role.title }} at {{ person.current_role.organization.name }}{% if person.current_role.organization.domain %} ({{ person.current_role.organization.domain }}){% endif %}
+      {% elsif person.current_role_status == "none" %}Current role: none
+      {% endif %}{% if person.location.display %}Location: {{ person.location.display }}
+      {% endif %}{% if person.bio %}Bio: {{ person.bio | truncate: 300 }}
+      {% endif %}{% if person.social_urls.size > 0 %}Profiles: {{ person.social_urls | join: ", " }}
+      {% endif %}{% if person.experience.size > 0 %}Experience:
+      {% for role in person.experience limit: 5 %}- {{ role.title }} at {{ role.organization.name }}{% if role.start_date.year %} ({{ role.start_date.year }}–{% if role.is_current %}present{% else %}{{ role.end_date.year | default: "?" }}{% endif %}){% endif %}
+      {% endfor %}{% endif %}{% elsif response.match.status == "not_found" %}No matching person found.{% else %}Context.dev returned an unexpected response.{% endif %}
