@@ -1,4 +1,4 @@
-version: 0.0.1
+version: 0.0.2
 kind: captain_toolset
 name: Attio
 author: chatwoot
@@ -82,14 +82,14 @@ tools:
     title: List Notes
     description: Read the 5 most recent notes on a person, company, or deal in Attio, such as call summaries or promises made by the team. Use a record ID from the other Attio tools.
     http_method: GET
-    endpoint_url: '{% assign record_type = record_type | strip | downcase %}{% case record_type %}{% when "person" %}{% assign record_type = "people" %}{% when "company" %}{% assign record_type = "companies" %}{% when "deal" %}{% assign record_type = "deals" %}{% endcase %}https://api.attio.com/v2/notes?parent_object={{ record_type | url_encode }}&parent_record_id={{ record_id | strip | url_encode }}&limit=50'
+    endpoint_url: https://api.attio.com/v2/notes?parent_object={{ record_type | strip | downcase | url_encode }}&parent_record_id={{ record_id | strip | url_encode }}&limit=50
     auth_type: bearer
     auth_config:
       token: ${{ secrets.access_token }}
     param_schema:
       - name: record_type
         type: string
-        description: 'The type of record: people, companies, or deals.'
+        description: 'The kind of record the ID belongs to: people, companies, or deals.'
         required: true
       - name: record_id
         type: string

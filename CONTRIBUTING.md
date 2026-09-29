@@ -32,6 +32,7 @@ The [publishing guide](https://www.chatwoot.com/captain/tools/publish) is the fu
 - **Keep credentials in `secrets`.** Use `inputs` for non-sensitive settings such as a store domain. Never commit a real key, token, or account ID.
 - **Write descriptions for Captain.** Captain chooses tools and fills parameters from the `description` fields. Say when to call a tool, which tool to call first, and where an ID comes from.
 - **Use `response_template`.** Turn the response into short plain text with only the fields Captain needs. Limit long lists and truncate long text. Fall back to a message such as `Stripe returned an unexpected response.` when the expected fields are missing.
+- **Keep `endpoint_url` a literal URL.** `endpoint_url` must be a literal https:// URL. Use `{{ }}` placeholders with `url_encode` for dynamic parts; don't use `{% %}` tags in `endpoint_url`. Put any logic in `request_template` or `response_template` instead.
 - **Escape values in request bodies.** Call-time values are inserted into `request_template` as-is, so a quote in a parameter breaks the JSON. See `context-dev/toolset.yml` for a pattern that escapes quotes, backslashes, and newlines and passes the validator.
 
 Captain's limits also shape what works:
