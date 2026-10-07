@@ -1,0 +1,194 @@
+version: 0.0.1
+kind: captain_toolset
+name: LaunchDarkly
+author: chatwoot
+category: Engineering & status
+description: Check LaunchDarkly feature flags, their targeting in an environment, and which variation a customer gets.
+
+headers:
+  LD-API-Version: '20240415'
+
+inputs:
+  project_key:
+    label: Project key
+    placeholder: default
+    required: true
+  environment_key:
+    label: Environment key
+    placeholder: production
+    required: true
+
+secrets:
+  access_token:
+    label: LaunchDarkly API access token
+    type: password
+    placeholder: api-...
+    required: true
+
+tools:
+  - id: search_flags
+    title: Search Flags
+    description: Search LaunchDarkly feature flags by key or name, and see whether each is on or off in the configured environment. Use this first when a customer asks whether a feature is available, to get the flag key the other LaunchDarkly tools need.
+    http_method: GET
+    endpoint_url: 'https://app.launchdarkly.com/api/v2/flags/${{ inputs.project_key }}?env=${{ inputs.environment_key }}&filter=query%3A{{ query | strip | remove: "," | url_encode }}&limit=20'
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.access_token }}
+    param_schema:
+      - name: query
+        type: string
+        description: Part of the flag's key or name, such as dark-mode. Not case sensitive.
+        required: true
+    response_template: |-
+      {% if response.items %}{% for flag in response.items limit: 20 %}- {{ flag.name }} (flag key {{ flag.key }}) · {{ flag.kind }}{% for env in flag.environments limit: 1 %} · {% if env[1].on %}on{% else %}off{% endif %} in {{ env[1]._environmentName | default: env[0] }}{% endfor %}{% if flag.archived %} · archived{% endif %}{% if flag.description and flag.description != "" %}
+        {{ flag.description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 160 }}{% endif %}
+      {% else %}No feature flags match this search.
+      {% endfor %}{% if response.totalCount > 20 %}Showing 20 of {{ response.totalCount }} matching flags. Use a more specific search.{% endif %}{% else %}LaunchDarkly returned an unexpected response.{% endif %}
+
+  - id: list_flags
+    title: List Flags
+    description: List the feature flags in the configured LaunchDarkly project, 20 at a time, with whether each is on or off in the configured environment. Use Search Flags instead when you know part of the flag's name. Start with offset 0.
+    http_method: GET
+    endpoint_url: 'https://app.launchdarkly.com/api/v2/flags/${{ inputs.project_key }}?env=${{ inputs.environment_key }}&limit=20&offset={{ offset | default: 0 | url_encode }}'
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.access_token }}
+    param_schema:
+      - name: offset
+        type: integer
+        description: Number of flags to skip, starting at 0. Add 20 to read the next group.
+        required: false
+    response_template: |-
+      {% if response.items %}{% if response.totalCount %}Total flags: {{ response.totalCount }}
+      {% endif %}{% for flag in response.items limit: 20 %}- {{ flag.name }} (flag key {{ flag.key }}) · {{ flag.kind }}{% for env in flag.environments limit: 1 %} · {% if env[1].on %}on{% else %}off{% endif %} in {{ env[1]._environmentName | default: env[0] }}{% endfor %}{% if flag.description and flag.description != "" %}
+        {{ flag.description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 160 }}{% endif %}
+      {% else %}No feature flags found.
+      {% endfor %}{% else %}LaunchDarkly returned an unexpected response.{% endif %}
+
+  - id: get_flag
+    title: Get Flag
+    description: Get a LaunchDarkly feature flag's variations and its targeting in the configured environment, including whether it is on, the default rule, percentage rollouts, targeting rules, and prerequisites. Use the flag key from Search Flags.
+    http_method: GET
+    endpoint_url: https://app.launchdarkly.com/api/v2/flags/${{ inputs.project_key }}/{{ flag_key | strip | url_encode }}?env=${{ inputs.environment_key }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.access_token }}
+    param_schema:
+      - name: flag_key
+        type: string
+        description: The feature flag key from Search Flags, such as dark-mode.
+        required: true
+    response_template: |-
+      {% if response.key %}{% assign flag = response %}{{ flag.name }} (flag key {{ flag.key }}) · {{ flag.kind }} · {% if flag.temporary %}temporary{% else %}permanent{% endif %}{% if flag.archived %} · archived{% endif %}{% if flag.description and flag.description != "" %}
+      Description: {{ flag.description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}{% if flag.tags.size > 0 %}
+      Tags: {{ flag.tags | join: ", " | truncate: 200 }}{% endif %}
+      Variations: {% for variation in flag.variations limit: 10 %}{{ variation.name | default: variation.value, allow_false: true | truncate: 60 }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% for env in flag.environments limit: 1 %}{% assign config = env[1] %}
+      Environment: {{ config._environmentName | default: env[0] }}
+      Targeting: {% if config.on %}on{% else %}off{% endif %} · last changed {{ config.lastModified | divided_by: 1000 | date: "%Y-%m-%d" }}
+      Served when on, by default: {% if config.fallthrough.rollout %}{% for weighted in config.fallthrough.rollout.variations limit: 10 %}{% assign served = flag.variations[weighted.variation] %}{{ weighted.weight | divided_by: 1000.0 }}% {{ served.name | default: served.value, allow_false: true | truncate: 60 }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% else %}{% assign served = flag.variations[config.fallthrough.variation] %}{{ served.name | default: served.value, allow_false: true | truncate: 60 }}{% endif %}{% assign served = flag.variations[config.offVariation] %}
+      Served when off: {% if config.offVariation %}{{ served.name | default: served.value, allow_false: true | truncate: 60 }}{% else %}the default value in code{% endif %}{% assign targeted = 0 %}{% for target in config.targets %}{% assign targeted = targeted | plus: target.values.size %}{% endfor %}{% for target in config.contextTargets %}{% assign targeted = targeted | plus: target.values.size %}{% endfor %}
+      Individually targeted contexts: {{ targeted }}{% if config.prerequisites.size > 0 %}
+      Prerequisite flags: {{ config.prerequisites | map: "key" | join: ", " | truncate: 200 }}{% endif %}
+      Rules:{% for rule in config.rules limit: 10 %}
+      - {% if rule.disabled %}(disabled) {% endif %}{% if rule.description and rule.description != "" %}{{ rule.description | truncate: 80 }}: {% endif %}if {% for clause in rule.clauses limit: 5 %}{{ clause.attribute }} {% if clause.negate %}not {% endif %}{{ clause.op }} {{ clause.values | join: ", " | truncate: 80 }}{% unless forloop.last %} and {% endunless %}{% endfor %}, serve {% if rule.rollout %}{% for weighted in rule.rollout.variations limit: 10 %}{% assign served = flag.variations[weighted.variation] %}{{ weighted.weight | divided_by: 1000.0 }}% {{ served.name | default: served.value, allow_false: true | truncate: 60 }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% else %}{% assign served = flag.variations[rule.variation] %}{{ served.name | default: served.value, allow_false: true | truncate: 60 }}{% endif %}{% else %} none{% endfor %}{% if config.rules.size > 10 %}
+      Only the first 10 of {{ config.rules.size }} rules are shown.{% endif %}{% endfor %}{% else %}LaunchDarkly returned an unexpected response.{% endif %}
+
+  - id: get_flag_status
+    title: Get Flag Status
+    description: Check whether applications are actually requesting a LaunchDarkly feature flag in each environment, and when it was last requested. Use this to tell whether a flag is in active use or no longer evaluated. Use the flag key from Search Flags.
+    http_method: GET
+    endpoint_url: https://app.launchdarkly.com/api/v2/flag-status/${{ inputs.project_key }}/{{ flag_key | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.access_token }}
+    param_schema:
+      - name: flag_key
+        type: string
+        description: The feature flag key from Search Flags, such as dark-mode.
+        required: true
+    response_template: |-
+      {% if response.environments %}Status of {{ response.key }} by environment:
+      {% for env in response.environments limit: 25 %}- {{ env[0] }}: {{ env[1].name }} · last requested {{ env[1].lastRequested | default: "never" }}
+      {% else %}No environment status is available for this flag.
+      {% endfor %}{% else %}LaunchDarkly returned an unexpected response.{% endif %}
+
+  - id: find_context
+    title: Find Context
+    description: Find a customer's context (user, organization, or device) in the configured LaunchDarkly environment by the start of its key, name, or email. Only contexts seen in the last 30 days are found. Use this to get the context key and kind that Evaluate Flag for Context needs.
+    http_method: POST
+    endpoint_url: https://app.launchdarkly.com/api/v2/projects/${{ inputs.project_key }}/environments/${{ inputs.environment_key }}/contexts/search
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.access_token }}
+    param_schema:
+      - name: query
+        type: string
+        description: The customer's email address, name, or context key, or the start of one of them.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% assign query = query | strip_newlines | strip | remove: bs | remove: '"' %}{"filter":"q equals \"{{ query }}\"","limit":5}
+    response_template: |-
+      {% if response.items %}{% for item in response.items limit: 5 %}{% assign context = item.context %}- {{ context.name | default: context.key | default: "Unnamed context" }}
+        Context kind: {{ context.kind }}
+        Context key: {{ context.key }}
+        Last seen: {{ item.lastSeen | default: "unknown" }}{% assign shown = 0 %}{% for attribute in context %}{% if shown >= 12 %}{% break %}{% endif %}{% capture value %}{{ attribute[1] }}{% endcapture %}{% if attribute[0] != "kind" and attribute[0] != "key" and attribute[0] != "name" and attribute[0] != "_meta" and value != "" %}{% assign shown = shown | plus: 1 %}
+        {{ attribute[0] }}: {{ value | truncate: 120 }}{% endif %}{% endfor %}
+      {% else %}No LaunchDarkly context found for this search in the last 30 days.
+      {% endfor %}{% else %}LaunchDarkly returned an unexpected response.{% endif %}
+
+  - id: evaluate_flag_for_context
+    title: Evaluate Flag for Context
+    description: Check which variation of a feature flag a specific customer gets in the configured LaunchDarkly environment, and why. Get the context key and kind from Find Context and the flag key from Search Flags. Only the context's key and kind are sent, so rules that target other attributes, such as plan or country, are not matched.
+    http_method: POST
+    endpoint_url: 'https://app.launchdarkly.com/api/v2/projects/${{ inputs.project_key }}/environments/${{ inputs.environment_key }}/flags/evaluate?filter=query+equals+{{ flag_key | strip | remove: "," | url_encode }}&limit=10'
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.access_token }}
+    param_schema:
+      - name: flag_key
+        type: string
+        description: The feature flag key from Search Flags, such as dark-mode.
+        required: true
+      - name: context_key
+        type: string
+        description: The context key from Find Context, such as the customer's user ID.
+        required: true
+      - name: context_kind
+        type: string
+        description: The context kind from Find Context, such as user or organization. Defaults to user.
+        required: false
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% assign context_key = context_key | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign context_kind = context_kind | strip_newlines | strip | remove: bs | remove: '"' | default: "user" %}{"key":"{{ context_key }}","kind":"{{ context_kind }}"}
+    response_template: |-
+      {% if response.items %}{% for item in response.items limit: 10 %}- {{ item.name }} (flag key {{ item.key }})
+        Value served: {% if item._value == nil %}no value{% else %}{{ item._value | truncate: 120 }}{% endif %}
+        Reason: {{ item.reason.kind | replace: "_", " " | downcase }}{% if item.reason.kind == "RULE_MATCH" %} (rule {{ item.reason.ruleIndex | plus: 1 }}){% endif %}{% if item.reason.prerequisiteKey %} (prerequisite flag {{ item.reason.prerequisiteKey }}){% endif %}{% if item.reason.errorKind %} ({{ item.reason.errorKind | replace: "_", " " | downcase }}){% endif %}
+      {% else %}No feature flag matches this flag key.
+      {% endfor %}{% else %}LaunchDarkly returned an unexpected response.{% endif %}
+
+  - id: list_environments
+    title: List Environments
+    description: List the environments in the configured LaunchDarkly project, such as production and staging. Use this to explain the environment keys that Get Flag Status reports on.
+    http_method: GET
+    endpoint_url: https://app.launchdarkly.com/api/v2/projects/${{ inputs.project_key }}/environments?limit=20
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.access_token }}
+    response_template: |-
+      {% if response.items %}{% for environment in response.items limit: 20 %}- {{ environment.name }} (environment key {{ environment.key }}){% if environment.critical %} · critical{% endif %}{% if environment.tags.size > 0 %} · tags: {{ environment.tags | join: ", " | truncate: 100 }}{% endif %}
+      {% else %}No environments found in this project.
+      {% endfor %}{% if response.totalCount > 20 %}Showing 20 of {{ response.totalCount }} environments.{% endif %}{% else %}LaunchDarkly returned an unexpected response.{% endif %}
