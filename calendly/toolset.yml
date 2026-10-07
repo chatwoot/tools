@@ -1,0 +1,133 @@
+version: 0.0.1
+kind: captain_toolset
+name: Calendly
+author: chatwoot
+category: Scheduling
+description: Find scheduled meetings, invitees, event types, and open times in Calendly.
+
+inputs:
+  organization_id:
+    label: Organization ID
+    placeholder: AAAAAAAAAAAAAAAA
+    required: true
+
+secrets:
+  access_token:
+    label: Calendly personal access token
+    type: password
+    required: true
+
+tools:
+  - id: find_events_by_email
+    title: Find Events by Email
+    description: Find a customer's 10 most recent Calendly meetings using their email address. Use this first when a customer asks about a meeting, its time, or its status. Returns the event ID that Get Event and List Event Invitees need.
+    http_method: GET
+    endpoint_url: https://api.calendly.com/scheduled_events?organization=https%3A%2F%2Fapi.calendly.com%2Forganizations%2F${{ inputs.organization_id }}&invitee_email={{ email | strip | url_encode }}&sort=start_time%3Adesc&count=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address the customer used to book the meeting.
+        required: true
+    response_template: |-
+      {% if response.collection %}{% for event in response.collection %}- {{ event.name | default: "Untitled event" }} · {{ event.status }}
+        Event ID: {{ event.uri | split: "/" | last }}
+        Time (UTC): {{ event.start_time }} to {{ event.end_time }}{% if event.event_memberships.size > 0 %}
+        Hosts: {% for host in event.event_memberships limit: 5 %}{{ host.user_name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if event.location %}
+        Location: {{ event.location.type | replace: "_", " " }}{% if event.location.join_url %} · {{ event.location.join_url }}{% elsif event.location.location %} · {{ event.location.location | truncate: 200 }}{% endif %}{% endif %}{% if event.cancellation %}
+        Canceled by {{ event.cancellation.canceled_by | default: event.cancellation.canceler_type }}{% if event.cancellation.reason and event.cancellation.reason != "" %}: {{ event.cancellation.reason | truncate: 200 }}{% endif %}{% endif %}
+      {% else %}No Calendly events found for this email address.
+      {% endfor %}{% else %}Calendly returned an unexpected response.{% endif %}
+
+  - id: get_event
+    title: Get Event
+    description: Get one Calendly meeting by its event ID, including time, status, hosts, location or join link, guests, and cancellation details. Use the event ID from Find Events by Email.
+    http_method: GET
+    endpoint_url: 'https://api.calendly.com/scheduled_events/{{ event_id | strip | split: "/" | last | url_encode }}'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: event_id
+        type: string
+        description: The Calendly event ID from Find Events by Email.
+        required: true
+    response_template: |-
+      {% if response.resource.uri %}{% assign event = response.resource %}{{ event.name | default: "Untitled event" }} · {{ event.status }}
+      Event ID: {{ event.uri | split: "/" | last }}
+      Time (UTC): {{ event.start_time }} to {{ event.end_time }}
+      Booked on: {{ event.created_at }}{% if event.event_memberships.size > 0 %}
+      Hosts: {% for host in event.event_memberships limit: 5 %}{{ host.user_name }} <{{ host.user_email }}>{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if event.location %}
+      Location: {{ event.location.type | replace: "_", " " }}{% if event.location.join_url %} · {{ event.location.join_url }}{% elsif event.location.location %} · {{ event.location.location | truncate: 200 }}{% endif %}{% endif %}{% if event.invitees_counter %}
+      Invitees: {{ event.invitees_counter.active }} active of {{ event.invitees_counter.total }} booked (limit {{ event.invitees_counter.limit }}){% endif %}{% if event.event_guests.size > 0 %}
+      Guests: {% for guest in event.event_guests limit: 10 %}{{ guest.email }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if event.cancellation %}
+      Canceled by {{ event.cancellation.canceled_by | default: event.cancellation.canceler_type }} on {{ event.cancellation.created_at }}{% if event.cancellation.reason and event.cancellation.reason != "" %}: {{ event.cancellation.reason | truncate: 300 }}{% endif %}{% endif %}{% else %}Calendly returned an unexpected response.{% endif %}
+
+  - id: list_event_invitees
+    title: List Event Invitees
+    description: List up to 10 invitees of a Calendly meeting with their status, time zone, answers to booking questions, and personal reschedule and cancel links. Use this when a customer wants to reschedule or cancel. Use the event ID from Find Events by Email.
+    http_method: GET
+    endpoint_url: 'https://api.calendly.com/scheduled_events/{{ event_id | strip | split: "/" | last | url_encode }}/invitees?count=10'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: event_id
+        type: string
+        description: The Calendly event ID from Find Events by Email.
+        required: true
+    response_template: |-
+      {% if response.collection %}{% for invitee in response.collection %}- {{ invitee.name | default: "No name" }} <{{ invitee.email }}> · {{ invitee.status }}{% if invitee.timezone %}
+        Time zone: {{ invitee.timezone }}{% endif %}{% if invitee.rescheduled %}
+        Rescheduled to a new booking{% endif %}{% if invitee.no_show %}
+        Marked as a no-show{% endif %}{% if invitee.cancellation %}
+        Canceled by {{ invitee.cancellation.canceled_by | default: invitee.cancellation.canceler_type }}{% if invitee.cancellation.reason and invitee.cancellation.reason != "" %}: {{ invitee.cancellation.reason | truncate: 200 }}{% endif %}{% endif %}{% if invitee.payment %}
+        Payment: {{ invitee.payment.amount }} {{ invitee.payment.currency }} via {{ invitee.payment.provider }}{% if invitee.payment.successful %}, paid{% else %}, not completed{% endif %}{% endif %}{% for answer in invitee.questions_and_answers limit: 5 %}
+        Q: {{ answer.question | truncate: 120 }} A: {{ answer.answer | truncate: 200 }}{% endfor %}{% if invitee.status == "active" %}
+        Reschedule: {{ invitee.reschedule_url }}
+        Cancel: {{ invitee.cancel_url }}{% endif %}
+      {% else %}No invitees found for this event.
+      {% endfor %}{% else %}Calendly returned an unexpected response.{% endif %}
+
+  - id: list_event_types
+    title: List Event Types
+    description: List up to 20 active Calendly event types with their duration and public booking link. Use this when a customer wants to book a new meeting, and to get the event type URI that List Available Times needs.
+    http_method: GET
+    endpoint_url: https://api.calendly.com/event_types?organization=https%3A%2F%2Fapi.calendly.com%2Forganizations%2F${{ inputs.organization_id }}&active=true&sort=name%3Aasc&count=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    response_template: |-
+      {% if response.collection %}{% assign shown = 0 %}{% for type in response.collection %}{% unless type.secret %}{% assign shown = shown | plus: 1 %}- {{ type.name }} · {{ type.duration }} minutes{% if type.kind %} · {{ type.kind }}{% endif %}{% if type.profile.name %} · {{ type.profile.name }}{% endif %}
+        Booking link: {{ type.scheduling_url }}
+        Event type URI: {{ type.uri }}{% if type.description_plain and type.description_plain != "" %}
+        About: {{ type.description_plain | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% endunless %}{% endfor %}{% if shown == 0 %}No public event types found.{% endif %}{% else %}Calendly returned an unexpected response.{% endif %}
+
+  - id: list_available_times
+    title: List Available Times
+    description: Find open times for a Calendly event type within a date range, each with a link that books that time. Use this when a customer asks when they can meet. Get the event type URI from List Event Types first.
+    http_method: GET
+    endpoint_url: https://api.calendly.com/event_type_available_times?event_type={{ event_type_uri | strip | url_encode }}&start_time={{ start_time | strip | url_encode }}&end_time={{ end_time | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: event_type_uri
+        type: string
+        description: The event type URI from List Event Types, starting with https://api.calendly.com/event_types/.
+        required: true
+      - name: start_time
+        type: string
+        description: Start of the range in UTC, such as 2026-01-15T09:00:00Z. Must be in the future, not earlier than now.
+        required: true
+      - name: end_time
+        type: string
+        description: End of the range in UTC, such as 2026-01-18T09:00:00Z. Must be after start_time and at most 31 days later. Keep the range to a few days.
+        required: true
+    response_template: |-
+      {% if response.collection %}{% if response.collection.size == 0 %}No open times in this date range.{% else %}Open times (UTC), {{ response.collection.size }} found:
+      {% for slot in response.collection limit: 20 %}- {{ slot.start_time }}{% if slot.scheduling_url %} · {{ slot.scheduling_url }}{% endif %}
+      {% endfor %}{% if response.collection.size > 20 %}Showing the first 20. Ask for a narrower range to see later times.{% endif %}{% endif %}{% else %}Calendly returned an unexpected response.{% endif %}
