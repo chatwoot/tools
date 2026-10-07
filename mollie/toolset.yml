@@ -1,0 +1,148 @@
+version: 0.0.1
+kind: captain_toolset
+name: Mollie
+author: chatwoot
+category: Payments & billing
+description: Check payments, refunds, subscriptions, and mandates in Mollie.
+
+secrets:
+  api_key:
+    label: Mollie API key or access token
+    type: password
+    required: true
+
+tools:
+  - id: get_payment
+    title: Get Payment
+    description: Check one Mollie payment by its payment ID, including status, amount, method, failure reason, refunded amount, and the customer ID it belongs to. Use this first when the customer gives a payment ID starting with tr_. The customer ID it returns works with the other Mollie tools.
+    http_method: GET
+    endpoint_url: https://api.mollie.com/v2/payments/{{ payment_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: payment_id
+        type: string
+        description: The Mollie payment ID, starting with tr_.
+        required: true
+    response_template: |-
+      {% if response.resource == "payment" %}Payment {{ response.id }} · {{ response.createdAt | date: "%Y-%m-%d" }} · {{ response.status }} · {{ response.amount.value }} {{ response.amount.currency }}{% if response.description and response.description != "" %}
+      Description: {{ response.description | truncate: 200 }}{% endif %}{% if response.method %}
+      Method: {{ response.method }}{% if response.details.cardNumber %} ({{ response.details.cardLabel | default: "card" }} ending {{ response.details.cardNumber }}){% endif %}{% endif %}{% if response.statusReason.message %}
+      Reason: {{ response.statusReason.message | truncate: 200 }}{% if response.statusReason.code %} ({{ response.statusReason.code }}){% endif %}{% endif %}{% if response.paidAt %}
+      Paid on: {{ response.paidAt | date: "%Y-%m-%d" }}{% endif %}{% if response.failedAt %}
+      Failed on: {{ response.failedAt | date: "%Y-%m-%d" }}{% endif %}{% if response.canceledAt %}
+      Canceled on: {{ response.canceledAt | date: "%Y-%m-%d" }}{% endif %}{% if response.expiredAt %}
+      Expired on: {{ response.expiredAt | date: "%Y-%m-%d" }}{% endif %}{% if response.status == "open" and response.expiresAt %}
+      Expires on: {{ response.expiresAt | date: "%Y-%m-%d" }}{% endif %}{% if response.amountRefunded %}{% assign refunded = response.amountRefunded.value | plus: 0 %}{% if refunded > 0 %}
+      Refunded: {{ response.amountRefunded.value }} {{ response.amountRefunded.currency }}{% if response.amountRemaining %} · still refundable {{ response.amountRemaining.value }} {{ response.amountRemaining.currency }}{% endif %}{% endif %}{% endif %}{% if response.amountChargedBack %}{% assign charged_back = response.amountChargedBack.value | plus: 0 %}{% if charged_back > 0 %}
+      Charged back: {{ response.amountChargedBack.value }} {{ response.amountChargedBack.currency }}{% endif %}{% endif %}{% if response.sequenceType and response.sequenceType != "oneoff" %}
+      Recurring sequence: {{ response.sequenceType }}{% endif %}{% if response.customerId %}
+      Customer ID: {{ response.customerId }}{% endif %}{% if response.subscriptionId %}
+      Subscription ID: {{ response.subscriptionId }}{% endif %}{% if response.mandateId %}
+      Mandate ID: {{ response.mandateId }}{% endif %}{% if response.status == "open" and response._links.checkout.href %}
+      Checkout link: {{ response._links.checkout.href }}{% endif %}{% else %}Mollie returned an unexpected response.{% endif %}
+
+  - id: list_payment_refunds
+    title: List Payment Refunds
+    description: Check the 10 most recent refunds for one Mollie payment, with amount, status, and description. Use this when a customer asks where a refund is. Needs the payment ID from the customer or from List Customer Payments.
+    http_method: GET
+    endpoint_url: https://api.mollie.com/v2/payments/{{ payment_id | strip | url_encode }}/refunds?limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: payment_id
+        type: string
+        description: The Mollie payment ID, starting with tr_.
+        required: true
+    response_template: |-
+      {% if response._embedded.refunds %}{% for refund in response._embedded.refunds limit: 10 %}- Refund {{ refund.id }} · {{ refund.createdAt | date: "%Y-%m-%d" }} · {{ refund.status }} · {{ refund.amount.value }} {{ refund.amount.currency }}{% if refund.description and refund.description != "" %}
+        Description: {{ refund.description | truncate: 200 }}{% endif %}
+      {% else %}No refunds found for this payment.
+      {% endfor %}{% else %}Mollie returned an unexpected response.{% endif %}
+
+  - id: get_customer
+    title: Get Customer
+    description: Look up one Mollie customer by customer ID to confirm their name and email address. Mollie cannot search customers by email, so the customer ID must come from Get Payment or from the customer's record in your own system.
+    http_method: GET
+    endpoint_url: https://api.mollie.com/v2/customers/{{ customer_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Mollie customer ID, starting with cst_.
+        required: true
+    response_template: |-
+      {% if response.resource == "customer" %}{{ response.name | default: "No name" }} <{{ response.email | default: "no email" }}>
+      Customer ID: {{ response.id }}
+      Customer since: {{ response.createdAt | date: "%Y-%m-%d" }}{% if response.locale %} · locale {{ response.locale }}{% endif %}{% else %}Mollie returned an unexpected response.{% endif %}
+
+  - id: list_customer_payments
+    title: List Customer Payments
+    description: Check a customer's 10 most recent Mollie payments, with status, amount, method, failure reason, and refunded amount. Use the customer ID from Get Payment or Get Customer.
+    http_method: GET
+    endpoint_url: https://api.mollie.com/v2/customers/{{ customer_id | strip | url_encode }}/payments?limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Mollie customer ID, starting with cst_.
+        required: true
+    response_template: |-
+      {% if response._embedded.payments %}{% for payment in response._embedded.payments limit: 10 %}- Payment {{ payment.id }} · {{ payment.createdAt | date: "%Y-%m-%d" }} · {{ payment.status }} · {{ payment.amount.value }} {{ payment.amount.currency }}{% if payment.method %} · {{ payment.method }}{% endif %}{% if payment.description and payment.description != "" %}
+        Description: {{ payment.description | truncate: 120 }}{% endif %}{% if payment.statusReason.message %}
+        Reason: {{ payment.statusReason.message | truncate: 200 }}{% endif %}{% if payment.amountRefunded %}{% assign refunded = payment.amountRefunded.value | plus: 0 %}{% if refunded > 0 %}
+        Refunded: {{ payment.amountRefunded.value }} {{ payment.amountRefunded.currency }}{% endif %}{% endif %}{% if payment.subscriptionId %}
+        Subscription ID: {{ payment.subscriptionId }}{% endif %}
+      {% else %}No payments found for this customer.
+      {% endfor %}{% else %}Mollie returned an unexpected response.{% endif %}
+
+  - id: list_customer_subscriptions
+    title: List Customer Subscriptions
+    description: Check a customer's 10 most recent Mollie subscriptions, including canceled ones, with amount, interval, next payment date, and status. Use the customer ID from Get Payment or Get Customer.
+    http_method: GET
+    endpoint_url: https://api.mollie.com/v2/customers/{{ customer_id | strip | url_encode }}/subscriptions?limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Mollie customer ID, starting with cst_.
+        required: true
+    response_template: |-
+      {% if response._embedded.subscriptions %}{% for subscription in response._embedded.subscriptions limit: 10 %}- Subscription {{ subscription.id }} · {{ subscription.status }} · {{ subscription.amount.value }} {{ subscription.amount.currency }} every {{ subscription.interval }}{% if subscription.description and subscription.description != "" %}
+        Description: {{ subscription.description | truncate: 120 }}{% endif %}
+        Started: {{ subscription.startDate }}{% if subscription.nextPaymentDate %} · next payment {{ subscription.nextPaymentDate }}{% endif %}{% if subscription.times %}
+        Payments: {{ subscription.times }} in total{% if subscription.timesRemaining %}, {{ subscription.timesRemaining }} remaining{% endif %}{% endif %}{% if subscription.canceledAt %}
+        Canceled on: {{ subscription.canceledAt | date: "%Y-%m-%d" }}{% endif %}{% if subscription.mandateId %}
+        Mandate ID: {{ subscription.mandateId }}{% endif %}
+      {% else %}No subscriptions found for this customer.
+      {% endfor %}{% else %}Mollie returned an unexpected response.{% endif %}
+
+  - id: list_customer_mandates
+    title: List Customer Mandates
+    description: Check a customer's 10 most recent Mollie mandates, the stored authorizations used for recurring payments, with method, status, and masked card or bank account. Use this when recurring payments fail or a customer asks which payment method is on file.
+    http_method: GET
+    endpoint_url: https://api.mollie.com/v2/customers/{{ customer_id | strip | url_encode }}/mandates?limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Mollie customer ID, starting with cst_.
+        required: true
+    response_template: |-
+      {% if response._embedded.mandates %}{% for mandate in response._embedded.mandates limit: 10 %}- Mandate {{ mandate.id }} · {{ mandate.method }} · {{ mandate.status }}{% if mandate.details.cardNumber %}
+        Card: {{ mandate.details.cardLabel | default: "card" }} ending {{ mandate.details.cardNumber }}{% if mandate.details.cardExpiryDate %}, expires {{ mandate.details.cardExpiryDate }}{% endif %}{% elsif mandate.details.consumerAccount %}{% assign account_tail = mandate.details.consumerAccount | slice: -4, 4 %}
+        Account: {{ mandate.details.consumerName | default: "account" }}{% if mandate.method == "directdebit" %}, IBAN ending {{ account_tail }}{% endif %}{% endif %}{% if mandate.signatureDate %}
+        Signed on: {{ mandate.signatureDate }}{% endif %}{% if mandate.mandateReference %}
+        Reference: {{ mandate.mandateReference }}{% endif %}
+      {% else %}No mandates found for this customer.
+      {% endfor %}{% else %}Mollie returned an unexpected response.{% endif %}
