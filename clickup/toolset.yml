@@ -1,0 +1,137 @@
+version: 0.0.1
+kind: captain_toolset
+name: ClickUp
+author: chatwoot
+category: Others
+description: Browse ClickUp tasks, read their status and comments, and add comments to tasks.
+
+inputs:
+  workspace_id:
+    label: ClickUp Workspace ID
+    type: string
+    placeholder: '9012345678'
+    required: true
+
+secrets:
+  api_token:
+    label: ClickUp personal API token
+    type: password
+    required: true
+
+tools:
+  - id: list_recent_tasks
+    title: List Recent Tasks
+    description: List the 30 most recently updated tasks in the ClickUp Workspace, open and closed, with the task ID the other ClickUp tools need. ClickUp has no text search, so use this to look for a task that matches the bug or request a customer describes, then call Get Task. Start with page 0.
+    http_method: GET
+    endpoint_url: 'https://api.clickup.com/api/v2/team/${{ inputs.workspace_id }}/task?order_by=updated&include_closed=true&subtasks=true&page={{ page | default: 0 | url_encode }}'
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: page
+        type: integer
+        description: The page of tasks to fetch, starting at 0. Each page covers up to 100 tasks; only the 30 most recently updated are shown.
+        required: true
+    response_template: |-
+      {% if response.tasks %}{% assign tasks = response.tasks | sort: "date_updated" | reverse %}{% for task in tasks limit: 30 %}- {{ task.name | truncate: 120 }} (task ID {{ task.id }}{% if task.custom_id %}, custom ID {{ task.custom_id }}{% endif %}) · {{ task.status.status }} · {{ task.list.name }} · updated {{ task.date_updated | divided_by: 1000 | date: "%Y-%m-%d" }}
+      {% else %}No tasks found on this page.
+      {% endfor %}{% else %}ClickUp returned an unexpected response.{% endif %}
+
+  - id: list_tasks_in_list
+    title: List Tasks in List
+    description: List the 30 most recently updated tasks in one ClickUp List, open and closed, such as a bug tracker or feature request List. Use the List ID from Get Task or List Recent Tasks output, or the number after /li/ in a List URL. Start with page 0.
+    http_method: GET
+    endpoint_url: 'https://api.clickup.com/api/v2/list/{{ list_id | strip | url_encode }}/task?order_by=updated&include_closed=true&subtasks=true&page={{ page | default: 0 | url_encode }}'
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: list_id
+        type: string
+        description: The ClickUp List ID, a number such as 901234567890.
+        required: true
+      - name: page
+        type: integer
+        description: The page of tasks to fetch, starting at 0. Each page covers up to 100 tasks; only the 30 most recently updated are shown.
+        required: true
+    response_template: |-
+      {% if response.tasks %}{% assign tasks = response.tasks | sort: "date_updated" | reverse %}{% for task in tasks limit: 30 %}- {{ task.name | truncate: 120 }} (task ID {{ task.id }}{% if task.custom_id %}, custom ID {{ task.custom_id }}{% endif %}) · {{ task.status.status }} · {{ task.assignees | map: "username" | join: ", " | default: "unassigned" }} · updated {{ task.date_updated | divided_by: 1000 | date: "%Y-%m-%d" }}
+      {% else %}No tasks found in this List.
+      {% endfor %}{% else %}ClickUp returned an unexpected response.{% endif %}
+
+  - id: get_task
+    title: Get Task
+    description: Get one ClickUp task with its status, priority, assignees, List, tags, dates, and description. Use the task ID from List Recent Tasks or List Tasks in List, or the ID at the end of a task URL such as app.clickup.com/t/86a1b2c3d.
+    http_method: GET
+    endpoint_url: https://api.clickup.com/api/v2/task/{{ task_id | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: task_id
+        type: string
+        description: The ClickUp task ID, such as 86a1b2c3d. Custom task IDs such as DEV-123 are not supported.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.name }} (task ID {{ response.id }}{% if response.custom_id %}, custom ID {{ response.custom_id }}{% endif %})
+      Status: {{ response.status.status }}{% if response.status.type %} ({{ response.status.type }}){% endif %}
+      Priority: {{ response.priority.priority | default: "none" }}
+      Assignees: {{ response.assignees | map: "username" | join: ", " | default: "unassigned" }}
+      List: {{ response.list.name }} (List ID {{ response.list.id }}){% if response.folder.name and response.folder.hidden != true %} · Folder: {{ response.folder.name }}{% endif %}{% if response.tags.size > 0 %}
+      Tags: {{ response.tags | map: "name" | join: ", " | truncate: 200 }}{% endif %}{% if response.parent %}
+      Parent task ID: {{ response.parent }}{% endif %}
+      Created: {{ response.date_created | divided_by: 1000 | date: "%Y-%m-%d" }} · Updated: {{ response.date_updated | divided_by: 1000 | date: "%Y-%m-%d" }}{% if response.due_date %}
+      Due: {{ response.due_date | divided_by: 1000 | date: "%Y-%m-%d" }}{% endif %}{% if response.date_closed %}
+      Closed: {{ response.date_closed | divided_by: 1000 | date: "%Y-%m-%d" }}{% endif %}
+      Open in ClickUp: {{ response.url }}
+      Description: {% if response.text_content and response.text_content != "" %}{{ response.text_content | truncate: 1500 }}{% else %}none{% endif %}{% else %}ClickUp returned an unexpected response.{% endif %}
+
+  - id: list_task_comments
+    title: List Task Comments
+    description: Read the 10 most recent comments on a ClickUp task, such as team updates or workarounds. Use the task ID from List Recent Tasks, List Tasks in List, or Get Task.
+    http_method: GET
+    endpoint_url: https://api.clickup.com/api/v2/task/{{ task_id | strip | url_encode }}/comment
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: task_id
+        type: string
+        description: The ClickUp task ID, such as 86a1b2c3d.
+        required: true
+    response_template: |-
+      {% if response.comments %}{% for comment in response.comments limit: 10 %}- {{ comment.date | divided_by: 1000 | date: "%Y-%m-%d" }} · {{ comment.user.username | default: "Unknown author" }}{% if comment.resolved %} (resolved){% endif %}: {{ comment.comment_text | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}
+      {% else %}No comments on this task.
+      {% endfor %}{% else %}ClickUp returned an unexpected response.{% endif %}
+
+  - id: add_task_comment
+    title: Add Task Comment
+    description: Add a comment to a ClickUp task, for example to record that another customer reported the same bug with a link to the conversation. Find the task with List Recent Tasks or List Tasks in List first. Only comment when the conversation adds new information for the team; the task's assignees and watchers are notified.
+    http_method: POST
+    endpoint_url: https://api.clickup.com/api/v2/task/{{ task_id | strip | url_encode }}/comment
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: task_id
+        type: string
+        description: The ClickUp task ID, such as 86a1b2c3d.
+        required: true
+      - name: comment_text
+        type: string
+        description: The comment text. Plain text only. Do not include sensitive customer data.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% capture escaped_newline %}\\n{% endcapture %}{"comment_text":"{{ comment_text | strip | replace: bs, escaped_bs | replace: '"', escaped_quote | newline_to_br | strip_newlines | replace: "<br />", escaped_newline }}","notify_all":false}
+    response_template: |-
+      {% if response.id %}Added the comment to the task (comment ID {{ response.id }}).{% else %}ClickUp returned an unexpected response.{% endif %}
