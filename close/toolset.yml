@@ -1,0 +1,126 @@
+version: 0.0.1
+kind: captain_toolset
+name: Close
+author: chatwoot
+category: CRM
+description: Look up contacts, leads, opportunities, and notes in Close, and add notes to leads.
+
+secrets:
+  api_key:
+    label: Close API key
+    type: password
+    required: true
+
+tools:
+  - id: find_contact_by_email
+    title: Find Contact by Email
+    description: Find contacts in Close by email address. Use this first to get the lead ID the other Close tools need. In Close, a lead is the company or account a contact belongs to.
+    http_method: POST
+    endpoint_url: https://api.close.com/api/v1/data/search/
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{"query":{"type":"and","queries":[{"type":"object_type","object_type":"contact"},{"type":"has_related","this_object_type":"contact","related_object_type":"contact_email","related_query":{"type":"field_condition","field":{"type":"regular_field","object_type":"contact_email","field_name":"email"},"condition":{"type":"text","mode":"phrase","value":"{{ email | strip_newlines | strip | downcase | remove: '"' | remove: bs }}"}}}]},"_fields":{"contact":["id","name","title","lead_id","emails","phones"]},"_limit":5}
+    response_template: |-
+      {% if response.data %}{% for contact in response.data %}- {{ contact.name | default: "No name" }}{% if contact.title and contact.title != "" %}, {{ contact.title }}{% endif %}
+        Lead ID: {{ contact.lead_id }}
+        Contact ID: {{ contact.id }}{% if contact.emails.size > 0 %}
+        Emails: {% for item in contact.emails limit: 5 %}{{ item.email }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if contact.phones.size > 0 %}
+        Phones: {% for item in contact.phones limit: 5 %}{{ item.phone_formatted | default: item.phone }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}
+      {% else %}No Close contact found with this email address.
+      {% endfor %}{% else %}Close returned an unexpected response.{% endif %}
+
+  - id: get_lead
+    title: Get Lead
+    description: Get a lead's details from Close, including its status, description, and website. Use the lead ID from Find Contact by Email.
+    http_method: GET
+    endpoint_url: https://api.close.com/api/v1/lead/{{ lead_id | strip | url_encode }}/?_fields=id,display_name,status_label,description,url,html_url,date_created,date_updated
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: lead_id
+        type: string
+        description: The Close lead ID from Find Contact by Email, starting with lead_.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.display_name | default: "Unnamed lead" }} (lead ID {{ response.id }}){% if response.status_label %}
+      Status: {{ response.status_label }}{% endif %}{% if response.url and response.url != "" %}
+      Website: {{ response.url }}{% endif %}{% if response.description and response.description != "" %}
+      Description: {{ response.description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}{% endif %}
+      Created: {{ response.date_created | slice: 0, 10 }} · Updated: {{ response.date_updated | slice: 0, 10 }}{% if response.html_url %}
+      Open in Close: {{ response.html_url }}{% endif %}{% else %}Close returned an unexpected response.{% endif %}
+
+  - id: list_opportunities
+    title: List Opportunities
+    description: List the 10 most recent opportunities on a lead in Close, with status, value, and confidence. Use the lead ID from Find Contact by Email.
+    http_method: GET
+    endpoint_url: https://api.close.com/api/v1/opportunity/?lead_id={{ lead_id | strip | url_encode }}&_order_by=-date_created&_limit=10
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: lead_id
+        type: string
+        description: The Close lead ID from Find Contact by Email, starting with lead_.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for opportunity in response.data %}- {{ opportunity.status_label | default: "Unknown status" }}{% if opportunity.status_type %} ({{ opportunity.status_type }}){% endif %}{% if opportunity.value_formatted %} · {{ opportunity.value_formatted }}{% if opportunity.value_period and opportunity.value_period != "one_time" %} {{ opportunity.value_period }}{% endif %}{% endif %} · {{ opportunity.confidence }}% confidence
+        Opportunity ID: {{ opportunity.id }} · Created: {{ opportunity.date_created | slice: 0, 10 }}{% if opportunity.date_won %} · Won: {{ opportunity.date_won | slice: 0, 10 }}{% endif %}{% if opportunity.date_lost %} · Lost: {{ opportunity.date_lost | slice: 0, 10 }}{% endif %}{% if opportunity.pipeline_name %}
+        Pipeline: {{ opportunity.pipeline_name }}{% endif %}{% if opportunity.contact_name %}
+        Contact: {{ opportunity.contact_name }}{% endif %}{% if opportunity.user_name %}
+        Owner: {{ opportunity.user_name }}{% endif %}{% if opportunity.note and opportunity.note != "" %}
+        Note: {{ opportunity.note | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}
+      {% else %}No opportunities on this lead.
+      {% endfor %}{% else %}Close returned an unexpected response.{% endif %}
+
+  - id: list_notes
+    title: List Notes
+    description: Read the 5 most recent notes on a lead in Close, such as call summaries or promises made by the team. Use the lead ID from Find Contact by Email.
+    http_method: GET
+    endpoint_url: https://api.close.com/api/v1/activity/?lead_id={{ lead_id | strip | url_encode }}&_type=Note&_order_by=-activity_at&_limit=5
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: lead_id
+        type: string
+        description: The Close lead ID from Find Contact by Email, starting with lead_.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for note in response.data limit: 5 %}- {{ note.activity_at | default: note.date_created | slice: 0, 10 }}{% if note.user_name %} · {{ note.user_name }}{% endif %}{% if note.title and note.title != "" %} · {{ note.title }}{% endif %}: {{ note.note | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}
+      {% else %}No notes on this lead.
+      {% endfor %}{% else %}Close returned an unexpected response.{% endif %}
+
+  - id: add_note
+    title: Add Note
+    description: Add a plain-text note to a lead in Close, for example a summary of this conversation or a follow-up request for the account owner. Use the lead ID from Find Contact by Email. Only add a note when the conversation needs one.
+    http_method: POST
+    endpoint_url: https://api.close.com/api/v1/activity/note/
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: lead_id
+        type: string
+        description: The Close lead ID from Find Contact by Email, starting with lead_.
+        required: true
+      - name: content
+        type: string
+        description: The note text. Plain text only.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% capture escaped_newline %}\\n{% endcapture %}{"lead_id":"{{ lead_id | strip_newlines | strip | remove: '"' | remove: bs }}","note":"{{ content | strip | replace: bs, escaped_bs | replace: '"', escaped_quote | newline_to_br | strip_newlines | replace: "<br />", escaped_newline }}"}
+    response_template: |-
+      {% if response.id %}Added the note to lead {{ response.lead_id }}.{% else %}Close returned an unexpected response.{% endif %}
