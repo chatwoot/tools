@@ -1,0 +1,192 @@
+version: 0.0.1
+kind: captain_toolset
+name: Brevo
+author: chatwoot
+category: Marketing
+description: Look up contacts, list membership, and email activity in Brevo, add notes, and unsubscribe contacts on request.
+
+secrets:
+  api_key:
+    label: Brevo API key
+    type: password
+    required: true
+
+tools:
+  - id: get_contact
+    title: Get Contact
+    description: Look up a Brevo contact by email address. Use this first to get the contact ID, whether they are blocklisted from email or SMS campaigns, the IDs of the lists they are on, and their attributes. If it fails with an error, the contact most likely does not exist in Brevo.
+    http_method: GET
+    endpoint_url: https://api.brevo.com/v3/contacts/{{ email | strip | url_encode }}?identifierType=email_id
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The contact's email address.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.email | default: "No email address" }} (contact ID {{ response.id }})
+      Email campaigns: {% if response.emailBlacklisted %}blocklisted (unsubscribed){% else %}subscribed{% endif %}
+      SMS campaigns: {% if response.smsBlacklisted %}blocklisted (unsubscribed){% else %}subscribed{% endif %}
+      Created: {{ response.createdAt | slice: 0, 10 }} · Last modified: {{ response.modifiedAt | slice: 0, 10 }}
+      List IDs: {% if response.listIds.size > 0 %}{{ response.listIds | slice: 0, 30 | join: ", " }}{% else %}none{% endif %}{% if response.listUnsubscribed.size > 0 %}
+      Unsubscribed from list IDs: {{ response.listUnsubscribed | slice: 0, 30 | join: ", " }}{% endif %}{% assign shown = 0 %}{% for attribute in response.attributes %}{% if attribute[1] != nil and attribute[1] != "" and shown < 25 %}{% assign shown = shown | plus: 1 %}
+      - {{ attribute[0] }}: {{ attribute[1] | truncate: 200 }}{% endif %}{% endfor %}{% else %}Brevo returned an unexpected response.{% endif %}
+
+  - id: get_campaign_activity
+    title: Get Campaign Activity
+    description: Check how a contact interacted with Brevo email campaigns in the last 90 days, including sends, deliveries, opens, clicks, bounces, complaints, and unsubscribes. Use this when a customer says they did not receive a newsletter or asks when they unsubscribed. Call Get Contact first to confirm the contact exists.
+    http_method: GET
+    endpoint_url: https://api.brevo.com/v3/contacts/{{ email | strip | url_encode }}/campaignStats
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The contact's email address, as returned by Get Contact.
+        required: true
+    response_template: |-
+      {% assign total = response.messagesSent.size | plus: response.delivered.size | plus: response.opened.size | plus: response.clicked.size | plus: response.hardBounces.size | plus: response.softBounces.size | plus: response.complaints.size | plus: response.unsubscriptions.userUnsubscription.size | plus: response.unsubscriptions.adminUnsubscription.size %}{% if response.messagesSent or response.delivered or response.opened or response.clicked or response.hardBounces or response.softBounces or response.complaints or response.unsubscriptions %}{% if total == 0 %}No email campaign activity for this contact in the last 90 days.{% else %}Campaign activity in the last 90 days:
+      Sent: {{ response.messagesSent.size | default: 0 }} · Delivered: {{ response.delivered.size | default: 0 }} · Opened: {{ response.opened.size | default: 0 }} · Clicked: {{ response.clicked.size | default: 0 }} · Hard bounces: {{ response.hardBounces.size | default: 0 }} · Soft bounces: {{ response.softBounces.size | default: 0 }} · Spam complaints: {{ response.complaints.size | default: 0 }}{% for event in response.messagesSent limit: 5 %}
+      - Sent campaign {{ event.campaignId }} on {{ event.eventTime | slice: 0, 10 }}{% endfor %}{% for event in response.opened limit: 5 %}
+      - Opened campaign {{ event.campaignId }} on {{ event.eventTime | slice: 0, 10 }}{% endfor %}{% for event in response.hardBounces limit: 3 %}
+      - Hard bounce on campaign {{ event.campaignId }} on {{ event.eventTime | slice: 0, 10 }}{% endfor %}{% for event in response.softBounces limit: 3 %}
+      - Soft bounce on campaign {{ event.campaignId }} on {{ event.eventTime | slice: 0, 10 }}{% endfor %}{% for event in response.complaints limit: 3 %}
+      - Spam complaint on campaign {{ event.campaignId }} on {{ event.eventTime | slice: 0, 10 }}{% endfor %}{% for event in response.unsubscriptions.userUnsubscription limit: 3 %}
+      - Unsubscribed from campaign {{ event.campaignId }} on {{ event.eventTime | slice: 0, 10 }}{% endfor %}{% for event in response.unsubscriptions.adminUnsubscription limit: 3 %}
+      - Unsubscribed by an admin on {{ event.eventTime | slice: 0, 10 }}{% endfor %}{% endif %}{% elsif response == empty %}No email campaign activity for this contact in the last 90 days.{% else %}Brevo returned an unexpected response.{% endif %}
+
+  - id: list_lists
+    title: List Lists
+    description: List the contact lists in the Brevo account with their IDs and names, 50 at a time, newest first. Use this to turn the list IDs from Get Contact into names, or to get the list ID that Remove Contact from List needs. Start with offset 0.
+    http_method: GET
+    endpoint_url: https://api.brevo.com/v3/contacts/lists?limit=50&offset={{ offset | url_encode }}&sort=desc
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: offset
+        type: integer
+        description: Number of lists to skip, starting at 0. Add 50 to see the next page.
+        required: true
+    response_template: |-
+      {% if response.lists %}{% for list in response.lists limit: 50 %}- {{ list.name }} (list ID {{ list.id }}, folder ID {{ list.folderId }}): {{ list.uniqueSubscribers | default: 0 }} contacts
+      {% else %}No lists found.
+      {% endfor %}{% if response.count > 50 %}{{ response.count }} lists in total.{% endif %}{% elsif response.count == 0 or response == empty %}No lists found.{% else %}Brevo returned an unexpected response.{% endif %}
+
+  - id: list_transactional_emails
+    title: List Transactional Emails
+    description: List the 10 most recent transactional emails Brevo sent to an email address, such as receipts or password resets, with subject, sender, and date. Use this when a customer says they did not get an email. Use List Email Events to see whether a message was delivered or bounced.
+    http_method: GET
+    endpoint_url: https://api.brevo.com/v3/smtp/emails?email={{ email | strip | url_encode }}&sort=desc&limit=10&offset=0
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The recipient's email address.
+        required: true
+    response_template: |-
+      {% if response.transactionalEmails %}{% for email in response.transactionalEmails limit: 10 %}- {{ email.date | slice: 0, 16 | replace: "T", " " }} · {{ email.subject | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 120 }} · from {{ email.from }}{% if email.templateId %} · template {{ email.templateId }}{% endif %}
+        Message ID: {{ email.messageId }}
+      {% else %}No transactional emails found for this email address.
+      {% endfor %}{% if response.count > 10 %}Showing 10 of {{ response.count }}.{% endif %}{% elsif response.count == 0 or response == empty %}No transactional emails found for this email address.{% else %}Brevo returned an unexpected response.{% endif %}
+
+  - id: list_email_events
+    title: List Email Events
+    description: List the 20 most recent transactional email events for an email address in the last 30 days, such as delivered, opened, soft or hard bounce, blocked, deferred, or spam, with bounce reasons. Use this to explain why a transactional email did not arrive.
+    http_method: GET
+    endpoint_url: https://api.brevo.com/v3/smtp/statistics/events?email={{ email | strip | url_encode }}&days=30&limit=20&offset=0&sort=desc
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The recipient's email address.
+        required: true
+    response_template: |-
+      {% if response.events %}{% for event in response.events limit: 20 %}- {{ event.date | slice: 0, 16 | replace: "T", " " }} · {{ event.event }}{% if event.subject and event.subject != "" %} · {{ event.subject | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 120 }}{% endif %}{% if event.reason and event.reason != "" %}
+        Reason: {{ event.reason | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% else %}No transactional email events for this email address in the last 30 days.
+      {% endfor %}{% elsif response == empty %}No transactional email events for this email address in the last 30 days.{% else %}Brevo returned an unexpected response.{% endif %}
+
+  - id: add_note
+    title: Add Note
+    description: Add a note to a contact in Brevo, for example a summary of this conversation or a follow-up request for the team. Only add a note when the conversation needs one. Use the contact ID from Get Contact.
+    http_method: POST
+    endpoint_url: https://api.brevo.com/v3/crm/notes
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: contact_id
+        type: integer
+        description: The numeric Brevo contact ID from Get Contact.
+        required: true
+      - name: text
+        type: string
+        description: The note text, up to 3000 characters. Plain text only.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"text":"{{ text | strip | truncate: 3000 | escape | replace: bs, escaped_bs | newline_to_br | strip_newlines | replace: "	", " " }}","contactIds":[{{ contact_id | plus: 0 }}]}
+    response_template: |-
+      {% if response.id %}Added the note to the Brevo contact.{% else %}Brevo returned an unexpected response.{% endif %}
+
+  - id: remove_contact_from_list
+    title: Remove Contact from List
+    description: Remove a contact from one Brevo list while leaving their other subscriptions unchanged. Only use this when the customer asks to stop receiving that list. Get the list ID from Get Contact or List Lists.
+    http_method: POST
+    endpoint_url: https://api.brevo.com/v3/contacts/lists/{{ list_id | strip | url_encode }}/contacts/remove
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: list_id
+        type: integer
+        description: The numeric Brevo list ID from Get Contact or List Lists.
+        required: true
+      - name: email
+        type: string
+        description: The contact's email address, as returned by Get Contact.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"emails":["{{ email | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}"]}
+    response_template: |-
+      {% if response.contacts %}{% if response.contacts.success.size > 0 %}The contact was removed from the list.{% else %}The contact was not removed. They may not be on this list.{% endif %}{% else %}Brevo returned an unexpected response.{% endif %}
+
+  - id: unsubscribe_contact
+    title: Unsubscribe Contact
+    description: Blocklist a contact from all Brevo email campaigns. Only use this when the customer clearly asks to stop receiving marketing emails. Call Get Contact first to confirm the contact exists.
+    http_method: PUT
+    endpoint_url: https://api.brevo.com/v3/contacts/{{ email | strip | url_encode }}?identifierType=email_id
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The contact's email address, as returned by Get Contact.
+        required: true
+    request_template: '{"emailBlacklisted":true}'
+    response_template: |-
+      {% if response == "" or response == nil %}The contact was unsubscribed from Brevo email campaigns.{% else %}Brevo returned an unexpected response.{% endif %}
