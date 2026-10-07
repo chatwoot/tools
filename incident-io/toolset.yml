@@ -1,0 +1,118 @@
+version: 0.0.1
+kind: captain_toolset
+name: incident.io
+author: chatwoot
+category: Engineering & status
+description: Check incident.io incidents, their updates, and status page incidents.
+
+secrets:
+  api_key:
+    label: incident.io API key
+    type: password
+    required: true
+
+tools:
+  - id: list_active_incidents
+    title: List Active Incidents
+    description: List incident.io incidents that are active right now, newest first. Use this first when a customer reports an outage or a problem that may already be a known incident.
+    http_method: GET
+    endpoint_url: https://api.incident.io/v2/incidents?status_category%5Bone_of%5D=live&page_size=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.incidents %}{% for incident in response.incidents limit: 20 %}- {{ incident.reference }} {{ incident.name | truncate: 200 }} (ID {{ incident.id }})
+        Status: {{ incident.incident_status.name | default: "unknown" }}{% if incident.severity.name %} · Severity: {{ incident.severity.name }}{% endif %}
+        Started: {{ incident.created_at }} · Updated: {{ incident.updated_at }}{% if incident.summary and incident.summary != "" %}
+        Summary: {{ incident.summary | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}
+      {% else %}No active incidents.
+      {% endfor %}{% if response.pagination_meta.after and response.incidents.size == 20 %}More active incidents exist than are shown here.{% endif %}{% else %}incident.io returned an unexpected response.{% endif %}
+
+  - id: list_recent_incidents
+    title: List Recent Incidents
+    description: List the 20 most recently created incident.io incidents in any status, including closed ones. Use this when a customer asks about a problem that happened earlier and may already be fixed.
+    http_method: GET
+    endpoint_url: https://api.incident.io/v2/incidents?sort_by=created_at_newest_first&page_size=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.incidents %}{% for incident in response.incidents limit: 20 %}- {{ incident.reference }} {{ incident.name | truncate: 200 }} (ID {{ incident.id }})
+        Status: {{ incident.incident_status.name | default: "unknown" }} ({{ incident.incident_status.category | default: "unknown" }}){% if incident.severity.name %} · Severity: {{ incident.severity.name }}{% endif %}
+        Started: {{ incident.created_at }} · Updated: {{ incident.updated_at }}
+      {% else %}No incidents found.
+      {% endfor %}{% else %}incident.io returned an unexpected response.{% endif %}
+
+  - id: get_incident
+    title: Get Incident
+    description: Check one incident.io incident, including its status, severity, summary, and timing. Use the incident ID from the list tools, or the number from a reference such as 123 for INC-123.
+    http_method: GET
+    endpoint_url: https://api.incident.io/v2/incidents/{{ incident_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: incident_id
+        type: string
+        description: The incident.io incident ID, such as 01FDAG4SAP5TYPT98WGR2N7W91, or the numeric part of its reference, such as 123.
+        required: true
+    response_template: |-
+      {% if response.incident.id %}{% assign incident = response.incident %}{{ incident.reference }} {{ incident.name | truncate: 300 }} (ID {{ incident.id }})
+      Status: {{ incident.incident_status.name | default: "unknown" }} ({{ incident.incident_status.category | default: "unknown" }}){% if incident.severity.name %}
+      Severity: {{ incident.severity.name }}{% endif %}{% if incident.incident_type.name %}
+      Type: {{ incident.incident_type.name }}{% endif %}
+      Started: {{ incident.created_at }}
+      Updated: {{ incident.updated_at }}{% if incident.summary and incident.summary != "" %}
+      Summary: {{ incident.summary | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 1000 }}{% endif %}{% if incident.incident_role_assignments.size > 0 %}{% for assignment in incident.incident_role_assignments limit: 5 %}{% if assignment.assignee.name %}
+      {{ assignment.role.name }}: {{ assignment.assignee.name }}{% endif %}{% endfor %}{% endif %}{% else %}incident.io returned an unexpected response.{% endif %}
+
+  - id: list_incident_updates
+    title: List Incident Updates
+    description: Read the 10 newest updates posted on an incident.io incident, with the status and severity at each point. Use the full incident ID from the list tools or Get Incident, not the reference number.
+    http_method: GET
+    endpoint_url: https://api.incident.io/v2/incident_updates?incident_id={{ incident_id | strip | url_encode }}&page_size=100
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: incident_id
+        type: string
+        description: The full incident.io incident ID, such as 01FDAG4SAP5TYPT98WGR2N7W91.
+        required: true
+    response_template: |-
+      {% if response.incident_updates %}{% assign updates = response.incident_updates | sort: "created_at" | reverse %}{% for update in updates limit: 10 %}- {{ update.created_at }} · {{ update.new_incident_status.name | default: "unknown status" }}{% if update.new_severity.name %} · {{ update.new_severity.name }}{% endif %}{% if update.message and update.message != "" %}: {{ update.message | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}{% endif %}
+      {% else %}No updates on this incident.
+      {% endfor %}{% else %}incident.io returned an unexpected response.{% endif %}
+
+  - id: list_status_pages
+    title: List Status Pages
+    description: List the public status pages set up in incident.io with their IDs and URLs. Use this to get the status page ID that List Status Page Incidents needs, or to give a customer the status page link.
+    http_method: GET
+    endpoint_url: https://api.incident.io/v2/status_pages?page_size=25
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.status_pages %}{% for page in response.status_pages limit: 25 %}- {{ page.name }} (status page ID {{ page.id }}){% if page.public_url %}: {{ page.public_url }}{% endif %}
+      {% else %}No status pages found.
+      {% endfor %}{% else %}incident.io returned an unexpected response.{% endif %}
+
+  - id: list_status_page_incidents
+    title: List Status Page Incidents
+    description: List incidents published on an incident.io status page, with the public status and latest public update of each. Use this for wording that is safe to share with customers. Get the status page ID from List Status Pages first.
+    http_method: GET
+    endpoint_url: https://api.incident.io/v2/status_page_incidents?status_page_id={{ status_page_id | strip | url_encode }}&page_size=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: status_page_id
+        type: string
+        description: The status page ID from List Status Pages, such as 01FCNDV6P870EA6S7TK1DSYDG0.
+        required: true
+    response_template: |-
+      {% if response.status_page_incidents %}{% for incident in response.status_page_incidents limit: 10 %}{% assign updates = incident.updates | sort: "published_at" | reverse %}- {{ incident.name | truncate: 200 }} (ID {{ incident.id }}): {{ incident.incident_status | default: "unknown" }}
+        Published: {{ incident.published_at | default: "unknown" }}{% if updates.first.message %}
+        Latest update ({{ updates.first.published_at }}): {{ updates.first.message | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}{% endif %}
+      {% else %}No incidents on this status page.
+      {% endfor %}{% else %}incident.io returned an unexpected response.{% endif %}
