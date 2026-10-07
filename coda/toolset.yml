@@ -1,0 +1,110 @@
+version: 0.0.1
+kind: captain_toolset
+name: Coda
+author: chatwoot
+category: Others
+description: Read the pages and tables of a Coda doc to answer customer questions.
+
+inputs:
+  doc_id:
+    label: Coda doc ID
+    placeholder: AbCDeFGH
+    required: true
+
+secrets:
+  api_token:
+    label: Coda API token
+    type: password
+    required: true
+
+tools:
+  - id: list_pages
+    title: List Pages
+    description: List up to 100 pages in the connected Coda doc with their page IDs and parent pages. Use this first to find the page that covers a topic, then call Get Page Content to read it.
+    http_method: GET
+    endpoint_url: https://docs.superhuman.com/apis/v1/docs/${{ inputs.doc_id }}/pages?limit=100
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    response_template: |-
+      {% if response.items %}{% for page in response.items %}- {{ page.name | default: "Untitled page" }} (page ID {{ page.id }}){% if page.parent.name %} · under: {{ page.parent.name }}{% endif %}{% if page.contentType and page.contentType != "canvas" %} · {{ page.contentType }} page, no readable text{% endif %}{% if page.isEffectivelyHidden %} · hidden{% endif %}{% if page.subtitle and page.subtitle != "" %}
+        {{ page.subtitle | truncate: 200 }}{% endif %}
+      {% else %}This doc has no pages.
+      {% endfor %}{% if response.nextPageToken %}More pages exist; only the first 100 are shown.{% endif %}{% else %}Coda returned an unexpected response.{% endif %}
+
+  - id: get_page_content
+    title: Get Page Content
+    description: Read the text of a page in the connected Coda doc as plain text. Use the page ID from List Pages. Reads the first 500 lines and cuts off after about 6,000 characters. Tables on the page are not included; use List Tables and List Table Rows for those.
+    http_method: GET
+    endpoint_url: https://docs.superhuman.com/apis/v1/docs/${{ inputs.doc_id }}/pages/{{ page_id | strip | url_encode }}/content?contentFormat=plainText&limit=500
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: page_id
+        type: string
+        description: The Coda page ID from List Pages, starting with canvas-.
+        required: true
+    response_template: |-
+      {% if response.items %}{% capture text %}{% for item in response.items %}{% assign line = item.itemContent %}{% if line.content and line.content != "" %}{% case line.style %}{% when "h1" %}# {% when "h2" %}## {% when "h3" %}### {% when "bulletedList" %}- {% when "numberedList" %}- {% when "checkboxList" %}- {% when "collapsibleList" %}- {% when "blockQuote" %}> {% when "pullQuote" %}> {% endcase %}{{ line.content }}
+      {% endif %}{% endfor %}{% endcapture %}{% assign text = text | strip %}{% if text == "" %}This page has no text content.{% else %}{{ text | truncate: 6000 }}{% if response.nextPageToken %}
+      (The page continues beyond the first 500 lines.){% endif %}{% endif %}{% else %}Coda returned an unexpected response.{% endif %}
+
+  - id: list_tables
+    title: List Tables
+    description: List up to 50 tables and views in the connected Coda doc with their table IDs. Call this when the answer is likely stored as rows, such as an FAQ, price list, or feature table.
+    http_method: GET
+    endpoint_url: https://docs.superhuman.com/apis/v1/docs/${{ inputs.doc_id }}/tables?limit=50
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    response_template: |-
+      {% if response.items %}{% for table in response.items %}- {{ table.name | default: "Untitled table" }} (table ID {{ table.id }}, {{ table.tableType | default: "table" }}){% if table.parent.name %} · on page: {{ table.parent.name }}{% endif %}
+      {% else %}This doc has no tables.
+      {% endfor %}{% if response.nextPageToken %}More tables exist; only the first 50 are shown.{% endif %}{% else %}Coda returned an unexpected response.{% endif %}
+
+  - id: list_table_rows
+    title: List Table Rows
+    description: Read the first 20 visible rows of a Coda table, in the order shown in the doc, with column names and values. Use the table ID from List Tables. Use Find Table Rows instead when you know a column value to match.
+    http_method: GET
+    endpoint_url: https://docs.superhuman.com/apis/v1/docs/${{ inputs.doc_id }}/tables/{{ table_id | strip | url_encode }}/rows?useColumnNames=true&valueFormat=simple&visibleOnly=true&sortBy=natural&limit=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: table_id
+        type: string
+        description: The Coda table ID from List Tables, starting with grid- or table-.
+        required: true
+    response_template: |-
+      {% if response.items %}{% for row in response.items %}- {{ row.name | default: "Unnamed row" | truncate: 120 }} (row ID {{ row.id }}){% for cell in row.values %}{% assign value = cell[1] | append: "" | strip %}{% if value != "" %}
+        {{ cell[0] }}: {{ value | truncate: 300 }}{% endif %}{% endfor %}
+      {% else %}This table has no rows.
+      {% endfor %}{% if response.nextPageToken %}More rows exist; only the first 20 are shown.{% endif %}{% else %}Coda returned an unexpected response.{% endif %}
+
+  - id: find_table_rows
+    title: Find Table Rows
+    description: Find up to 10 rows in a Coda table where a column exactly equals a text value, such as an order number, SKU, or email. Use the table ID from List Tables. Call List Table Rows first if you do not know the column names.
+    http_method: GET
+    endpoint_url: 'https://docs.superhuman.com/apis/v1/docs/${{ inputs.doc_id }}/tables/{{ table_id | strip | url_encode }}/rows?query=%22{{ column | strip | url_encode | remove: "%22" | remove: "%5C" }}%22%3A%22{{ value | strip | url_encode | remove: "%22" | remove: "%5C" }}%22&useColumnNames=true&valueFormat=simple&limit=10'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: table_id
+        type: string
+        description: The Coda table ID from List Tables.
+        required: true
+      - name: column
+        type: string
+        description: The exact column name to match on, as shown by List Table Rows.
+        required: true
+      - name: value
+        type: string
+        description: The text value the column must equal.
+        required: true
+    response_template: |-
+      {% if response.items %}{% for row in response.items %}- {{ row.name | default: "Unnamed row" | truncate: 120 }} (row ID {{ row.id }}){% for cell in row.values %}{% assign value = cell[1] | append: "" | strip %}{% if value != "" %}
+        {{ cell[0] }}: {{ value | truncate: 300 }}{% endif %}{% endfor %}
+      {% else %}No rows matched this column value.
+      {% endfor %}{% else %}Coda returned an unexpected response.{% endif %}
