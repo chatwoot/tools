@@ -1,0 +1,169 @@
+version: 0.0.1
+kind: captain_toolset
+name: Gorgias
+author: chatwoot
+category: Others
+description: Look up customers, their orders, tickets, and ticket messages in Gorgias, and add internal notes to tickets.
+
+inputs:
+  subdomain:
+    label: Gorgias subdomain
+    placeholder: acme
+    required: true
+  email:
+    label: Email of the Gorgias user who owns the API key
+    placeholder: support@acme.com
+    required: true
+
+secrets:
+  api_key:
+    label: Gorgias API key
+    type: password
+    required: true
+
+tools:
+  - id: find_customer_by_email
+    title: Find Customer by Email
+    description: Find a Gorgias customer by their primary email address. Use this first to get the customer ID the other Gorgias tools need.
+    http_method: GET
+    endpoint_url: https://${{ inputs.subdomain }}.gorgias.com/api/customers?email={{ email | strip | url_encode }}&limit=5
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.email }}
+      password: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    response_template: |-
+      {% assign known = false %}{% if response.data %}{% assign customers = response.data %}{% assign known = true %}{% elsif response.first.id or response == empty %}{% assign customers = response %}{% assign known = true %}{% endif %}{% if known %}{% for customer in customers limit: 5 %}- {{ customer.name | default: "No name" }} <{{ customer.email }}>
+        Customer ID: {{ customer.id }}{% if customer.external_id %}
+        External ID: {{ customer.external_id }}{% endif %}{% if customer.language %}
+        Language: {{ customer.language }}{% endif %}{% if customer.timezone %}
+        Time zone: {{ customer.timezone }}{% endif %}
+        Customer since: {{ customer.created_datetime | slice: 0, 10 }}
+      {% else %}No Gorgias customer found with this email address.
+      {% endfor %}{% else %}Gorgias returned an unexpected response.{% endif %}
+
+  - id: get_customer
+    title: Get Customer
+    description: Get a Gorgias customer's profile, internal note, and store data synced from integrations such as Shopify, including their 5 most recent orders. Use the customer ID from Find Customer by Email.
+    http_method: GET
+    endpoint_url: https://${{ inputs.subdomain }}.gorgias.com/api/customers/{{ customer_id | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.email }}
+      password: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: integer
+        description: The numeric Gorgias customer ID from Find Customer by Email.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.name | default: "No name" }} <{{ response.email | default: "no email" }}> (customer ID {{ response.id }}){% if response.external_id %}
+      External ID: {{ response.external_id }}{% endif %}{% if response.language %}
+      Language: {{ response.language }}{% endif %}{% if response.timezone %}
+      Time zone: {{ response.timezone }}{% endif %}{% if response.created_datetime %}
+      Customer since: {{ response.created_datetime | slice: 0, 10 }}{% endif %}{% if response.note and response.note != "" %}
+      Internal note (do not share): {{ response.note | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 400 }}{% endif %}{% for integration in response.integrations %}{% assign data = integration[1] %}
+      {{ data.__integration_type__ | default: "Integration" | capitalize }} data{% if data.customer.orders_count %} · total orders: {{ data.customer.orders_count }}{% endif %}:{% for order in data.orders limit: 5 %}
+      - Order {{ order.name | default: order.id }}{% if order.created_at %} · {{ order.created_at | slice: 0, 10 }}{% endif %}{% if order.total_price %} · {{ order.total_price }} {{ order.currency }}{% endif %}{% if order.financial_status %} · payment {{ order.financial_status }}{% endif %} · fulfillment {{ order.fulfillment_status | default: "unfulfilled" }}{% if order.line_items.size > 0 %}
+        Items: {% for item in order.line_items limit: 5 %}{{ item.quantity }} × {{ item.name | default: item.title | truncate: 80 }}{% unless forloop.last %}; {% endunless %}{% endfor %}{% endif %}{% else %}
+      - No orders synced.{% endfor %}{% endfor %}{% else %}Gorgias returned an unexpected response.{% endif %}
+
+  - id: list_customer_tickets
+    title: List Customer Tickets
+    description: List a customer's 10 most recently created Gorgias tickets with status, channel, and a preview of the last message. Use the customer ID from Find Customer by Email.
+    http_method: GET
+    endpoint_url: https://${{ inputs.subdomain }}.gorgias.com/api/tickets?customer_id={{ customer_id | url_encode }}&order_by=created_datetime%3Adesc&limit=10
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.email }}
+      password: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: integer
+        description: The numeric Gorgias customer ID from Find Customer by Email.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for ticket in response.data limit: 10 %}- Ticket {{ ticket.id }} · {{ ticket.subject | default: "No subject" | truncate: 120 }}
+        Status: {{ ticket.status }}{% if ticket.priority %} · Priority: {{ ticket.priority }}{% endif %} · Channel: {{ ticket.channel }} · {{ ticket.messages_count | default: 0 }} messages
+        Created: {{ ticket.created_datetime | slice: 0, 10 }}{% if ticket.last_message_datetime %} · Last message: {{ ticket.last_message_datetime | slice: 0, 10 }}{% endif %}{% if ticket.closed_datetime %} · Closed: {{ ticket.closed_datetime | slice: 0, 10 }}{% endif %}{% if ticket.assignee_user %}
+        Assigned to: {{ ticket.assignee_user.name | default: ticket.assignee_user.email }}{% endif %}{% if ticket.tags.size > 0 %}
+        Tags: {{ ticket.tags | map: "name" | join: ", " | truncate: 150 }}{% endif %}{% if ticket.excerpt and ticket.excerpt != "" %}
+        Last message: {{ ticket.excerpt | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% else %}No tickets found for this customer.
+      {% endfor %}{% else %}Gorgias returned an unexpected response.{% endif %}
+
+  - id: get_ticket
+    title: Get Ticket
+    description: Get a Gorgias ticket's details, including status, customer, assignee, tags, summary, and satisfaction score. Use a ticket ID from List Customer Tickets or one the customer gives you. Call List Ticket Messages to read what was said.
+    http_method: GET
+    endpoint_url: https://${{ inputs.subdomain }}.gorgias.com/api/tickets/{{ ticket_id | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.email }}
+      password: ${{ secrets.api_key }}
+    param_schema:
+      - name: ticket_id
+        type: integer
+        description: The numeric Gorgias ticket ID.
+        required: true
+    response_template: |-
+      {% if response.id %}Ticket {{ response.id }} · {{ response.subject | default: "No subject" | truncate: 200 }}
+      Status: {{ response.status }}{% if response.priority %} · Priority: {{ response.priority }}{% endif %} · Channel: {{ response.channel }}{% if response.spam %} · marked as spam{% endif %}{% if response.customer %}
+      Customer: {{ response.customer.name | default: "No name" }} <{{ response.customer.email | default: "no email" }}> (customer ID {{ response.customer.id }}){% endif %}
+      Assigned to: {% if response.assignee_user %}{{ response.assignee_user.name | default: response.assignee_user.email }}{% else %}unassigned{% endif %}
+      Created: {{ response.created_datetime | slice: 0, 16 | replace: "T", " " }}{% if response.last_message_datetime %}
+      Last message: {{ response.last_message_datetime | slice: 0, 16 | replace: "T", " " }}{% endif %}{% if response.last_received_message_datetime %}
+      Last customer message: {{ response.last_received_message_datetime | slice: 0, 16 | replace: "T", " " }}{% endif %}{% if response.closed_datetime %}
+      Closed: {{ response.closed_datetime | slice: 0, 16 | replace: "T", " " }}{% endif %}{% if response.snooze_datetime %}
+      Snoozed until: {{ response.snooze_datetime | slice: 0, 16 | replace: "T", " " }}{% endif %}{% if response.tags.size > 0 %}
+      Tags: {{ response.tags | map: "name" | join: ", " | truncate: 200 }}{% endif %}{% if response.summary.content %}
+      Summary: {{ response.summary.content | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 600 }}{% endif %}{% if response.satisfaction_survey.score %}
+      Satisfaction score: {{ response.satisfaction_survey.score }} out of 5{% if response.satisfaction_survey.body_text %} · "{{ response.satisfaction_survey.body_text | truncate: 200 }}"{% endif %}{% endif %}{% if response.messages %}
+      Messages: {{ response.messages.size }}{% endif %}{% else %}Gorgias returned an unexpected response.{% endif %}
+
+  - id: list_ticket_messages
+    title: List Ticket Messages
+    description: Read the 10 most recent messages on a Gorgias ticket, newest first, to see what was already said to the customer. Internal notes are for agents only and must not be shared with the customer. Use a ticket ID from List Customer Tickets.
+    http_method: GET
+    endpoint_url: https://${{ inputs.subdomain }}.gorgias.com/api/messages?ticket_id={{ ticket_id | url_encode }}&order_by=created_datetime%3Adesc&limit=10
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.email }}
+      password: ${{ secrets.api_key }}
+    param_schema:
+      - name: ticket_id
+        type: integer
+        description: The numeric Gorgias ticket ID.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for message in response.data limit: 10 %}{% assign text = message.stripped_text | default: message.body_text | default: "" | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}- {{ message.created_datetime | slice: 0, 16 | replace: "T", " " }} · {% if message.public == false or message.channel == "internal-note" %}internal note (agents only){% elsif message.from_agent %}agent message{% else %}customer message{% endif %} · {{ message.channel }}{% if message.sender.name or message.sender.email %} · from {{ message.sender.name | default: message.sender.email }}{% endif %}
+        {% if text != "" %}{{ text | truncate: 600 }}{% else %}(No text available.){% endif %}
+      {% else %}This ticket has no messages.
+      {% endfor %}{% else %}Gorgias returned an unexpected response.{% endif %}
+
+  - id: add_internal_note
+    title: Add Internal Note
+    description: Add an internal note to a Gorgias ticket, for example a summary of this conversation or a follow-up request for the assigned agent. The note is visible to agents only and is never sent to the customer. Only add a note when the conversation needs one.
+    http_method: POST
+    endpoint_url: https://${{ inputs.subdomain }}.gorgias.com/api/tickets/{{ ticket_id | url_encode }}/messages
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.email }}
+      password: ${{ secrets.api_key }}
+    param_schema:
+      - name: ticket_id
+        type: integer
+        description: The numeric Gorgias ticket ID.
+        required: true
+      - name: content
+        type: string
+        description: The note text. Plain text only.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% capture escaped_newline %}\\n{% endcapture %}{% assign content = content | strip %}{"channel":"internal-note","via":"api","from_agent":true,"sender":{"email":"${{ inputs.email }}"},"body_text":"{{ content | replace: bs, escaped_bs | replace: '"', escaped_quote | newline_to_br | strip_newlines | replace: "<br />", escaped_newline }}","body_html":"{{ content | escape | replace: bs, escaped_bs | newline_to_br | strip_newlines }}"}
+    response_template: |-
+      {% if response.id %}Added an internal note to ticket {{ response.ticket_id }}.{% else %}Gorgias returned an unexpected response.{% endif %}
