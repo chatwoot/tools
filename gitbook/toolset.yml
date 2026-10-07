@@ -1,0 +1,144 @@
+version: 0.0.1
+kind: captain_toolset
+name: GitBook
+author: chatwoot
+category: Others
+description: Search GitBook docs, read pages as Markdown, and ask GitBook AI questions about your content.
+
+inputs:
+  organization_id:
+    label: GitBook organization ID
+    placeholder: AbCdEfGhIjKlMnOpQrSt
+    required: true
+
+secrets:
+  api_token:
+    label: GitBook personal access token
+    type: password
+    required: true
+
+tools:
+  - id: search_content
+    title: Search Content
+    description: Search every GitBook space in the organization by keywords and get up to 10 matching pages with excerpts, space IDs, and page IDs. Use this first when a customer asks something the docs may answer, then call Get Page to read the full page.
+    http_method: GET
+    endpoint_url: https://api.gitbook.com/v1/orgs/${{ inputs.organization_id }}/search?query={{ query | strip | url_encode }}&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: query
+        type: string
+        description: Keywords to search for, such as "custom domain" or "export to PDF".
+        required: true
+    response_template: |-
+      {% if response.items %}{% assign shown = 0 %}{% for space in response.items %}{% for page in space.pages %}{% if shown < 10 %}{% assign shown = shown | plus: 1 %}- {{ page.title | default: "Untitled page" }} (space ID {{ space.id }}, page ID {{ page.id }}) · space: {{ space.title }}{% assign excerpt = page.sections.first.body | default: page.description | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}{% if excerpt != "" %}
+        {% if page.sections.first.title and page.sections.first.title != "" %}{{ page.sections.first.title }}: {% endif %}{{ excerpt | truncate: 300 }}{% endif %}{% if page.urls.app %}
+        Link: {{ page.urls.app }}{% endif %}
+      {% endif %}{% endfor %}{% endfor %}{% if shown == 0 %}No GitBook pages matched this search.{% endif %}{% else %}GitBook returned an unexpected response.{% endif %}
+
+  - id: ask_question
+    title: Ask Question
+    description: Ask GitBook AI a question in natural language and get an answer written from the organization's docs, with source pages. Use this for how-to questions. If it finds no answer, fall back to Search Content and Get Page.
+    http_method: POST
+    endpoint_url: https://api.gitbook.com/v1/orgs/${{ inputs.organization_id }}/ask?format=markdown
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: question
+        type: string
+        description: The customer's question as a full sentence, such as "How do I publish a space on a custom domain?".
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"query":"{{ question | newline_to_br | replace: "<br />", " " | strip_newlines | replace: bs, escaped_bs | replace: '"', escaped_quote }}"}
+    response_template: |-
+      {% if response.answer.answer.markdown and response.answer.answer.markdown != "" %}{{ response.answer.answer.markdown | strip | truncate: 4000 }}{% if response.answer.sources.size > 0 %}
+
+      Sources:
+      {% for source in response.answer.sources limit: 5 %}{% if source.type == "page" %}- {{ source.title | default: "Untitled page" }} (space ID {{ source.space }}, page ID {{ source.page }})
+      {% else %}- {{ source.title | default: "External source" }}{% if source.url %}: {{ source.url }}{% endif %}
+      {% endif %}{% endfor %}{% endif %}{% elsif response == empty or response.answer %}GitBook AI could not find an answer in your docs.{% else %}GitBook returned an unexpected response.{% endif %}
+
+  - id: list_spaces
+    title: List Spaces
+    description: List up to 50 GitBook spaces in the organization with their space IDs and published URLs. Use this to find the space ID that List Pages, Search Space, and Get Page need.
+    http_method: GET
+    endpoint_url: https://api.gitbook.com/v1/orgs/${{ inputs.organization_id }}/spaces?limit=50
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    response_template: |-
+      {% if response.items %}{% for space in response.items %}- {{ space.title | default: "Untitled space" }} (space ID {{ space.id }}){% if space.visibility %} · {{ space.visibility }}{% endif %}{% if space.updatedAt %} · updated {{ space.updatedAt | slice: 0, 10 }}{% endif %}{% if space.urls.published %}
+        Published at: {{ space.urls.published }}{% endif %}
+      {% else %}No GitBook spaces are visible to this token.
+      {% endfor %}{% if response.next.page %}More spaces exist; only the first 50 are shown.{% endif %}{% else %}GitBook returned an unexpected response.{% endif %}
+
+  - id: list_pages
+    title: List Pages
+    description: List the pages of a GitBook space as an outline, up to three levels deep, with page IDs and paths. Use the space ID from List Spaces or Search Content, then call Get Page to read a page.
+    http_method: GET
+    endpoint_url: https://api.gitbook.com/v1/spaces/{{ space_id | strip | url_encode }}/content/pages?metadata=false
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: space_id
+        type: string
+        description: The GitBook space ID from List Spaces or Search Content.
+        required: true
+    response_template: |-
+      {% if response.pages %}{% assign shown = 0 %}{% for page in response.pages %}{% if shown < 150 %}{% assign shown = shown | plus: 1 %}- {{ page.title }} ({% if page.type == "document" %}page ID {{ page.id }}{% else %}{{ page.type }}{% endif %}){% if page.path %} · /{{ page.path }}{% endif %}
+      {% for child in page.pages %}{% if shown < 150 %}{% assign shown = shown | plus: 1 %}  - {{ child.title }} ({% if child.type == "document" %}page ID {{ child.id }}{% else %}{{ child.type }}{% endif %}){% if child.path %} · /{{ child.path }}{% endif %}
+      {% for grandchild in child.pages %}{% if shown < 150 %}{% assign shown = shown | plus: 1 %}    - {{ grandchild.title }} ({% if grandchild.type == "document" %}page ID {{ grandchild.id }}{% else %}{{ grandchild.type }}{% endif %}){% if grandchild.path %} · /{{ grandchild.path }}{% endif %}{% if grandchild.pages.size > 0 %} · has {{ grandchild.pages.size }} sub-pages{% endif %}
+      {% endif %}{% endfor %}{% endif %}{% endfor %}{% endif %}{% endfor %}{% if shown == 0 %}This space has no pages.{% elsif shown >= 150 %}Only the first 150 pages are shown.{% endif %}{% else %}GitBook returned an unexpected response.{% endif %}
+
+  - id: get_page
+    title: Get Page
+    description: Read a GitBook page's title and content as Markdown. Use the space ID and page ID from Search Content, Search Space, or List Pages. Long pages are cut off after about 6,000 characters.
+    http_method: GET
+    endpoint_url: https://api.gitbook.com/v1/spaces/{{ space_id | strip | url_encode }}/content/page/{{ page_id | strip | url_encode }}?format=markdown&metadata=false
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: space_id
+        type: string
+        description: The GitBook space ID that contains the page.
+        required: true
+      - name: page_id
+        type: string
+        description: The GitBook page ID from Search Content, Search Space, or List Pages.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.title }} (page ID {{ response.id }}){% if response.path %}
+      Path: /{{ response.path }}{% endif %}{% if response.updatedAt %}
+      Last updated: {{ response.updatedAt | slice: 0, 10 }}{% endif %}{% if response.urls.app %}
+      Link: {{ response.urls.app }}{% endif %}{% if response.description and response.description != "" %}
+      Summary: {{ response.description | truncate: 300 }}{% endif %}
+
+      {% assign text = response.markdown | strip %}{% if response.type == "group" %}This is a group of pages with no content of its own. Use List Pages to see the pages inside it.{% elsif response.type == "link" %}This entry is a link to {{ response.href | default: "another location" }}.{% elsif text == "" %}This page has no text content.{% else %}{{ text | truncate: 6000 }}{% endif %}{% else %}GitBook returned an unexpected response.{% endif %}
+
+  - id: search_space
+    title: Search Space
+    description: Search one GitBook space by keywords and get the 10 best matching pages with excerpts and page IDs. Use this instead of Search Content when you already know which space holds the answer. Use the space ID from List Spaces.
+    http_method: GET
+    endpoint_url: https://api.gitbook.com/v1/spaces/{{ space_id | strip | url_encode }}/search?query={{ query | strip | url_encode }}&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: space_id
+        type: string
+        description: The GitBook space ID from List Spaces.
+        required: true
+      - name: query
+        type: string
+        description: Keywords to search for.
+        required: true
+    response_template: |-
+      {% if response.items %}{% for page in response.items limit: 10 %}- {{ page.title | default: "Untitled page" }} (page ID {{ page.id }}){% if page.path %} · /{{ page.path }}{% endif %}{% assign excerpt = page.sections.first.body | default: page.description | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}{% if excerpt != "" %}
+        {% if page.sections.first.title and page.sections.first.title != "" %}{{ page.sections.first.title }}: {% endif %}{{ excerpt | truncate: 300 }}{% endif %}{% if page.urls.app %}
+        Link: {{ page.urls.app }}{% endif %}
+      {% else %}No pages in this space matched the search.
+      {% endfor %}{% else %}GitBook returned an unexpected response.{% endif %}
