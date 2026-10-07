@@ -1,0 +1,118 @@
+version: 0.0.1
+kind: captain_toolset
+name: PagerDuty
+author: chatwoot
+category: Engineering & status
+description: Check PagerDuty incidents, responder notes, and service status.
+
+headers:
+  Accept: application/vnd.pagerduty+json;version=2
+
+secrets:
+  api_key:
+    label: PagerDuty REST API key
+    type: password
+    required: true
+
+tools:
+  - id: list_open_incidents
+    title: List Open Incidents
+    description: List PagerDuty incidents that are triggered or acknowledged, newest first. Use this first when a customer reports an outage or a problem that may already be known to the on-call team.
+    http_method: GET
+    endpoint_url: https://api.pagerduty.com/incidents?statuses%5B%5D=triggered&statuses%5B%5D=acknowledged&date_range=all&sort_by=created_at%3Adesc&limit=20
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Token token=${{ secrets.api_key }}
+    response_template: |-
+      {% if response.incidents %}{% for incident in response.incidents limit: 20 %}- #{{ incident.incident_number }} {{ incident.title | truncate: 200 }} (ID {{ incident.id }})
+        Status: {{ incident.status }}{% if incident.urgency %}, {{ incident.urgency }} urgency{% endif %}{% if incident.priority.summary %}, priority {{ incident.priority.summary }}{% endif %}
+        Service: {{ incident.service.summary | default: "unknown" }}
+        Started: {{ incident.created_at }}
+      {% else %}No open incidents.
+      {% endfor %}{% if response.more %}More open incidents exist than are shown here.{% endif %}{% else %}PagerDuty returned an unexpected response.{% endif %}
+
+  - id: list_recent_incidents
+    title: List Recent Incidents
+    description: List PagerDuty incidents from the past month in any status, including resolved ones, newest first. Use this when a customer asks about a problem that happened earlier and may already be fixed.
+    http_method: GET
+    endpoint_url: https://api.pagerduty.com/incidents?sort_by=created_at%3Adesc&limit=20
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Token token=${{ secrets.api_key }}
+    response_template: |-
+      {% if response.incidents %}{% for incident in response.incidents limit: 20 %}- #{{ incident.incident_number }} {{ incident.title | truncate: 200 }} (ID {{ incident.id }})
+        Status: {{ incident.status }}{% if incident.priority.summary %}, priority {{ incident.priority.summary }}{% endif %}
+        Service: {{ incident.service.summary | default: "unknown" }}
+        Started: {{ incident.created_at }}{% if incident.resolved_at %} · Resolved: {{ incident.resolved_at }}{% endif %}
+      {% else %}No incidents in the past month.
+      {% endfor %}{% if response.more %}More incidents exist than are shown here.{% endif %}{% else %}PagerDuty returned an unexpected response.{% endif %}
+
+  - id: get_incident
+    title: Get Incident
+    description: Check the status, priority, service, timing, and assignees of one PagerDuty incident. Use the incident ID from List Open Incidents or List Recent Incidents.
+    http_method: GET
+    endpoint_url: https://api.pagerduty.com/incidents/{{ incident_id | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Token token=${{ secrets.api_key }}
+    param_schema:
+      - name: incident_id
+        type: string
+        description: The PagerDuty incident ID from List Open Incidents or List Recent Incidents, such as PT4KHLK.
+        required: true
+    response_template: |-
+      {% if response.incident.id %}{% assign incident = response.incident %}#{{ incident.incident_number }} {{ incident.title | truncate: 300 }} (ID {{ incident.id }})
+      Status: {{ incident.status }}{% if incident.urgency %}, {{ incident.urgency }} urgency{% endif %}{% if incident.priority.summary %}, priority {{ incident.priority.summary }}{% endif %}
+      Service: {{ incident.service.summary | default: "unknown" }}
+      Started: {{ incident.created_at }}
+      Last status change: {{ incident.last_status_change_at | default: "unknown" }}{% if incident.resolved_at %}
+      Resolved: {{ incident.resolved_at }}{% endif %}{% if incident.assignments.size > 0 %}
+      Assigned to: {% for assignment in incident.assignments limit: 5 %}{{ assignment.assignee.summary }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if incident.alert_counts %}
+      Alerts: {{ incident.alert_counts.triggered | default: 0 }} triggered, {{ incident.alert_counts.resolved | default: 0 }} resolved{% endif %}{% else %}PagerDuty returned an unexpected response.{% endif %}
+
+  - id: list_incident_notes
+    title: List Incident Notes
+    description: Read the notes responders have added to a PagerDuty incident, such as progress updates or the cause. Use the incident ID from List Open Incidents or List Recent Incidents.
+    http_method: GET
+    endpoint_url: https://api.pagerduty.com/incidents/{{ incident_id | strip | url_encode }}/notes
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Token token=${{ secrets.api_key }}
+    param_schema:
+      - name: incident_id
+        type: string
+        description: The PagerDuty incident ID from List Open Incidents or List Recent Incidents, such as PT4KHLK.
+        required: true
+    response_template: |-
+      {% if response.notes %}{% assign notes = response.notes | sort: "created_at" | reverse %}{% for note in notes limit: 10 %}- {{ note.created_at }} · {{ note.user.summary | default: "Unknown author" }}: {{ note.content | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}
+      {% else %}No notes on this incident.
+      {% endfor %}{% else %}PagerDuty returned an unexpected response.{% endif %}
+
+  - id: list_services
+    title: List Services
+    description: Check the current state of PagerDuty services by name. A service is active when it has no open incidents, warning or critical when it has open incidents, and maintenance or disabled when alerting is paused.
+    http_method: GET
+    endpoint_url: https://api.pagerduty.com/services?query={{ query | strip | url_encode }}&sort_by=name&limit=25
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Token token=${{ secrets.api_key }}
+    param_schema:
+      - name: query
+        type: string
+        description: All or part of the service name, such as "checkout" or "API".
+        required: true
+    response_template: |-
+      {% if response.services %}{% for service in response.services limit: 25 %}- {{ service.name }} (ID {{ service.id }}): {{ service.status | default: "unknown" }}{% if service.last_incident_timestamp %} · last incident {{ service.last_incident_timestamp }}{% endif %}{% if service.description and service.description != "" %}
+        {{ service.description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% else %}No services match this name.
+      {% endfor %}{% if response.more %}More services match than are shown here.{% endif %}{% else %}PagerDuty returned an unexpected response.{% endif %}
