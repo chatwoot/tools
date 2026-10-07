@@ -1,0 +1,138 @@
+version: 0.0.1
+kind: captain_toolset
+name: Instatus
+author: chatwoot
+category: Engineering & status
+description: Check Instatus status pages, components, incidents, and maintenances.
+
+inputs:
+  page_id:
+    label: Status page ID
+    placeholder: ckf01fonve9i40a32oas5b0uw
+    required: true
+
+secrets:
+  api_key:
+    label: Instatus API key
+    type: password
+    required: true
+
+tools:
+  - id: list_status_pages
+    title: List Status Pages
+    description: Check the overall status of each Instatus status page the API key can access. Use this first when a customer reports that a service is down or slow, then use List Components or List Active Incidents for details.
+    http_method: GET
+    endpoint_url: https://api.instatus.com/v2/pages?page=1&per_page=100
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.first.id %}{% for page in response limit: 25 %}- {{ page.name }} (page ID {{ page.id }}): {{ page.status | replace: "HASISSUES", "has issues" | replace: "UNDERMAINTENANCE", "under maintenance" | replace: "DEGRADEDPERFORMANCE", "degraded performance" | replace: "PARTIALOUTAGE", "partial outage" | replace: "MINOROUTAGE", "minor outage" | replace: "MAJOROUTAGE", "major outage" | replace_first: "ALL", "all components: " | replace_first: "SOME", "some components: " | replace_first: "ONE", "one component: " | downcase }}{% if page.customDomain %} · {{ page.customDomain }}{% elsif page.subdomain %} · {{ page.subdomain }}.instatus.com{% endif %}
+      {% endfor %}{% elsif response.size == 0 %}No status pages found.{% else %}Instatus returned an unexpected response.{% endif %}
+
+  - id: list_components
+    title: List Components
+    description: List the components of the configured Instatus status page with their current status, such as operational, degraded performance, or major outage. Use this to check whether a specific service the customer mentions is affected.
+    http_method: GET
+    endpoint_url: https://api.instatus.com/v2/${{ inputs.page_id }}/components?page=1&per_page=100
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.first.id %}{% assign affected = 0 %}{% for component in response %}{% unless component.status == "OPERATIONAL" %}{% assign affected = affected | plus: 1 %}{% endunless %}{% endfor %}Components not operational: {{ affected }} of {{ response.size }}
+      {% for component in response limit: 100 %}- {{ component.name }} (component ID {{ component.id }}): {{ component.status | replace: "UNDERMAINTENANCE", "under maintenance" | replace: "DEGRADEDPERFORMANCE", "degraded performance" | replace: "PARTIALOUTAGE", "partial outage" | replace: "MAJOROUTAGE", "major outage" | downcase }}{% if component.group.name %} · group: {{ component.group.name }}{% endif %}
+      {% endfor %}{% elsif response.size == 0 %}No components found on this status page.{% else %}Instatus returned an unexpected response.{% endif %}
+
+  - id: list_active_incidents
+    title: List Active Incidents
+    description: List incidents on the configured Instatus status page that are still investigating, identified, or monitoring, with affected components and the latest update. Use this when a customer reports a problem that may be a known incident.
+    http_method: GET
+    endpoint_url: https://api.instatus.com/v1/${{ inputs.page_id }}/incidents?status=INVESTIGATING,IDENTIFIED,MONITORING&page=1&per_page=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.first.id %}{% for incident in response limit: 20 %}{% assign latest = incident.updates | last %}- {{ incident.name | truncate: 140 }} (incident ID {{ incident.id }}): {{ incident.status | downcase }}
+        Started: {{ incident.started }}{% if incident.components.size > 0 %}
+        Affected: {% for component in incident.components limit: 10 %}{{ component.name }} ({{ component.status | replace: "UNDERMAINTENANCE", "under maintenance" | replace: "DEGRADEDPERFORMANCE", "degraded performance" | replace: "PARTIALOUTAGE", "partial outage" | replace: "MAJOROUTAGE", "major outage" | downcase }}){% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if latest.message %}
+        Latest update ({{ latest.status | downcase }}, {{ latest.createdAt }}): {{ latest.message | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}
+      {% endfor %}{% elsif response.size == 0 %}No active incidents.{% else %}Instatus returned an unexpected response.{% endif %}
+
+  - id: list_incidents
+    title: List Incidents
+    description: List incidents on the configured Instatus status page, including resolved ones, 20 per page. Use this when a customer asks about a past outage. Start with page 1. Returns the incident ID that Get Incident needs.
+    http_method: GET
+    endpoint_url: https://api.instatus.com/v1/${{ inputs.page_id }}/incidents?page={{ page | url_encode }}&per_page=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: page
+        type: integer
+        description: The page number to fetch, starting at 1.
+        required: true
+    response_template: |-
+      {% if response.first.id %}{% for incident in response limit: 20 %}- {{ incident.name | truncate: 140 }} (incident ID {{ incident.id }}): {{ incident.status | downcase }} · started {{ incident.started }}{% if incident.resolved %} · resolved {{ incident.resolved }}{% endif %}
+      {% endfor %}{% if response.size == 20 %}There may be more incidents on the next page.{% endif %}{% elsif response.size == 0 %}No incidents found on this page.{% else %}Instatus returned an unexpected response.{% endif %}
+
+  - id: get_incident
+    title: Get Incident
+    description: Read one Instatus incident with its status, affected components, and posted updates. Use the incident ID from List Active Incidents or List Incidents.
+    http_method: GET
+    endpoint_url: https://api.instatus.com/v1/${{ inputs.page_id }}/incidents/{{ incident_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: incident_id
+        type: string
+        description: The Instatus incident ID from List Active Incidents or List Incidents.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.name | truncate: 200 }} (incident ID {{ response.id }})
+      Status: {{ response.status | downcase }}
+      Started: {{ response.started }}{% if response.resolved %}
+      Resolved: {{ response.resolved }}{% endif %}{% if response.components.size > 0 %}
+      Affected: {% for component in response.components limit: 15 %}{{ component.name }} ({{ component.status | replace: "UNDERMAINTENANCE", "under maintenance" | replace: "DEGRADEDPERFORMANCE", "degraded performance" | replace: "PARTIALOUTAGE", "partial outage" | replace: "MAJOROUTAGE", "major outage" | downcase }}){% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}
+      Updates:
+      {% for update in response.updates limit: 15 %}- {{ update.createdAt | default: update.started }} · {{ update.status | downcase }}: {{ update.message | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 400 }}
+      {% else %}No updates posted yet.
+      {% endfor %}{% else %}Instatus returned an unexpected response.{% endif %}
+
+  - id: list_maintenances
+    title: List Maintenances
+    description: List maintenances on the configured Instatus status page that are scheduled or in progress. Use this when a customer asks about planned downtime. Returns the maintenance ID that Get Maintenance needs.
+    http_method: GET
+    endpoint_url: https://api.instatus.com/v2/${{ inputs.page_id }}/maintenances?page=1&per_page=50
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.first.id %}{% assign shown = 0 %}{% for maintenance in response %}{% unless maintenance.status == "COMPLETED" %}{% if shown < 15 %}{% assign shown = shown | plus: 1 %}{% assign latest = maintenance.updates | last %}- {{ maintenance.name | truncate: 140 }} (maintenance ID {{ maintenance.id }}): {{ maintenance.status | replace: "NOTSTARTEDYET", "not started yet" | replace: "INPROGRESS", "in progress" | downcase }}
+        Starts: {{ maintenance.start }}{% if maintenance.end %} · ends {{ maintenance.end }}{% endif %}{% if latest.message %}
+        Latest update: {{ latest.message | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}
+      {% endif %}{% endunless %}{% endfor %}{% if shown == 0 %}No maintenances are scheduled or in progress.{% endif %}{% elsif response.size == 0 %}No maintenances found.{% else %}Instatus returned an unexpected response.{% endif %}
+
+  - id: get_maintenance
+    title: Get Maintenance
+    description: Read one Instatus maintenance with its status, start time, affected components, and posted updates. Use the maintenance ID from List Maintenances.
+    http_method: GET
+    endpoint_url: https://api.instatus.com/v1/${{ inputs.page_id }}/maintenances/{{ maintenance_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: maintenance_id
+        type: string
+        description: The Instatus maintenance ID from List Maintenances.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.name | truncate: 200 }} (maintenance ID {{ response.id }})
+      Status: {{ response.status | replace: "NOTSTARTEDYET", "not started yet" | replace: "INPROGRESS", "in progress" | downcase }}
+      Starts: {{ response.start }}{% if response.end %}
+      Ends: {{ response.end }}{% endif %}{% if response.components.size > 0 %}
+      Affected: {% for component in response.components limit: 15 %}{{ component.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}
+      Updates:
+      {% for update in response.updates limit: 15 %}- {{ update.createdAt | default: update.started }} · {{ update.status | replace: "NOTSTARTEDYET", "not started yet" | replace: "INPROGRESS", "in progress" | downcase }}: {{ update.message | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 400 }}
+      {% else %}No updates posted yet.
+      {% endfor %}{% else %}Instatus returned an unexpected response.{% endif %}
