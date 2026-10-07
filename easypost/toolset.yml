@@ -1,0 +1,192 @@
+version: 0.0.1
+kind: captain_toolset
+name: EasyPost
+author: chatwoot
+category: Shipping
+description: Track packages, look up shipments and labels, and verify addresses in EasyPost.
+
+secrets:
+  api_key:
+    label: EasyPost API key
+    type: password
+    required: true
+
+tools:
+  - id: find_tracker
+    title: Find Tracker
+    description: Look up a package by its tracking number and get its current status, estimated delivery date, and recent scan events. Use this first when a customer asks where their package is. It only finds packages EasyPost already tracks, such as labels bought through EasyPost.
+    http_method: POST
+    endpoint_url: https://api.easypost.com/v2/trackers/batch
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: tracking_code
+        type: string
+        description: The carrier's tracking number, as given by the customer or returned by the shipment tools.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"tracking_codes":["{{ tracking_code | strip_newlines | remove: " " | replace: bs, escaped_bs | replace: '"', escaped_quote }}"]}
+    response_template: |-
+      {% if response.trackers %}{% for tracker in response.trackers limit: 3 %}Tracking {{ tracker.tracking_code }} ({{ tracker.carrier }}) · tracker ID {{ tracker.id }}
+      Status: {{ tracker.status | replace: "_", " " }}{% if tracker.status_detail and tracker.status_detail != "unknown" %} · {{ tracker.status_detail | replace: "_", " " }}{% endif %}
+      {% if tracker.est_delivery_date %}Estimated delivery: {{ tracker.est_delivery_date }}
+      {% endif %}{% if tracker.signed_by %}Signed by: {{ tracker.signed_by }}
+      {% endif %}{% if tracker.carrier_detail.service %}Service: {{ tracker.carrier_detail.service }}
+      {% endif %}{% if tracker.carrier_detail.destination_location %}Destination: {{ tracker.carrier_detail.destination_location }}
+      {% endif %}{% if tracker.shipment_id %}Shipment ID: {{ tracker.shipment_id }}
+      {% endif %}{% if tracker.public_url %}Tracking page: {{ tracker.public_url }}
+      {% endif %}{% if tracker.tracking_details.size > 0 %}{% assign events = tracker.tracking_details | reverse %}Recent events:
+      {% for event in events limit: 5 %}- {{ event.datetime }} · {{ event.status | replace: "_", " " }} · {{ event.message | truncate: 140 }}{% if event.tracking_location.city %} ({{ event.tracking_location.city }}{% if event.tracking_location.state %}, {{ event.tracking_location.state }}{% endif %}){% endif %}
+      {% endfor %}{% endif %}
+      {% else %}No EasyPost tracker found for this tracking number.
+      {% endfor %}{% else %}EasyPost returned an unexpected response.{% endif %}
+
+  - id: get_tracker
+    title: Get Tracker
+    description: Get the tracking status and the 10 most recent scan events for an EasyPost tracker by its ID. Use this when you have a tracker ID from Find Tracker or Get Shipment and need the longer event history.
+    http_method: GET
+    endpoint_url: https://api.easypost.com/v2/trackers/{{ tracker_id | strip | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: tracker_id
+        type: string
+        description: The EasyPost tracker ID, starting with trk_.
+        required: true
+    response_template: |-
+      {% if response.object == "Tracker" %}Tracking {{ response.tracking_code }} ({{ response.carrier }})
+      Status: {{ response.status | replace: "_", " " }}{% if response.status_detail and response.status_detail != "unknown" %} · {{ response.status_detail | replace: "_", " " }}{% endif %}
+      {% if response.est_delivery_date %}Estimated delivery: {{ response.est_delivery_date }}
+      {% endif %}{% if response.carrier_detail.guaranteed_delivery_date %}Guaranteed delivery: {{ response.carrier_detail.guaranteed_delivery_date }}
+      {% endif %}{% if response.carrier_detail.initial_delivery_attempt %}First delivery attempt: {{ response.carrier_detail.initial_delivery_attempt }}
+      {% endif %}{% if response.signed_by %}Signed by: {{ response.signed_by }}
+      {% endif %}{% if response.carrier_detail.service %}Service: {{ response.carrier_detail.service }}
+      {% endif %}{% if response.carrier_detail.origin_location %}Origin: {{ response.carrier_detail.origin_location }}
+      {% endif %}{% if response.carrier_detail.destination_location %}Destination: {{ response.carrier_detail.destination_location }}
+      {% endif %}{% if response.shipment_id %}Shipment ID: {{ response.shipment_id }}
+      {% endif %}{% if response.public_url %}Tracking page: {{ response.public_url }}
+      {% endif %}Last updated: {{ response.updated_at }}
+      {% if response.tracking_details.size > 0 %}{% assign events = response.tracking_details | reverse %}Recent events:
+      {% for event in events limit: 10 %}- {{ event.datetime }} · {{ event.status | replace: "_", " " }} · {{ event.message | truncate: 140 }}{% if event.tracking_location.city %} ({{ event.tracking_location.city }}{% if event.tracking_location.state %}, {{ event.tracking_location.state }}{% endif %}){% endif %}
+      {% endfor %}{% else %}No scan events yet.{% endif %}{% else %}EasyPost returned an unexpected response.{% endif %}
+
+  - id: list_shipments
+    title: List Shipments
+    description: List up to 20 purchased EasyPost shipments created within a date range, with recipient, reference, carrier, tracking number, and status. Use this to find a customer's shipment when they have no tracking number, then match on the recipient name or reference. EasyPost cannot search shipments by customer, so keep the date range narrow.
+    http_method: GET
+    endpoint_url: https://api.easypost.com/v2/shipments?page_size=20&purchased=true&start_datetime={{ start_date | strip | url_encode }}T00:00:00Z&end_datetime={{ end_date | strip | url_encode }}T23:59:59Z
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: start_date
+        type: string
+        description: The first day the shipment may have been created, in YYYY-MM-DD format (UTC).
+        required: true
+      - name: end_date
+        type: string
+        description: The last day the shipment may have been created, in YYYY-MM-DD format (UTC).
+        required: true
+    response_template: |-
+      {% if response.shipments %}{% for shipment in response.shipments limit: 20 %}- Shipment {{ shipment.id }} · created {{ shipment.created_at }} · {{ shipment.status | default: "unknown" | replace: "_", " " }}
+        To: {{ shipment.to_address.name | default: shipment.to_address.company | default: "No name" }}{% if shipment.to_address.email %} <{{ shipment.to_address.email }}>{% endif %} · {{ shipment.to_address.city }}, {{ shipment.to_address.state }} {{ shipment.to_address.country }}
+        {% if shipment.reference %}Reference: {{ shipment.reference }} · {% endif %}{% if shipment.selected_rate %}{{ shipment.selected_rate.carrier }} {{ shipment.selected_rate.service }} · {% endif %}Tracking: {{ shipment.tracking_code | default: "none" }}{% if shipment.refund_status %} · refund {{ shipment.refund_status }}{% endif %}
+      {% else %}No purchased shipments found in this date range.
+      {% endfor %}{% if response.has_more %}More shipments exist in this date range. Narrow the dates to see the rest.{% endif %}{% elsif response.shipments == nil %}EasyPost returned an unexpected response.{% endif %}
+
+  - id: get_shipment
+    title: Get Shipment
+    description: Get one EasyPost shipment with its recipient address, carrier and service, label, tracking number, delivery status, and refund status. Use this after List Shipments, or with the shipment ID returned by Find Tracker, to answer whether and how an order shipped.
+    http_method: GET
+    endpoint_url: https://api.easypost.com/v2/shipments/{{ shipment_id | strip | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: shipment_id
+        type: string
+        description: The EasyPost shipment ID, starting with shp_.
+        required: true
+    response_template: |-
+      {% if response.object == "Shipment" %}{% assign to = response.to_address %}Shipment {{ response.id }}{% if response.is_return %} (return){% endif %}
+      Created: {{ response.created_at }}{% if response.reference %} · Reference: {{ response.reference }}{% endif %}
+      Status: {{ response.status | default: "unknown" | replace: "_", " " }}{% if response.refund_status %} · refund {{ response.refund_status }}{% endif %}
+      To: {{ to.name | default: to.company | default: "No name" }}{% if to.email %} <{{ to.email }}>{% endif %}
+      Address: {{ to.street1 }}{% if to.street2 %}, {{ to.street2 }}{% endif %}, {{ to.city }}, {{ to.state }} {{ to.zip }} {{ to.country }}
+      {% if response.selected_rate %}Carrier: {{ response.selected_rate.carrier }} {{ response.selected_rate.service }} · {{ response.selected_rate.rate }} {{ response.selected_rate.currency }}{% if response.selected_rate.delivery_days %} · {{ response.selected_rate.delivery_days }} delivery days{% endif %}
+      {% else %}No label has been bought for this shipment.
+      {% endif %}{% if response.tracking_code %}Tracking number: {{ response.tracking_code }}
+      {% endif %}{% if response.postage_label.label_date %}Label created: {{ response.postage_label.label_date }}
+      {% endif %}{% if response.tracker %}{% if response.tracker.est_delivery_date %}Estimated delivery: {{ response.tracker.est_delivery_date }}
+      {% endif %}{% if response.tracker.signed_by %}Signed by: {{ response.tracker.signed_by }}
+      {% endif %}Tracker ID: {{ response.tracker.id }}
+      {% if response.tracker.public_url %}Tracking page: {{ response.tracker.public_url }}
+      {% endif %}{% assign last = response.tracker.tracking_details | last %}{% if last %}Latest event: {{ last.datetime }} · {{ last.message | truncate: 140 }}{% if last.tracking_location.city %} ({{ last.tracking_location.city }}{% if last.tracking_location.state %}, {{ last.tracking_location.state }}{% endif %}){% endif %}
+      {% endif %}{% endif %}{% if response.insurance %}Insured for: {{ response.insurance }}
+      {% endif %}{% for message in response.messages limit: 3 %}Carrier message{% if message.carrier %} ({{ message.carrier }}){% endif %}: {{ message.message | truncate: 200 }}
+      {% endfor %}{% else %}EasyPost returned an unexpected response.{% endif %}
+
+  - id: verify_address
+    title: Verify Address
+    description: Check whether a delivery address is deliverable and get EasyPost's corrected version. Use this when a customer gives or changes a shipping address, or when a package came back as undeliverable. This saves an address record in EasyPost but does not create a shipment or buy anything.
+    http_method: POST
+    endpoint_url: https://api.easypost.com/v2/addresses
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: street1
+        type: string
+        description: The street address, such as 417 Montgomery Street.
+        required: true
+      - name: street2
+        type: string
+        description: Apartment, suite, or unit, if any.
+        required: false
+      - name: city
+        type: string
+        description: The city.
+        required: false
+      - name: state
+        type: string
+        description: The state or province, such as CA.
+        required: false
+      - name: zip
+        type: string
+        description: The ZIP or postal code.
+        required: false
+      - name: country
+        type: string
+        description: The two-letter ISO country code, such as US.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% assign street1 = street1 | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign street2 = street2 | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign city = city | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign state = state | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign zip = zip | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign country = country | strip_newlines | strip | upcase | replace: bs, escaped_bs | replace: '"', escaped_quote %}{"address":{"street1":"{{ street1 }}"{% if street2 != "" %},"street2":"{{ street2 }}"{% endif %}{% if city != "" %},"city":"{{ city }}"{% endif %}{% if state != "" %},"state":"{{ state }}"{% endif %}{% if zip != "" %},"zip":"{{ zip }}"{% endif %},"country":"{{ country }}"},"verify":true}
+    response_template: |-
+      {% if response.object == "Address" %}{% assign delivery = response.verifications.delivery %}{% if delivery.success %}Deliverable address: {{ response.street1 }}{% if response.street2 %}, {{ response.street2 }}{% endif %}, {{ response.city }}, {{ response.state }} {{ response.zip }} {{ response.country }}
+      {% if response.residential == true %}Type: residential
+      {% elsif response.residential == false %}Type: commercial
+      {% endif %}{% if delivery.details.time_zone %}Time zone: {{ delivery.details.time_zone }}
+      {% endif %}{% elsif delivery %}EasyPost could not verify this address.
+      {% else %}EasyPost did not return a verification result for this address.
+      {% endif %}{% for error in delivery.errors limit: 5 %}- {{ error.message | truncate: 200 }}{% if error.field %} (field: {{ error.field }}){% endif %}{% if error.suggestion %} · suggestion: {{ error.suggestion }}{% endif %}
+      {% endfor %}{% else %}EasyPost returned an unexpected response.{% endif %}
+
+  - id: list_carrier_accounts
+    title: List Carrier Accounts
+    description: List the carriers connected to the EasyPost account. Use this when a customer asks which carriers the business ships with. This only works when the integration is installed with a production API key.
+    http_method: GET
+    endpoint_url: https://api.easypost.com/v2/carrier_accounts
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    response_template: |-
+      {% if response.first.object == "CarrierAccount" %}{% for account in response limit: 40 %}- {{ account.readable | default: account.type }}{% if account.description and account.description != "" %} · {{ account.description | truncate: 80 }}{% endif %}{% if account.billing_type %} · billed by {{ account.billing_type }}{% endif %}
+      {% endfor %}{% elsif response.size == 0 %}No carrier accounts are connected.{% else %}EasyPost returned an unexpected response.{% endif %}
