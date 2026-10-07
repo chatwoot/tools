@@ -1,0 +1,120 @@
+version: 0.0.1
+kind: captain_toolset
+name: Loops
+author: chatwoot
+category: Marketing
+description: Look up contacts, subscription status, and mailing lists in Loops, and unsubscribe contacts on request.
+
+secrets:
+  api_key:
+    label: Loops API key
+    type: password
+    required: true
+
+tools:
+  - id: find_contact
+    title: Find Contact
+    description: Find a Loops contact by email address. Use this first to check whether the customer is in the audience, whether they are subscribed, and which mailing list IDs they are on.
+    http_method: GET
+    endpoint_url: https://app.loops.so/api/v1/contacts/find?email={{ email | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The contact's email address.
+        required: true
+    response_template: |-
+      {% if response.first.id %}{% assign standard = "id,email,firstName,lastName,source,subscribed,userGroup,userId,mailingLists,optInStatus" | split: "," %}{% for contact in response limit: 3 %}{% capture name %}{{ contact.firstName }} {{ contact.lastName }}{% endcapture %}{% assign name = name | strip %}{{ name | default: "No name" }} <{{ contact.email }}>
+      Contact ID: {{ contact.id }}{% if contact.userId %}
+      User ID: {{ contact.userId }}{% endif %}
+      Subscribed to marketing emails: {% if contact.subscribed %}yes{% else %}no{% endif %}{% if contact.optInStatus %}
+      Double opt-in status: {{ contact.optInStatus }}{% endif %}{% if contact.userGroup and contact.userGroup != "" %}
+      User group: {{ contact.userGroup }}{% endif %}{% if contact.source and contact.source != "" %}
+      Source: {{ contact.source }}{% endif %}
+      Mailing list IDs: {% capture lists %}{% for list in contact.mailingLists %}{% if list[1] %}{{ list[0] }}, {% endif %}{% endfor %}{% endcapture %}{% assign lists = lists | strip %}{% if lists == "" %}none{% else %}{{ lists | append: "#" | remove: ",#" }}{% endif %}{% assign shown = 0 %}{% for property in contact %}{% unless standard contains property[0] %}{% if property[1] != nil and property[1] != "" and shown < 20 %}{% assign shown = shown | plus: 1 %}
+      - {{ property[0] }}: {{ property[1] | truncate: 200 }}{% endif %}{% endunless %}{% endfor %}
+      {% unless forloop.last %}
+      {% endunless %}{% endfor %}{% elsif response.size == 0 %}No Loops contact found with this email address.{% else %}Loops returned an unexpected response.{% endif %}
+
+  - id: get_suppression_status
+    title: Get Suppression Status
+    description: Check whether Loops has suppressed a contact, which happens after a hard bounce or spam complaint and blocks all emails to them. Use this when a customer in the audience says they are not receiving emails. Call Find Contact first; this only works for an existing contact.
+    http_method: GET
+    endpoint_url: https://app.loops.so/api/v1/contacts/suppression?email={{ email | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The contact's email address, as returned by Find Contact.
+        required: true
+    response_template: |-
+      {% if response.contact.email %}{{ response.contact.email }} is {% if response.isSuppressed %}suppressed, so Loops will not send them any email until the suppression is removed in Loops{% else %}not suppressed{% endif %}.{% else %}Loops returned an unexpected response.{% endif %}
+
+  - id: list_mailing_lists
+    title: List Mailing Lists
+    description: List the mailing lists in the Loops account with their IDs and names. Use this to turn the mailing list IDs from Find Contact into names, or to get the list ID that Remove from Mailing List needs.
+    http_method: GET
+    endpoint_url: https://app.loops.so/api/v1/lists
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.first.id %}{% for list in response limit: 50 %}- {{ list.name }} (list ID {{ list.id }}, {% if list.isPublic %}public{% else %}private{% endif %}){% if list.description and list.description != "" %}: {{ list.description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 150 }}{% endif %}
+      {% endfor %}{% elsif response.size == 0 %}This Loops account has no mailing lists.{% else %}Loops returned an unexpected response.{% endif %}
+
+  - id: list_transactional_emails
+    title: List Transactional Emails
+    description: List the 20 most recently created transactional emails set up in Loops, such as password resets or receipts, with whether each one is published. Use this to check that an email the customer expects exists. It does not show what was sent to a specific contact.
+    http_method: GET
+    endpoint_url: https://app.loops.so/api/v1/transactional-emails?perPage=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.data %}{% for email in response.data limit: 20 %}- {{ email.name }} (ID {{ email.id }}): {% if email.publishedEmailMessageId %}published{% else %}not published{% endif %}, updated {{ email.updatedAt | slice: 0, 10 }}
+      {% else %}No transactional emails found.
+      {% endfor %}{% if response.pagination.totalResults > 20 %}Showing 20 of {{ response.pagination.totalResults }}.{% endif %}{% else %}Loops returned an unexpected response.{% endif %}
+
+  - id: unsubscribe_contact
+    title: Unsubscribe Contact
+    description: Unsubscribe a contact from all Loops campaign and workflow emails. Only use this when the customer clearly asks to stop receiving marketing emails, and only after Find Contact returned the contact, because Loops creates a new contact if the email does not exist. Transactional emails are not affected.
+    http_method: PUT
+    endpoint_url: https://app.loops.so/api/v1/contacts/update
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The contact's email address, exactly as returned by Find Contact.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"email":"{{ email | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}","subscribed":false}
+    response_template: |-
+      {% if response.success %}The contact was unsubscribed from Loops marketing emails.{% else %}Loops returned an unexpected response.{% endif %}
+
+  - id: remove_from_mailing_list
+    title: Remove from Mailing List
+    description: Remove a contact from one Loops mailing list while keeping them subscribed to everything else. Only use this when the customer asks to stop receiving that list, and only after Find Contact returned the contact. Get the list ID from Find Contact or List Mailing Lists.
+    http_method: PUT
+    endpoint_url: https://app.loops.so/api/v1/contacts/update
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The contact's email address, exactly as returned by Find Contact.
+        required: true
+      - name: list_id
+        type: string
+        description: The mailing list ID from Find Contact or List Mailing Lists.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"email":"{{ email | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}","mailingLists":{"{{ list_id | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}":false}}
+    response_template: |-
+      {% if response.success %}The contact was removed from the mailing list.{% else %}Loops returned an unexpected response.{% endif %}
