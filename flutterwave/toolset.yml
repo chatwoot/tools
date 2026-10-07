@@ -1,0 +1,167 @@
+version: 0.0.1
+kind: captain_toolset
+name: Flutterwave
+author: chatwoot
+category: Payments & billing
+description: Look up transactions, refunds, subscriptions, and payment plans in Flutterwave.
+
+secrets:
+  secret_key:
+    label: Flutterwave secret key
+    type: password
+    required: true
+
+tools:
+  - id: find_transactions
+    title: Find Transactions by Email
+    description: Find a customer's Flutterwave transactions by email address within a date range. Use this first when a customer asks about a payment and has no transaction reference. Returns the transaction ID the other Flutterwave tools need.
+    http_method: GET
+    endpoint_url: https://api.flutterwave.com/v3/transactions?customer_email={{ customer_email | strip | url_encode }}&from={{ from_date | strip | url_encode }}&to={{ to_date | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_key }}
+    param_schema:
+      - name: customer_email
+        type: string
+        description: The email address the customer paid with.
+        required: true
+      - name: from_date
+        type: string
+        description: The first date to search, in YYYY-MM-DD format. Use 90 days ago unless the customer gives a date.
+        required: true
+      - name: to_date
+        type: string
+        description: The last date to search, in YYYY-MM-DD format. Use today's date unless the customer gives a date.
+        required: true
+    response_template: |-
+      {% if response.status == "success" %}{% for transaction in response.data limit: 10 %}- {{ transaction.created_at | slice: 0, 10 }} · {{ transaction.amount }} {{ transaction.currency }} · {{ transaction.status }} · {{ transaction.payment_type | default: "unknown method" }}
+        Transaction ID: {{ transaction.id }} · reference {{ transaction.tx_ref }}{% if transaction.charged_amount and transaction.charged_amount != transaction.amount %}
+        Charged to customer: {{ transaction.charged_amount }} {{ transaction.currency }}{% endif %}{% if transaction.narration %}
+        Narration: {{ transaction.narration | truncate: 100 }}{% endif %}{% if transaction.processor_response %}
+        Processor response: {{ transaction.processor_response | truncate: 150 }}{% endif %}
+      {% else %}No transactions found for this email address in this date range.
+      {% endfor %}{% if response.meta.page_info.total > 10 %}Showing the first 10 of {{ response.meta.page_info.total }} transactions. Use a shorter date range to narrow this down.{% endif %}{% else %}Flutterwave returned an unexpected response.{% endif %}
+
+  - id: get_transaction
+    title: Get Transaction
+    description: Get the final status and details of one Flutterwave transaction, including amount charged, payment method, processor response, and customer. Use the numeric transaction ID from Find Transactions by Email.
+    http_method: GET
+    endpoint_url: https://api.flutterwave.com/v3/transactions/{{ transaction_id | strip | url_encode }}/verify
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_key }}
+    param_schema:
+      - name: transaction_id
+        type: integer
+        description: The numeric Flutterwave transaction ID from Find Transactions by Email. This is not the transaction reference.
+        required: true
+    response_template: |-
+      {% if response.status == "success" and response.data.id %}{% assign transaction = response.data %}Transaction {{ transaction.id }} · {{ transaction.status }} · {{ transaction.created_at | slice: 0, 10 }}
+      Reference: {{ transaction.tx_ref }}{% if transaction.flw_ref %}
+      Flutterwave reference: {{ transaction.flw_ref }}{% endif %}
+      Amount: {{ transaction.amount }} {{ transaction.currency }}{% if transaction.charged_amount %}
+      Charged to customer: {{ transaction.charged_amount }} {{ transaction.currency }}{% endif %}
+      Payment method: {{ transaction.payment_type | default: "unknown" }}{% if transaction.card %} · {{ transaction.card.type | strip }} card ending {{ transaction.card.last_4digits }}{% if transaction.card.issuer %} ({{ transaction.card.issuer | strip }}){% endif %}{% endif %}{% if transaction.processor_response %}
+      Processor response: {{ transaction.processor_response | truncate: 200 }}{% endif %}{% if transaction.narration %}
+      Narration: {{ transaction.narration | truncate: 100 }}{% endif %}{% if transaction.customer %}
+      Customer: {{ transaction.customer.name | default: "No name" }} <{{ transaction.customer.email }}>{% endif %}{% else %}Flutterwave returned an unexpected response.{% endif %}
+
+  - id: get_transaction_by_reference
+    title: Get Transaction by Reference
+    description: Get the status and details of a Flutterwave transaction using the merchant transaction reference (tx_ref), such as an order or payment reference the customer received. Use this instead of Find Transactions by Email when the customer has a reference.
+    http_method: GET
+    endpoint_url: https://api.flutterwave.com/v3/transactions/verify_by_reference?tx_ref={{ tx_ref | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_key }}
+    param_schema:
+      - name: tx_ref
+        type: string
+        description: The transaction reference your business assigned to the payment, exactly as given.
+        required: true
+    response_template: |-
+      {% if response.status == "success" and response.data.id %}{% assign transaction = response.data %}Transaction {{ transaction.id }} · {{ transaction.status }} · {{ transaction.created_at | slice: 0, 10 }}
+      Reference: {{ transaction.tx_ref }}{% if transaction.flw_ref %}
+      Flutterwave reference: {{ transaction.flw_ref }}{% endif %}
+      Amount: {{ transaction.amount }} {{ transaction.currency }}{% if transaction.charged_amount %}
+      Charged to customer: {{ transaction.charged_amount }} {{ transaction.currency }}{% endif %}
+      Payment method: {{ transaction.payment_type | default: "unknown" }}{% if transaction.card %} · {{ transaction.card.type | strip }} card ending {{ transaction.card.last_4digits }}{% if transaction.card.issuer %} ({{ transaction.card.issuer | strip }}){% endif %}{% endif %}{% if transaction.processor_response %}
+      Processor response: {{ transaction.processor_response | truncate: 200 }}{% endif %}{% if transaction.narration %}
+      Narration: {{ transaction.narration | truncate: 100 }}{% endif %}{% if transaction.customer %}
+      Customer: {{ transaction.customer.name | default: "No name" }} <{{ transaction.customer.email }}>{% endif %}{% else %}Flutterwave returned an unexpected response.{% endif %}
+
+  - id: get_transaction_timeline
+    title: Get Transaction Timeline
+    description: See the step-by-step timeline of a Flutterwave transaction from start to finish. Use this to work out where a failed or abandoned payment stopped. Use the numeric transaction ID from Find Transactions by Email or Get Transaction by Reference.
+    http_method: GET
+    endpoint_url: https://api.flutterwave.com/v3/transactions/{{ transaction_id | strip | url_encode }}/events
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_key }}
+    param_schema:
+      - name: transaction_id
+        type: integer
+        description: The numeric Flutterwave transaction ID. This is not the transaction reference.
+        required: true
+    response_template: |-
+      {% if response.status == "success" %}{% for event in response.data limit: 25 %}- {{ event.created_at | slice: 0, 19 | replace: "T", " " }} · {{ event.action | default: "event" }}{% if event.object %} ({{ event.object | downcase }}){% endif %}: {{ event.note | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}
+      {% else %}No timeline events recorded for this transaction.
+      {% endfor %}{% if response.data.size > 25 %}Showing the first 25 of {{ response.data.size }} events.{% endif %}{% else %}Flutterwave returned an unexpected response.{% endif %}
+
+  - id: list_refunds
+    title: List Refunds
+    description: Check whether a Flutterwave transaction has been refunded, with each refund's amount, status, and date. Use the numeric transaction ID from Find Transactions by Email or Get Transaction by Reference.
+    http_method: GET
+    endpoint_url: https://api.flutterwave.com/v3/refunds?id={{ transaction_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_key }}
+    param_schema:
+      - name: transaction_id
+        type: integer
+        description: The numeric Flutterwave transaction ID of the original payment.
+        required: true
+    response_template: |-
+      {% if response.status == "success" %}{% for refund in response.data limit: 10 %}- {{ refund.created_at | slice: 0, 10 }} · refunded {{ refund.amount_refunded }} · {{ refund.status }}
+        Refund ID: {{ refund.id }} · transaction {{ refund.transaction_id }}{% if refund.flw_ref %} · reference {{ refund.flw_ref }}{% endif %}{% if refund.comment and refund.comment != "" %}
+        Comment: {{ refund.comment | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% else %}No refunds found for this transaction.
+      {% endfor %}{% if response.data.size > 0 %}Refund amounts are in the currency of the original transaction.{% endif %}{% else %}Flutterwave returned an unexpected response.{% endif %}
+
+  - id: list_subscriptions
+    title: List Subscriptions
+    description: List a customer's Flutterwave payment plan subscriptions by email address, including cancelled ones, with amount, status, and payment plan ID. Use Get Payment Plan to see the plan's name, interval, and currency.
+    http_method: GET
+    endpoint_url: https://api.flutterwave.com/v3/subscriptions?email={{ email | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The subscriber's email address.
+        required: true
+    response_template: |-
+      {% if response.status == "success" %}{% for subscription in response.data limit: 10 %}- Subscription {{ subscription.id }} · {{ subscription.status }} · amount {{ subscription.amount }} · payment plan ID {{ subscription.plan }}
+        Subscribed: {{ subscription.created_at | slice: 0, 10 }}{% if subscription.customer.customer_email %} · {{ subscription.customer.customer_email }}{% endif %}
+      {% else %}No subscriptions found for this email address.
+      {% endfor %}{% if response.meta.page_info.total > 10 %}Showing the first 10 of {{ response.meta.page_info.total }} subscriptions.{% endif %}{% else %}Flutterwave returned an unexpected response.{% endif %}
+
+  - id: get_payment_plan
+    title: Get Payment Plan
+    description: Get a Flutterwave payment plan's name, amount, currency, billing interval, and status. Use the payment plan ID from List Subscriptions to explain what a subscription charges and how often.
+    http_method: GET
+    endpoint_url: https://api.flutterwave.com/v3/payment-plans/{{ plan_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_key }}
+    param_schema:
+      - name: plan_id
+        type: integer
+        description: The numeric payment plan ID from List Subscriptions.
+        required: true
+    response_template: |-
+      {% if response.status == "success" and response.data.id %}{% assign plan = response.data %}{{ plan.name | default: "Unnamed plan" }} (payment plan ID {{ plan.id }}) · {{ plan.status }}
+      Charges: {{ plan.amount }} {{ plan.currency }} {{ plan.interval }}{% if plan.duration and plan.duration > 0 %}
+      Duration: {{ plan.duration }} charges{% endif %}
+      Created: {{ plan.created_at | slice: 0, 10 }}{% else %}Flutterwave returned an unexpected response.{% endif %}
