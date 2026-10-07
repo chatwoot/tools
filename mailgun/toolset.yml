@@ -1,0 +1,202 @@
+version: 0.0.1
+kind: captain_toolset
+name: Mailgun
+author: chatwoot
+category: Others
+description: Check email delivery logs, bounces, complaints, unsubscribes, and sending domain status in Mailgun.
+
+inputs:
+  api_host:
+    label: Mailgun API host (US or EU region)
+    type: select
+    options:
+      - api.mailgun.net
+      - api.eu.mailgun.net
+    required: true
+  domain:
+    label: Sending domain
+    placeholder: mg.example.com
+    required: true
+
+secrets:
+  api_key:
+    label: Mailgun API key
+    type: password
+    required: true
+
+tools:
+  - id: find_events_by_recipient
+    title: Find Events by Recipient
+    description: Find the 20 most recent Mailgun log events for emails sent to an address, such as accepted, delivered, failed, opened, or complained. Use this first when a customer says an email did not arrive. Returns the message ID that Get Message Events needs.
+    http_method: POST
+    endpoint_url: https://${{ inputs.api_host }}/v1/analytics/logs
+    auth_type: basic
+    auth_config:
+      username: api
+      password: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The recipient's email address.
+        required: true
+      - name: days_back
+        type: integer
+        description: How many days back to search, from 1 to 30. Use 3 unless the customer mentions an older email. Larger values can fail on plans with shorter log retention.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% assign email = email | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign days = days_back | default: 3 | round %}{% if days < 1 %}{% assign days = 1 %}{% endif %}{% if days > 30 %}{% assign days = 30 %}{% endif %}{"duration":"{{ days }}d","filter":{"AND":[{"attribute":"domain","comparator":"=","values":[{"label":"${{ inputs.domain }}","value":"${{ inputs.domain }}"}]},{"attribute":"recipient","comparator":"=","values":[{"label":"{{ email }}","value":"{{ email }}"}]}]},"pagination":{"sort":"timestamp:desc","limit":20}}
+    response_template: |-
+      {% if response.items %}{% for entry in response.items limit: 20 %}{% assign status = entry["delivery-status"] %}- {{ entry["@timestamp"] }} · {{ entry.event }}{% if entry.severity and entry.severity != "" %} ({{ entry.severity }}){% endif %}{% if entry.message.headers.subject and entry.message.headers.subject != "" %} · {{ entry.message.headers.subject | truncate: 80 }}{% endif %}{% if entry.message.headers["message-id"] %}
+        Message ID: {{ entry.message.headers["message-id"] }}{% endif %}{% if entry.event == "failed" or entry.event == "rejected" %}{% if entry.reason and entry.reason != "" %}
+        Reason: {{ entry.reason }}{% endif %}{% if status.code %}
+        SMTP code: {{ status.code }}{% if status["enhanced-code"] and status["enhanced-code"] != "" %} ({{ status["enhanced-code"] }}){% endif %}{% endif %}{% assign detail = status.message | default: status.description %}{% if detail and detail != "" %}
+        Detail: {{ detail | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 250 }}{% endif %}{% endif %}
+      {% else %}No Mailgun log events found for this recipient in that period.
+      {% endfor %}{% else %}Mailgun returned an unexpected response.{% endif %}
+
+  - id: get_message_events
+    title: Get Message Events
+    description: List up to 20 Mailgun log events for one message, oldest first, to follow it from accepted to delivered or failed. Use the message ID from Find Events by Recipient.
+    http_method: POST
+    endpoint_url: https://${{ inputs.api_host }}/v1/analytics/logs
+    auth_type: basic
+    auth_config:
+      username: api
+      password: ${{ secrets.api_key }}
+    param_schema:
+      - name: message_id
+        type: string
+        description: The Mailgun message ID from Find Events by Recipient, without angle brackets.
+        required: true
+      - name: days_back
+        type: integer
+        description: How many days back to search, from 1 to 30. Use the same value that found the message.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% assign message_id = message_id | strip_newlines | strip | remove: "<" | remove: ">" | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign days = days_back | default: 3 | round %}{% if days < 1 %}{% assign days = 1 %}{% endif %}{% if days > 30 %}{% assign days = 30 %}{% endif %}{"duration":"{{ days }}d","filter":{"AND":[{"attribute":"domain","comparator":"=","values":[{"label":"${{ inputs.domain }}","value":"${{ inputs.domain }}"}]},{"attribute":"message_id","comparator":"=","values":[{"label":"{{ message_id }}","value":"{{ message_id }}"}]}]},"pagination":{"sort":"timestamp:asc","limit":20}}
+    response_template: |-
+      {% if response.items %}{% for entry in response.items limit: 20 %}{% assign status = entry["delivery-status"] %}- {{ entry["@timestamp"] }} · {{ entry.event }}{% if entry.severity and entry.severity != "" %} ({{ entry.severity }}){% endif %}{% if entry.recipient and entry.recipient != "" %} · {{ entry.recipient }}{% endif %}{% if entry.reason and entry.reason != "" %}
+        Reason: {{ entry.reason }}{% endif %}{% if status.code %}
+        SMTP code: {{ status.code }}{% if status["enhanced-code"] and status["enhanced-code"] != "" %} ({{ status["enhanced-code"] }}){% endif %}{% if status["attempt-no"] %}, attempt {{ status["attempt-no"] }}{% endif %}{% endif %}{% assign detail = status.message | default: status.description %}{% if detail and detail != "" %}
+        Detail: {{ detail | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 250 }}{% endif %}{% if entry.url and entry.url != "" %}
+        Link clicked: {{ entry.url | truncate: 150 }}{% endif %}
+      {% else %}No Mailgun log events found for this message ID in that period.
+      {% endfor %}{% else %}Mailgun returned an unexpected response.{% endif %}
+
+  - id: list_recent_failures
+    title: List Recent Failures
+    description: List the 10 most recent failed deliveries for the sending domain, with recipient and failure reason. Use this to check whether a delivery problem affects many recipients rather than one customer.
+    http_method: POST
+    endpoint_url: https://${{ inputs.api_host }}/v1/analytics/logs
+    auth_type: basic
+    auth_config:
+      username: api
+      password: ${{ secrets.api_key }}
+    param_schema:
+      - name: days_back
+        type: integer
+        description: How many days back to search, from 1 to 30. Use 1 unless asked for a longer period. Larger values can fail on plans with shorter log retention.
+        required: true
+    request_template: |-
+      {% assign days = days_back | default: 1 | round %}{% if days < 1 %}{% assign days = 1 %}{% endif %}{% if days > 30 %}{% assign days = 30 %}{% endif %}{"duration":"{{ days }}d","filter":{"AND":[{"attribute":"domain","comparator":"=","values":[{"label":"${{ inputs.domain }}","value":"${{ inputs.domain }}"}]},{"attribute":"event","comparator":"=","values":[{"label":"failed","value":"failed"}]}]},"pagination":{"sort":"timestamp:desc","limit":10}}
+    response_template: |-
+      {% if response.items %}{% for entry in response.items limit: 10 %}{% assign status = entry["delivery-status"] %}- {{ entry["@timestamp"] }} · {{ entry.recipient }}{% if entry.severity and entry.severity != "" %} · {{ entry.severity }} failure{% endif %}{% if entry.reason and entry.reason != "" %} · {{ entry.reason }}{% endif %}{% if status.code %}
+        SMTP code: {{ status.code }}{% if status["enhanced-code"] and status["enhanced-code"] != "" %} ({{ status["enhanced-code"] }}){% endif %}{% endif %}{% assign detail = status.message | default: status.description %}{% if detail and detail != "" %}
+        Detail: {{ detail | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 250 }}{% endif %}
+      {% else %}No failed deliveries found for this domain in that period.
+      {% endfor %}{% else %}Mailgun returned an unexpected response.{% endif %}
+
+  - id: check_bounce
+    title: Check Bounce
+    description: Check whether an email address is on the sending domain's bounce list, which makes Mailgun stop delivering to it. Returns the SMTP error that caused the bounce.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v3/${{ inputs.domain }}/bounces?term={{ email | strip | url_encode }}&limit=5
+    auth_type: basic
+    auth_config:
+      username: api
+      password: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The full email address to check. Mailgun matches addresses that start with this text, so compare the returned address with the customer's.
+        required: true
+    response_template: |-
+      {% if response.items %}{% for item in response.items limit: 5 %}- {{ item.address }} is on the bounce list, so Mailgun is not delivering to it.
+        Bounced: {{ item.created_at }}
+        SMTP code: {{ item.code }}
+        Error: {{ item.error | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 300 }}
+      {% else %}This address is not on the bounce list.
+      {% endfor %}{% else %}Mailgun returned an unexpected response.{% endif %}
+
+  - id: check_complaint
+    title: Check Complaint
+    description: Check whether an email address is on the sending domain's spam complaint list, which makes Mailgun stop delivering to it.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v3/${{ inputs.domain }}/complaints?term={{ email | strip | url_encode }}&limit=5
+    auth_type: basic
+    auth_config:
+      username: api
+      password: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The full email address to check. Mailgun matches addresses that start with this text, so compare the returned address with the customer's.
+        required: true
+    response_template: |-
+      {% if response.items %}{% for item in response.items limit: 5 %}- {{ item.address }} is on the complaint list because the recipient marked an email as spam, so Mailgun is not delivering to it.
+        Complaint received: {{ item.created_at }}
+      {% else %}This address is not on the complaint list.
+      {% endfor %}{% else %}Mailgun returned an unexpected response.{% endif %}
+
+  - id: check_unsubscribe
+    title: Check Unsubscribe
+    description: Check whether an email address is on the sending domain's unsubscribe list, and which tags it unsubscribed from.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v3/${{ inputs.domain }}/unsubscribes?term={{ email | strip | url_encode }}&limit=5
+    auth_type: basic
+    auth_config:
+      username: api
+      password: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The full email address to check. Mailgun matches addresses that start with this text, so compare the returned address with the customer's.
+        required: true
+    response_template: |-
+      {% if response.items %}{% for item in response.items limit: 5 %}- {{ item.address }} is on the unsubscribe list.
+        Unsubscribed: {{ item.created_at }}{% if item.tags.size > 0 %}
+        Unsubscribed from: {% for tag in item.tags limit: 10 %}{% if tag == "*" %}all emails{% else %}{{ tag }}{% endif %}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}
+      {% else %}This address is not on the unsubscribe list.
+      {% endfor %}{% else %}Mailgun returned an unexpected response.{% endif %}
+
+  - id: get_domain_status
+    title: Get Domain Status
+    description: Check whether the sending domain is verified and active in Mailgun, and whether its sending DNS records are valid. Use this when emails fail for many recipients.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v4/domains/${{ inputs.domain }}
+    auth_type: basic
+    auth_config:
+      username: api
+      password: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.domain.name %}{% assign domain = response.domain %}{{ domain.name }} · state: {{ domain.state }} · type: {{ domain.type }}{% if domain.is_disabled %}
+      The domain is disabled{% if domain.disabled.reason %}: {{ domain.disabled.reason | truncate: 200 }}{% endif %}{% if domain.disabled.until %} (until {{ domain.disabled.until }}){% endif %}{% endif %}{% if response.sending_dns_records.size > 0 %}
+      Sending DNS records:{% for record in response.sending_dns_records limit: 10 %}
+      - {{ record.record_type }} {{ record.name }}: {{ record.valid }}{% endfor %}{% endif %}{% else %}Mailgun returned an unexpected response.{% endif %}
+
+  - id: remove_bounce
+    title: Remove Bounce
+    description: Remove an email address from the sending domain's bounce list so Mailgun delivers to it again. Only use this after Check Bounce shows the address is listed and the customer confirms the mailbox now works. Returns an error if the address is not on the list.
+    http_method: DELETE
+    endpoint_url: https://${{ inputs.api_host }}/v3/${{ inputs.domain }}/bounces/{{ email | strip | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: api
+      password: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address to remove from the bounce list.
+        required: true
+    response_template: |-
+      {% if response.address %}Removed {{ response.address }} from the bounce list. Mailgun will deliver to it again unless it bounces again.{% elsif response.message %}{{ response.message | truncate: 200 }}{% else %}Mailgun returned an unexpected response.{% endif %}
