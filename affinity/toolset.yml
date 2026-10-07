@@ -1,0 +1,177 @@
+version: 0.0.1
+kind: captain_toolset
+name: Affinity
+author: chatwoot
+category: CRM
+description: Look up people, companies, lists, and notes in Affinity, and add notes to records.
+
+headers:
+  X-Affinity-Api-Version: '2026-09-17'
+
+secrets:
+  api_key:
+    label: Affinity API key
+    type: password
+    required: true
+
+tools:
+  - id: find_people
+    title: Find People
+    description: Search Affinity for people by email address or name. Use this first to get the person ID the other Affinity tools need. The search term must be at least 3 characters.
+    http_method: POST
+    endpoint_url: https://api.affinity.co/v2/persons/search?limit=5
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: query
+        type: string
+        description: The person's email address, or their first or last name. At least 3 characters.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"search":{"term":"{{ query | newline_to_br | replace: "<br />", " " | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}"}}
+    response_template: |-
+      {% if response.data %}{% for person in response.data limit: 5 %}- {% capture full_name %}{{ person.firstName }} {{ person.lastName }}{% endcapture %}{{ full_name | strip | default: "Unnamed person" }}{% if person.primaryEmailAddress %} <{{ person.primaryEmailAddress }}>{% endif %} (person ID {{ person.id }}){% if person.type == "internal" %} · member of your team{% endif %}{% if person.emailAddresses.size > 1 %}
+        All emails: {{ person.emailAddresses | slice: 0, 5 | join: ", " }}{% endif %}
+      {% else %}No person found in Affinity for this search.
+      {% endfor %}{% else %}Affinity returned an unexpected response.{% endif %}
+
+  - id: get_person
+    title: Get Person
+    description: Get a person's profile from Affinity, including job title, location, current company, and other enriched and custom fields. Use the person ID from Find People. Company fields include the company ID that Get Company needs.
+    http_method: GET
+    endpoint_url: https://api.affinity.co/v2/persons/{{ person_id | strip | url_encode }}?fieldTypes=enriched&fieldTypes=global&fieldTypes=relationship-intelligence
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: person_id
+        type: string
+        description: The numeric Affinity person ID from Find People.
+        required: true
+    response_template: |-
+      {% if response.id %}{% capture full_name %}{{ response.firstName }} {{ response.lastName }}{% endcapture %}{{ full_name | strip | default: "Unnamed person" }} (person ID {{ response.id }}){% if response.primaryEmailAddress %}
+      Email: {{ response.primaryEmailAddress }}{% endif %}{% if response.emailAddresses.size > 1 %}
+      All emails: {{ response.emailAddresses | slice: 0, 5 | join: ", " }}{% endif %}{% if response.type == "internal" %}
+      Member of your team{% endif %}{% for field in response.fields limit: 40 %}{% assign v = field.value %}{% capture shown %}{% case v.type %}{% when "company" %}{% if v.data.id %}{{ v.data.name }} (company ID {{ v.data.id }}){% endif %}{% when "company-multi" %}{% for item in v.data limit: 5 %}{{ item.name }} (company ID {{ item.id }}){% unless forloop.last %}; {% endunless %}{% endfor %}{% when "person" %}{% if v.data.id %}{{ v.data.firstName }} {{ v.data.lastName }}{% endif %}{% when "person-multi" %}{% for item in v.data limit: 5 %}{{ item.firstName }} {{ item.lastName }}{% unless forloop.last %}; {% endunless %}{% endfor %}{% when "dropdown", "ranked-dropdown" %}{{ v.data.text }}{% when "dropdown-multi" %}{% for item in v.data limit: 10 %}{{ item.text }}{% unless forloop.last %}; {% endunless %}{% endfor %}{% when "location" %}{% if v.data %}{% capture place %}{{ v.data.city }} {{ v.data.state }} {{ v.data.country }}{% endcapture %}{{ place | split: " " | join: " " }}{% endif %}{% when "location-multi" %}{% for item in v.data limit: 3 %}{% capture place %}{{ item.city }} {{ item.state }} {{ item.country }}{% endcapture %}{{ place | split: " " | join: " " }}{% unless forloop.last %}; {% endunless %}{% endfor %}{% when "datetime" %}{{ v.data | slice: 0, 10 }}{% when "formula-number" %}{{ v.data.calculatedValue }}{% when "interaction" %}{% if v.data.id %}{{ v.data.type }} on {{ v.data.sentAt | default: v.data.startTime | slice: 0, 10 }}{% endif %}{% when "number-multi", "filterable-text-multi" %}{{ v.data | join: "; " }}{% when "number", "text", "filterable-text" %}{{ v.data }}{% endcase %}{% endcapture %}{% assign shown = shown | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}{% if shown != "" %}
+      - {{ field.name }}: {{ shown | truncate: 300 }}{% endif %}{% endfor %}{% else %}Affinity returned an unexpected response.{% endif %}
+
+  - id: find_companies
+    title: Find Companies
+    description: Search Affinity for companies by name or website domain. Use this when you know the customer's company but not the person. Returns the company ID that Get Company needs. The search term must be at least 3 characters.
+    http_method: POST
+    endpoint_url: https://api.affinity.co/v2/companies/search?limit=5
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: query
+        type: string
+        description: The company name or website domain, such as acme.com. At least 3 characters.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"search":{"term":"{{ query | newline_to_br | replace: "<br />", " " | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}"}}
+    response_template: |-
+      {% if response.data %}{% for company in response.data limit: 5 %}- {{ company.name | default: "Unnamed company" }} (company ID {{ company.id }}){% if company.domain %} · {{ company.domain }}{% endif %}
+      {% else %}No company found in Affinity for this search.
+      {% endfor %}{% else %}Affinity returned an unexpected response.{% endif %}
+
+  - id: get_company
+    title: Get Company
+    description: Get a company's profile from Affinity, including domain, industry, location, size, and other enriched and custom fields. Use a company ID from Find Companies or from a company field in Get Person.
+    http_method: GET
+    endpoint_url: https://api.affinity.co/v2/companies/{{ company_id | strip | url_encode }}?fieldTypes=enriched&fieldTypes=global&fieldTypes=relationship-intelligence
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: company_id
+        type: string
+        description: The numeric Affinity company ID from Find Companies or Get Person.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.name | default: "Unnamed company" }} (company ID {{ response.id }}){% if response.domain %}
+      Domain: {{ response.domain }}{% endif %}{% if response.domains.size > 1 %}
+      All domains: {{ response.domains | slice: 0, 5 | join: ", " }}{% endif %}{% for field in response.fields limit: 40 %}{% assign v = field.value %}{% capture shown %}{% case v.type %}{% when "company" %}{% if v.data.id %}{{ v.data.name }} (company ID {{ v.data.id }}){% endif %}{% when "company-multi" %}{% for item in v.data limit: 5 %}{{ item.name }} (company ID {{ item.id }}){% unless forloop.last %}; {% endunless %}{% endfor %}{% when "person" %}{% if v.data.id %}{{ v.data.firstName }} {{ v.data.lastName }}{% endif %}{% when "person-multi" %}{% for item in v.data limit: 5 %}{{ item.firstName }} {{ item.lastName }}{% unless forloop.last %}; {% endunless %}{% endfor %}{% when "dropdown", "ranked-dropdown" %}{{ v.data.text }}{% when "dropdown-multi" %}{% for item in v.data limit: 10 %}{{ item.text }}{% unless forloop.last %}; {% endunless %}{% endfor %}{% when "location" %}{% if v.data %}{% capture place %}{{ v.data.city }} {{ v.data.state }} {{ v.data.country }}{% endcapture %}{{ place | split: " " | join: " " }}{% endif %}{% when "location-multi" %}{% for item in v.data limit: 3 %}{% capture place %}{{ item.city }} {{ item.state }} {{ item.country }}{% endcapture %}{{ place | split: " " | join: " " }}{% unless forloop.last %}; {% endunless %}{% endfor %}{% when "datetime" %}{{ v.data | slice: 0, 10 }}{% when "formula-number" %}{{ v.data.calculatedValue }}{% when "interaction" %}{% if v.data.id %}{{ v.data.type }} on {{ v.data.sentAt | default: v.data.startTime | slice: 0, 10 }}{% endif %}{% when "number-multi", "filterable-text-multi" %}{{ v.data | join: "; " }}{% when "number", "text", "filterable-text" %}{{ v.data }}{% endcase %}{% endcapture %}{% assign shown = shown | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}{% if shown != "" %}
+      - {{ field.name }}: {{ shown | truncate: 300 }}{% endif %}{% endfor %}{% else %}Affinity returned an unexpected response.{% endif %}
+
+  - id: list_person_lists
+    title: List Person Lists
+    description: List up to 10 Affinity lists a person is on, such as a customer or deal pipeline, with the list-specific fields like status or owner. Use the person ID from Find People.
+    http_method: GET
+    endpoint_url: https://api.affinity.co/v2/persons/{{ person_id | strip | url_encode }}/list-entries?limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: person_id
+        type: string
+        description: The numeric Affinity person ID from Find People.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for entry in response.data limit: 10 %}{{ entry.listName }} (list ID {{ entry.listId }}) · added {{ entry.createdAt | slice: 0, 10 }}{% for field in entry.fields limit: 20 %}{% assign v = field.value %}{% capture shown %}{% case v.type %}{% when "company" %}{% if v.data.id %}{{ v.data.name }} (company ID {{ v.data.id }}){% endif %}{% when "company-multi" %}{% for item in v.data limit: 5 %}{{ item.name }} (company ID {{ item.id }}){% unless forloop.last %}; {% endunless %}{% endfor %}{% when "person" %}{% if v.data.id %}{{ v.data.firstName }} {{ v.data.lastName }}{% endif %}{% when "person-multi" %}{% for item in v.data limit: 5 %}{{ item.firstName }} {{ item.lastName }}{% unless forloop.last %}; {% endunless %}{% endfor %}{% when "dropdown", "ranked-dropdown" %}{{ v.data.text }}{% when "dropdown-multi" %}{% for item in v.data limit: 10 %}{{ item.text }}{% unless forloop.last %}; {% endunless %}{% endfor %}{% when "location" %}{% if v.data %}{% capture place %}{{ v.data.city }} {{ v.data.state }} {{ v.data.country }}{% endcapture %}{{ place | split: " " | join: " " }}{% endif %}{% when "location-multi" %}{% for item in v.data limit: 3 %}{% capture place %}{{ item.city }} {{ item.state }} {{ item.country }}{% endcapture %}{{ place | split: " " | join: " " }}{% unless forloop.last %}; {% endunless %}{% endfor %}{% when "datetime" %}{{ v.data | slice: 0, 10 }}{% when "formula-number" %}{{ v.data.calculatedValue }}{% when "interaction" %}{% if v.data.id %}{{ v.data.type }} on {{ v.data.sentAt | default: v.data.startTime | slice: 0, 10 }}{% endif %}{% when "number-multi", "filterable-text-multi" %}{{ v.data | join: "; " }}{% when "number", "text", "filterable-text" %}{{ v.data }}{% endcase %}{% endcapture %}{% assign shown = shown | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}{% if shown != "" %}
+      - {{ field.name }}: {{ shown | truncate: 300 }}{% endif %}{% endfor %}
+      {% else %}This person is not on any Affinity list.
+      {% endfor %}{% else %}Affinity returned an unexpected response.{% endif %}
+
+  - id: list_person_notes
+    title: List Person Notes
+    description: Read up to 5 notes about a person in Affinity, newest first, including notes on meetings they attended and notes that mention them. Use this to see what the team already knows. Use the person ID from Find People.
+    http_method: GET
+    endpoint_url: https://api.affinity.co/v2/persons/{{ person_id | strip | url_encode }}/notes?limit=50
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: person_id
+        type: string
+        description: The numeric Affinity person ID from Find People.
+        required: true
+    response_template: |-
+      {% if response.data %}{% assign notes = response.data | sort: "createdAt" | reverse %}{% for note in notes limit: 5 %}- {{ note.createdAt | slice: 0, 10 }}{% if note.creator.firstName %} · by {{ note.creator.firstName }} {{ note.creator.lastName }}{% endif %}{% if note.type != "entities" %} · {{ note.type | replace: "-", " " }} note{% endif %}: {{ note.content.html | replace: "</p>", " " | replace: "<br>", " " | replace: "</li>", " " | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | strip | truncate: 500 | default: "(no text)" }}
+      {% else %}No notes found for this person.
+      {% endfor %}{% else %}Affinity returned an unexpected response.{% endif %}
+
+  - id: list_company_notes
+    title: List Company Notes
+    description: Read up to 5 notes about a company in Affinity, newest first. Use a company ID from Find Companies or Get Person.
+    http_method: GET
+    endpoint_url: https://api.affinity.co/v2/companies/{{ company_id | strip | url_encode }}/notes?limit=50
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: company_id
+        type: string
+        description: The numeric Affinity company ID from Find Companies or Get Person.
+        required: true
+    response_template: |-
+      {% if response.data %}{% assign notes = response.data | sort: "createdAt" | reverse %}{% for note in notes limit: 5 %}- {{ note.createdAt | slice: 0, 10 }}{% if note.creator.firstName %} · by {{ note.creator.firstName }} {{ note.creator.lastName }}{% endif %}{% if note.type != "entities" %} · {{ note.type | replace: "-", " " }} note{% endif %}: {{ note.content.html | replace: "</p>", " " | replace: "<br>", " " | replace: "</li>", " " | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | strip | truncate: 500 | default: "(no text)" }}
+      {% else %}No notes found for this company.
+      {% endfor %}{% else %}Affinity returned an unexpected response.{% endif %}
+
+  - id: add_note
+    title: Add Note
+    description: Add a note to a person or company in Affinity, for example a summary of this conversation or a follow-up request for the relationship owner. Only add a note when the conversation needs one. Use an ID from Find People or Find Companies.
+    http_method: POST
+    endpoint_url: https://api.affinity.co/v2/notes
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: record_type
+        type: string
+        description: 'The kind of record the ID belongs to: person or company.'
+        required: true
+      - name: record_id
+        type: integer
+        description: The numeric Affinity person ID or company ID.
+        required: true
+      - name: content
+        type: string
+        description: The note text. Plain text only.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% assign record_type = record_type | strip | downcase %}{% if record_type == "company" or record_type == "companies" %}{% assign key = "companies" %}{% else %}{% assign key = "persons" %}{% endif %}{"type":"entities","content":{"html":"<p>{{ content | strip | escape | replace: bs, escaped_bs | newline_to_br | strip_newlines | replace: "<br />", "<br>" }}</p>"},"{{ key }}":[{"id":{{ record_id | plus: 0 }}}]}
+    response_template: |-
+      {% if response.id %}Added the note in Affinity (note ID {{ response.id }}).{% else %}Affinity returned an unexpected response.{% endif %}
