@@ -1,0 +1,153 @@
+version: 0.0.1
+kind: captain_toolset
+name: Capsule
+author: chatwoot
+category: CRM
+description: Look up contacts, opportunities, projects, and history in Capsule CRM, and add notes to contacts.
+
+secrets:
+  api_token:
+    label: Capsule API token
+    type: password
+    required: true
+
+tools:
+  - id: find_contacts
+    title: Find Contacts
+    description: Search Capsule for people and organisations by email address, name, or phone number. Use this first to get the party ID the other Capsule tools need.
+    http_method: GET
+    endpoint_url: https://api.capsulecrm.com/api/v2/parties/search?q={{ query | strip | url_encode }}&perPage=5&embed=tags,organisation
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: query
+        type: string
+        description: The customer's email address. A name or phone number also works.
+        required: true
+    response_template: |-
+      {% if response.parties %}{% for party in response.parties %}- {% if party.type == "organisation" %}{{ party.name | default: "Unnamed organisation" }}{% else %}{% capture full_name %}{{ party.firstName }} {{ party.lastName }}{% endcapture %}{{ full_name | strip | default: "Unnamed person" }}{% endif %} ({{ party.type }}, party ID {{ party.id }}){% if party.jobTitle %}
+        Job title: {{ party.jobTitle }}{% endif %}{% if party.organisation.id %}
+        Organisation: {{ party.organisation.name }} (party ID {{ party.organisation.id }}){% endif %}{% if party.emailAddresses.size > 0 %}
+        Email: {% for email in party.emailAddresses limit: 3 %}{{ email.address }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if party.phoneNumbers.size > 0 %}
+        Phone: {% for phone in party.phoneNumbers limit: 3 %}{{ phone.number }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if party.owner.name %}
+        Owner: {{ party.owner.name }}{% endif %}{% if party.tags.size > 0 %}
+        Tags: {% for tag in party.tags limit: 10 %}{{ tag.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}
+      {% else %}No Capsule contact found for this search.
+      {% endfor %}{% elsif response.size == 0 %}No Capsule contact found for this search.{% else %}Capsule returned an unexpected response.{% endif %}
+
+  - id: get_contact
+    title: Get Contact
+    description: Get the full details of a person or organisation in Capsule, including address, tags, custom fields, owner, and last contact date. Use a party ID from Find Contacts.
+    http_method: GET
+    endpoint_url: https://api.capsulecrm.com/api/v2/parties/{{ party_id | strip | url_encode }}?embed=tags,fields,organisation
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: party_id
+        type: string
+        description: The numeric Capsule party ID from Find Contacts.
+        required: true
+    response_template: |-
+      {% if response.party.id %}{% assign party = response.party %}{% if party.type == "organisation" %}{{ party.name | default: "Unnamed organisation" }}{% else %}{% capture full_name %}{{ party.firstName }} {{ party.lastName }}{% endcapture %}{{ full_name | strip | default: "Unnamed person" }}{% endif %} ({{ party.type }}, party ID {{ party.id }}){% if party.jobTitle %}
+      Job title: {{ party.jobTitle }}{% endif %}{% if party.organisation.id %}
+      Organisation: {{ party.organisation.name }} (party ID {{ party.organisation.id }}){% endif %}{% if party.about %}
+      About: {{ party.about | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}{% if party.emailAddresses.size > 0 %}
+      Email: {% for email in party.emailAddresses limit: 5 %}{{ email.address }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if party.phoneNumbers.size > 0 %}
+      Phone: {% for phone in party.phoneNumbers limit: 5 %}{{ phone.number }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if party.addresses.size > 0 %}{% assign address = party.addresses.first %}{% capture location %}{{ address.street }} {{ address.city }} {{ address.state }} {{ address.zip }} {{ address.country }}{% endcapture %}
+      Address: {{ location | strip_newlines | split: " " | join: " " }}{% endif %}{% if party.websites.size > 0 %}
+      Websites: {% for website in party.websites limit: 5 %}{{ website.url | default: website.address }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if party.owner.name %}
+      Owner: {{ party.owner.name }}{% endif %}{% if party.team.name %}
+      Team: {{ party.team.name }}{% endif %}
+      Created: {{ party.createdAt | slice: 0, 10 }}{% if party.lastContactedAt %}
+      Last contacted: {{ party.lastContactedAt | slice: 0, 10 }}{% endif %}{% if party.tags.size > 0 %}
+      Tags: {% for tag in party.tags limit: 15 %}{{ tag.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% for field in party.fields limit: 25 %}{% if field.definition.name %}
+      - {{ field.definition.name }}: {{ field.value | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}{% endfor %}{% else %}Capsule returned an unexpected response.{% endif %}
+
+  - id: list_opportunities
+    title: List Opportunities
+    description: List up to 10 sales opportunities linked to a person or organisation in Capsule, with milestone, value, and expected close date. Use a party ID from Find Contacts.
+    http_method: GET
+    endpoint_url: https://api.capsulecrm.com/api/v2/parties/{{ party_id | strip | url_encode }}/opportunities?perPage=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: party_id
+        type: string
+        description: The numeric Capsule party ID from Find Contacts.
+        required: true
+    response_template: |-
+      {% if response.opportunities %}{% for opportunity in response.opportunities %}- {{ opportunity.name | default: "Unnamed opportunity" }} (opportunity ID {{ opportunity.id }}){% if opportunity.milestone.name %} · {{ opportunity.milestone.name }}{% endif %}{% if opportunity.value.amount %} · {{ opportunity.value.amount }} {{ opportunity.value.currency }}{% endif %}{% if opportunity.description %}
+        Description: {{ opportunity.description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}{% if opportunity.closedOn %}
+        Closed on: {{ opportunity.closedOn }}{% elsif opportunity.expectedCloseOn %}
+        Expected close: {{ opportunity.expectedCloseOn }}{% if opportunity.probability %} ({{ opportunity.probability }}% probability){% endif %}{% endif %}{% if opportunity.lostReason.name %}
+        Lost reason: {{ opportunity.lostReason.name }}{% endif %}{% if opportunity.owner.name %}
+        Owner: {{ opportunity.owner.name }}{% endif %}
+      {% else %}No opportunities are linked to this contact.
+      {% endfor %}{% elsif response.size == 0 %}No opportunities are linked to this contact.{% else %}Capsule returned an unexpected response.{% endif %}
+
+  - id: list_projects
+    title: List Projects
+    description: List up to 10 projects (cases) linked to a person or organisation in Capsule, with status, stage, and expected close date. Use this to check on work in progress for a customer. Use a party ID from Find Contacts.
+    http_method: GET
+    endpoint_url: https://api.capsulecrm.com/api/v2/parties/{{ party_id | strip | url_encode }}/kases?perPage=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: party_id
+        type: string
+        description: The numeric Capsule party ID from Find Contacts.
+        required: true
+    response_template: |-
+      {% if response.kases %}{% for project in response.kases %}- {{ project.name | default: "Unnamed project" }} (project ID {{ project.id }}) · {{ project.status | downcase }}{% if project.stage.name %} · {{ project.stage.name }}{% endif %}{% if project.description %}
+        Description: {{ project.description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}{% if project.closedOn %}
+        Closed on: {{ project.closedOn }}{% elsif project.expectedCloseOn %}
+        Expected close: {{ project.expectedCloseOn }}{% endif %}{% if project.owner.name %}
+        Owner: {{ project.owner.name }}{% endif %}
+      {% else %}No projects are linked to this contact.
+      {% endfor %}{% elsif response.size == 0 %}No projects are linked to this contact.{% else %}Capsule returned an unexpected response.{% endif %}
+
+  - id: list_history
+    title: List History
+    description: Read up to 10 history entries for a person or organisation in Capsule, covering notes, logged emails, and completed tasks. Use this to see what the team has already discussed with a customer. Use a party ID from Find Contacts.
+    http_method: GET
+    endpoint_url: https://api.capsulecrm.com/api/v2/parties/{{ party_id | strip | url_encode }}/entries?perPage=10&embed=creator,activityType
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: party_id
+        type: string
+        description: The numeric Capsule party ID from Find Contacts.
+        required: true
+    response_template: |-
+      {% if response.entries %}{% for entry in response.entries %}- {{ entry.entryAt | default: entry.createdAt | slice: 0, 10 }} · {{ entry.activityType.name | default: entry.type }}{% if entry.creator.name %} · by {{ entry.creator.name }}{% endif %}{% if entry.subject %}
+        Subject: {{ entry.subject | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 150 }}{% endif %}{% if entry.content %}
+        {{ entry.content | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 400 }}{% endif %}
+      {% else %}No history entries for this contact.
+      {% endfor %}{% elsif response.size == 0 %}No history entries for this contact.{% else %}Capsule returned an unexpected response.{% endif %}
+
+  - id: add_note
+    title: Add Note
+    description: Add a note to the history of a person or organisation in Capsule, for example a summary of this conversation or a follow-up request for the account owner. Only add a note when the conversation needs one. Use a party ID from Find Contacts.
+    http_method: POST
+    endpoint_url: https://api.capsulecrm.com/api/v2/entries
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: party_id
+        type: integer
+        description: The numeric Capsule party ID from Find Contacts.
+        required: true
+      - name: content
+        type: string
+        description: The note text. Plain text only.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% capture escaped_newline %}\\n{% endcapture %}{"entry":{"party":{"id":{{ party_id | plus: 0 }}},"type":"note","content":"{{ content | strip | replace: bs, escaped_bs | replace: '"', escaped_quote | newline_to_br | strip_newlines | replace: "<br />", escaped_newline }}"}}
+    response_template: |-
+      {% if response.entry.id %}Added the note to {{ response.entry.party.name | default: "the contact" }} in Capsule (entry ID {{ response.entry.id }}).{% else %}Capsule returned an unexpected response.{% endif %}
