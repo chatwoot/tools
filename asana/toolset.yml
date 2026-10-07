@@ -1,0 +1,127 @@
+version: 0.0.1
+kind: captain_toolset
+name: Asana
+author: chatwoot
+category: Others
+description: Find Asana tasks, read their status and comments, and add comments to tasks.
+
+inputs:
+  workspace_gid:
+    label: Asana workspace GID
+    type: string
+    placeholder: '1201234567890123'
+    required: true
+
+secrets:
+  access_token:
+    label: Asana personal access token
+    type: password
+    required: true
+
+tools:
+  - id: search_tasks
+    title: Search Tasks
+    description: Search Asana tasks by text in the task name and description, for example to check whether a bug or feature request a customer describes is already tracked. Returns up to 10 matches by relevance with the task GID the other Asana tools need. Needs a paid Asana plan; if it fails, use Find Tasks by Name.
+    http_method: GET
+    endpoint_url: https://app.asana.com/api/1.0/workspaces/${{ inputs.workspace_gid }}/tasks/search?text={{ query | strip | url_encode }}&sort_by=relevance&limit=10&opt_fields=name,completed,due_on,modified_at,permalink_url,assignee.name,memberships.project.name,memberships.section.name
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: query
+        type: string
+        description: Keywords describing the bug or request, such as "export CSV timeout". Keep it short.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for task in response.data limit: 10 %}- {{ task.name | default: "Untitled task" | truncate: 150 }} (task GID {{ task.gid }})
+        {% if task.completed %}Completed{% else %}Open{% endif %} · Assignee: {{ task.assignee.name | default: "unassigned" }}{% if task.due_on %} · Due: {{ task.due_on }}{% endif %} · Updated: {{ task.modified_at | slice: 0, 10 }}{% if task.memberships.size > 0 %}
+        In: {% for membership in task.memberships limit: 3 %}{{ membership.project.name }}{% if membership.section.name %} / {{ membership.section.name }}{% endif %}{% unless forloop.last %}; {% endunless %}{% endfor %}{% endif %}
+        {{ task.permalink_url }}
+      {% else %}No Asana tasks match this search.
+      {% endfor %}{% else %}Asana returned an unexpected response.{% endif %}
+
+  - id: find_tasks_by_name
+    title: Find Tasks by Name
+    description: Find Asana tasks whose name matches a few words, using Asana's quick typeahead search. Returns up to 10 tasks with the task GID the other Asana tools need. Works on every Asana plan, but only matches task names and is not exhaustive, so prefer Search Tasks when it is available.
+    http_method: GET
+    endpoint_url: https://app.asana.com/api/1.0/workspaces/${{ inputs.workspace_gid }}/typeahead?resource_type=task&query={{ query | strip | url_encode }}&count=10&opt_fields=name,completed,due_on,modified_at,permalink_url,assignee.name
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: query
+        type: string
+        description: Words from the task name, such as "CSV export".
+        required: true
+    response_template: |-
+      {% if response.data %}{% for task in response.data limit: 10 %}- {{ task.name | default: "Untitled task" | truncate: 150 }} (task GID {{ task.gid }})
+        {% if task.completed %}Completed{% else %}Open{% endif %} · Assignee: {{ task.assignee.name | default: "unassigned" }}{% if task.due_on %} · Due: {{ task.due_on }}{% endif %} · Updated: {{ task.modified_at | slice: 0, 10 }}
+        {{ task.permalink_url }}
+      {% else %}No Asana tasks have a matching name.
+      {% endfor %}{% else %}Asana returned an unexpected response.{% endif %}
+
+  - id: get_task
+    title: Get Task
+    description: Get one Asana task with its completion status, assignee, project and section, due date, tags, custom fields, and description. Use the task GID from Search Tasks or Find Tasks by Name, or the last number in a task URL the customer or team shared.
+    http_method: GET
+    endpoint_url: https://app.asana.com/api/1.0/tasks/{{ task_gid | strip | url_encode }}?opt_fields=name,notes,completed,completed_at,due_on,created_at,modified_at,permalink_url,num_subtasks,assignee.name,parent.name,memberships.project.name,memberships.section.name,tags.name,custom_fields.name,custom_fields.display_value
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: task_gid
+        type: string
+        description: The Asana task GID, a long number such as 1201234567890123.
+        required: true
+    response_template: |-
+      {% if response.data.gid %}{% assign task = response.data %}{{ task.name | default: "Untitled task" }} (task GID {{ task.gid }})
+      Status: {% if task.completed %}completed{% if task.completed_at %} on {{ task.completed_at | slice: 0, 10 }}{% endif %}{% else %}open{% endif %}
+      Assignee: {{ task.assignee.name | default: "unassigned" }}{% if task.due_on %}
+      Due: {{ task.due_on }}{% endif %}{% if task.memberships.size > 0 %}
+      In: {% for membership in task.memberships limit: 5 %}{{ membership.project.name }}{% if membership.section.name %} / {{ membership.section.name }}{% endif %}{% unless forloop.last %}; {% endunless %}{% endfor %}{% endif %}{% if task.parent %}
+      Parent task: {{ task.parent.name | truncate: 100 }} (task GID {{ task.parent.gid }}){% endif %}{% if task.num_subtasks > 0 %}
+      Subtasks: {{ task.num_subtasks }}{% endif %}{% if task.tags.size > 0 %}
+      Tags: {{ task.tags | map: "name" | join: ", " | truncate: 200 }}{% endif %}{% for field in task.custom_fields limit: 15 %}{% if field.display_value and field.display_value != "" %}
+      {{ field.name }}: {{ field.display_value | truncate: 150 }}{% endif %}{% endfor %}
+      Created: {{ task.created_at | slice: 0, 10 }} · Updated: {{ task.modified_at | slice: 0, 10 }}
+      Open in Asana: {{ task.permalink_url }}
+      Description: {% if task.notes and task.notes != "" %}{{ task.notes | truncate: 1500 }}{% else %}none{% endif %}{% else %}Asana returned an unexpected response.{% endif %}
+
+  - id: list_task_comments
+    title: List Task Comments
+    description: Read the 10 most recent comments on an Asana task, such as team updates or workarounds. Use the task GID from Search Tasks or Find Tasks by Name.
+    http_method: GET
+    endpoint_url: https://app.asana.com/api/1.0/tasks/{{ task_gid | strip | url_encode }}/stories?resource_subtype=comment_added&sort_ascending=false&limit=10&opt_fields=text,created_at,created_by.name,resource_subtype
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: task_gid
+        type: string
+        description: The Asana task GID, a long number such as 1201234567890123.
+        required: true
+    response_template: |-
+      {% if response.data %}{% assign shown = 0 %}{% for story in response.data limit: 10 %}{% if story.resource_subtype == "comment_added" %}{% assign shown = shown | plus: 1 %}- {{ story.created_at | slice: 0, 10 }} · {{ story.created_by.name | default: "Unknown author" }}: {{ story.text | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}
+      {% endif %}{% endfor %}{% if shown == 0 %}No comments on this task.{% endif %}{% else %}Asana returned an unexpected response.{% endif %}
+
+  - id: add_task_comment
+    title: Add Task Comment
+    description: Add a comment to an Asana task, for example to record that another customer reported the same bug with a link to the conversation. Find the task with Search Tasks or Find Tasks by Name first. Only comment when the conversation adds new information for the team.
+    http_method: POST
+    endpoint_url: https://app.asana.com/api/1.0/tasks/{{ task_gid | strip | url_encode }}/stories
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: task_gid
+        type: string
+        description: The Asana task GID, a long number such as 1201234567890123.
+        required: true
+      - name: text
+        type: string
+        description: The comment text. Plain text only. Do not include sensitive customer data.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% capture escaped_newline %}\\n{% endcapture %}{"data":{"text":"{{ text | strip | replace: bs, escaped_bs | replace: '"', escaped_quote | newline_to_br | strip_newlines | replace: "<br />", escaped_newline }}"}}
+    response_template: |-
+      {% if response.data.gid %}Added the comment to the task (comment GID {{ response.data.gid }}).{% else %}Asana returned an unexpected response.{% endif %}
