@@ -1,0 +1,137 @@
+version: 0.0.1
+kind: captain_toolset
+name: Chargebee
+author: chatwoot
+category: Payments & billing
+description: Check customer subscriptions, invoices, payments, and credit notes in Chargebee.
+
+inputs:
+  site:
+    label: Chargebee site name
+    placeholder: acme
+    required: true
+
+secrets:
+  api_key:
+    label: Chargebee read-only API key
+    type: password
+    required: true
+
+tools:
+  - id: find_customers_by_email
+    title: Find Customers by Email
+    description: Find Chargebee customers by their exact email address. Use this first to get the customer ID the other Chargebee tools need.
+    http_method: GET
+    endpoint_url: https://${{ inputs.site }}.chargebee.com/api/v2/customers?email%5Bis%5D={{ email | strip | url_encode }}&limit=10
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    response_template: |-
+      {% if response.list %}{% for entry in response.list %}{% assign customer = entry.customer %}{% capture name %}{{ customer.first_name }} {{ customer.last_name }}{% endcapture %}{% assign name = name | strip %}- {{ name | default: "No name" }} <{{ customer.email }}>{% if customer.company %} · {{ customer.company }}{% endif %}
+        Customer ID: {{ customer.id }}
+        Customer since: {{ customer.created_at | date: "%Y-%m-%d" }} · automatic payment collection is {{ customer.auto_collection }}
+      {% else %}No Chargebee customer found with this email address.
+      {% endfor %}{% else %}Chargebee returned an unexpected response.{% endif %}
+
+  - id: list_subscriptions
+    title: List Subscriptions
+    description: Check a customer's 10 most recent subscriptions, including cancelled ones, with plan and addon prices, billing period, next billing date, trial, and unpaid invoices. Use the customer ID from Find Customers by Email.
+    http_method: GET
+    endpoint_url: https://${{ inputs.site }}.chargebee.com/api/v2/subscriptions?customer_id%5Bis%5D={{ customer_id | strip | url_encode }}&limit=10&sort_by%5Bdesc%5D=created_at
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Chargebee customer ID from Find Customers by Email.
+        required: true
+    response_template: |-
+      {% if response.list %}{% assign zero_decimal = "BIF CLP DJF GNF JPY KMF KRW MGA PYG RWF UGX VND VUV XAF XOF XPF" | split: " " %}{% for entry in response.list %}{% assign subscription = entry.subscription %}{% if zero_decimal contains subscription.currency_code %}{% assign divisor = 1 %}{% else %}{% assign divisor = 100.0 %}{% endif %}- Subscription {{ subscription.id }} · {{ subscription.status | replace: "_", " " }}{% if subscription.started_at %} · started {{ subscription.started_at | date: "%Y-%m-%d" }}{% endif %}{% for item in subscription.subscription_items %}
+        {{ item.item_type | capitalize }}: {{ item.item_price_id }}{% if item.unit_price %} · {{ item.unit_price | divided_by: divisor }} {{ subscription.currency_code }}{% endif %}{% if item.quantity > 1 %} × {{ item.quantity }}{% endif %}{% endfor %}{% unless subscription.subscription_items %}{% if subscription.plan_id %}
+        Plan: {{ subscription.plan_id }}{% endif %}{% endunless %}{% if subscription.billing_period %}
+        Billed every {% if subscription.billing_period > 1 %}{{ subscription.billing_period }} {{ subscription.billing_period_unit }}s{% else %}{{ subscription.billing_period_unit }}{% endif %}{% endif %}{% if subscription.status == "in_trial" and subscription.trial_end %}
+        Trial ends: {{ subscription.trial_end | date: "%Y-%m-%d" }}{% endif %}{% if subscription.status == "non_renewing" %}
+        Cancels on: {{ subscription.cancelled_at | default: subscription.current_term_end | date: "%Y-%m-%d" }}{% elsif subscription.status == "cancelled" %}
+        Cancelled on: {{ subscription.cancelled_at | date: "%Y-%m-%d" }}{% if subscription.cancel_reason %} ({{ subscription.cancel_reason | replace: "_", " " }}){% endif %}{% elsif subscription.status == "paused" %}
+        Paused{% if subscription.pause_date %} on {{ subscription.pause_date | date: "%Y-%m-%d" }}{% endif %}{% if subscription.resume_date %}, resumes {{ subscription.resume_date | date: "%Y-%m-%d" }}{% endif %}{% elsif subscription.next_billing_at %}
+        Next billing date: {{ subscription.next_billing_at | date: "%Y-%m-%d" }}{% endif %}{% if subscription.pause_date and subscription.status != "paused" %}
+        Scheduled to pause on {{ subscription.pause_date | date: "%Y-%m-%d" }}{% endif %}{% if subscription.due_invoices_count > 0 %}
+        Unpaid invoices: {{ subscription.due_invoices_count }}, total due {{ subscription.total_dues | divided_by: divisor }} {{ subscription.currency_code }}{% endif %}
+      {% else %}No subscriptions found for this customer.
+      {% endfor %}{% else %}Chargebee returned an unexpected response.{% endif %}
+
+  - id: list_invoices
+    title: List Invoices
+    description: Check a customer's 10 most recent invoices, with status, total, amount due, due date, and payment retry status. Use the customer ID from Find Customers by Email.
+    http_method: GET
+    endpoint_url: https://${{ inputs.site }}.chargebee.com/api/v2/invoices?customer_id%5Bis%5D={{ customer_id | strip | url_encode }}&limit=10&sort_by%5Bdesc%5D=date
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Chargebee customer ID from Find Customers by Email.
+        required: true
+    response_template: |-
+      {% if response.list %}{% assign zero_decimal = "BIF CLP DJF GNF JPY KMF KRW MGA PYG RWF UGX VND VUV XAF XOF XPF" | split: " " %}{% for entry in response.list %}{% assign invoice = entry.invoice %}{% if zero_decimal contains invoice.currency_code %}{% assign divisor = 1 %}{% else %}{% assign divisor = 100.0 %}{% endif %}- Invoice {{ invoice.id }} · {{ invoice.date | date: "%Y-%m-%d" }} · {{ invoice.status | replace: "_", " " }} · total {{ invoice.total | divided_by: divisor }} {{ invoice.currency_code }}{% if invoice.amount_due > 0 %}
+        Amount due: {{ invoice.amount_due | divided_by: divisor }} {{ invoice.currency_code }}{% if invoice.due_date %}, due {{ invoice.due_date | date: "%Y-%m-%d" }}{% endif %}{% endif %}{% if invoice.paid_at %}
+        Paid on: {{ invoice.paid_at | date: "%Y-%m-%d" }}{% endif %}{% if invoice.dunning_status %}
+        Payment retries: {{ invoice.dunning_status | replace: "_", " " }}{% if invoice.next_retry_at %}, next attempt {{ invoice.next_retry_at | date: "%Y-%m-%d" }}{% endif %}{% endif %}{% if invoice.subscription_id %}
+        Subscription: {{ invoice.subscription_id }}{% endif %}
+      {% else %}No invoices found for this customer.
+      {% endfor %}{% else %}Chargebee returned an unexpected response.{% endif %}
+
+  - id: list_transactions
+    title: List Transactions
+    description: Check a customer's 10 most recent payment and refund transactions, with amount, status, payment method, linked invoices, and the gateway's failure message. Use this when a customer asks about a failed charge or a refund. Use the customer ID from Find Customers by Email.
+    http_method: GET
+    endpoint_url: https://${{ inputs.site }}.chargebee.com/api/v2/transactions?customer_id%5Bis%5D={{ customer_id | strip | url_encode }}&limit=10&sort_by%5Bdesc%5D=date
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Chargebee customer ID from Find Customers by Email.
+        required: true
+    response_template: |-
+      {% if response.list %}{% assign zero_decimal = "BIF CLP DJF GNF JPY KMF KRW MGA PYG RWF UGX VND VUV XAF XOF XPF" | split: " " %}{% for entry in response.list %}{% assign transaction = entry.transaction %}{% if zero_decimal contains transaction.currency_code %}{% assign divisor = 1 %}{% else %}{% assign divisor = 100.0 %}{% endif %}- {{ transaction.date | date: "%Y-%m-%d" }} · {{ transaction.type | replace: "_", " " }} · {{ transaction.amount | divided_by: divisor }} {{ transaction.currency_code }} · {{ transaction.status | replace: "_", " " }}
+        Transaction ID: {{ transaction.id }}{% if transaction.payment_method %} · {{ transaction.payment_method | replace: "_", " " }}{% if transaction.masked_card_number %} ending {{ transaction.masked_card_number | remove: "*" }}{% endif %}{% endif %}{% if transaction.linked_invoices.size > 0 %}
+        Invoices: {% for linked in transaction.linked_invoices limit: 3 %}{{ linked.invoice_id }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if transaction.refunded_txn_id %}
+        Refund of transaction: {{ transaction.refunded_txn_id }}{% endif %}{% if transaction.error_text %}
+        Failure: {{ transaction.error_text | strip_newlines | truncate: 200 }}{% if transaction.error_code %} (code {{ transaction.error_code }}){% endif %}{% endif %}
+      {% else %}No transactions found for this customer.
+      {% endfor %}{% else %}Chargebee returned an unexpected response.{% endif %}
+
+  - id: list_credit_notes
+    title: List Credit Notes
+    description: Check a customer's 10 most recent credit notes, with type, amount, reason, the invoice they were issued against, and how much was refunded or is still available. Use this when a customer asks about a refund or account credit. Use the customer ID from Find Customers by Email.
+    http_method: GET
+    endpoint_url: https://${{ inputs.site }}.chargebee.com/api/v2/credit_notes?customer_id%5Bis%5D={{ customer_id | strip | url_encode }}&limit=10&sort_by%5Bdesc%5D=date
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Chargebee customer ID from Find Customers by Email.
+        required: true
+    response_template: |-
+      {% if response.list %}{% assign zero_decimal = "BIF CLP DJF GNF JPY KMF KRW MGA PYG RWF UGX VND VUV XAF XOF XPF" | split: " " %}{% for entry in response.list %}{% assign note = entry.credit_note %}{% if zero_decimal contains note.currency_code %}{% assign divisor = 1 %}{% else %}{% assign divisor = 100.0 %}{% endif %}- Credit note {{ note.id }} · {{ note.date | date: "%Y-%m-%d" }} · {{ note.type }} · {{ note.total | divided_by: divisor }} {{ note.currency_code }} · {{ note.status | replace: "_", " " }}{% if note.reference_invoice_id %}
+        For invoice: {{ note.reference_invoice_id }}{% endif %}{% if note.create_reason_code or note.reason_code %}
+        Reason: {{ note.create_reason_code | default: note.reason_code | replace: "_", " " }}{% endif %}
+        Refunded: {{ note.amount_refunded | default: 0 | divided_by: divisor }} · applied to invoices: {{ note.amount_allocated | default: 0 | divided_by: divisor }} · still available: {{ note.amount_available | default: 0 | divided_by: divisor }} {{ note.currency_code }}
+      {% else %}No credit notes found for this customer.
+      {% endfor %}{% else %}Chargebee returned an unexpected response.{% endif %}
