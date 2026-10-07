@@ -1,0 +1,185 @@
+version: 0.0.1
+kind: captain_toolset
+name: Gumroad
+author: chatwoot
+category: Commerce
+description: Look up Gumroad sales, license keys, subscriptions, and products.
+
+secrets:
+  access_token:
+    label: Gumroad access token
+    type: password
+    required: true
+
+tools:
+  - id: find_sales_by_email
+    title: Find Sales by Email
+    description: Find a customer's Gumroad purchases by the email address they bought with. Use this first when a customer asks about a purchase, refund, license key, or subscription; it returns the sale ID, product ID, and subscription ID the other Gumroad tools need.
+    http_method: GET
+    endpoint_url: https://api.gumroad.com/v2/sales?email={{ email | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address the customer used for the purchase.
+        required: true
+    response_template: |-
+      {% if response.success and response.sales %}{% for sale in response.sales limit: 10 %}- {{ sale.product_name }}{% if sale.variants_and_quantity and sale.variants_and_quantity != "" %} {{ sale.variants_and_quantity }}{% endif %} · {{ sale.created_at | slice: 0, 10 }} · {{ sale.formatted_total_price }}
+        Sale ID: {{ sale.id }} · Order ID: {{ sale.order_id }} · Product ID: {{ sale.product_id }}
+        Status: {% if sale.chargedback %}charged back{% elsif sale.refunded %}refunded{% elsif sale.partially_refunded %}partially refunded{% elsif sale.disputed %}disputed{% else %}successful{% endif %}{% if sale.access_revoked %}, access revoked{% endif %}{% if sale.subscription_id %}
+        Subscription ID: {{ sale.subscription_id }}{% if sale.ended %} (ended){% elsif sale.cancelled %} (cancelled){% endif %}{% endif %}{% if sale.license_key %}
+        License key: {{ sale.license_key }}{% if sale.license_disabled %} (disabled){% endif %}{% endif %}{% if sale.is_product_physical %}
+        Shipping: {% if sale.shipped %}marked as shipped{% if sale.tracking_url %}, tracking {{ sale.tracking_url }}{% endif %}{% else %}not marked as shipped{% endif %}{% endif %}
+      {% else %}No sales found for this email address.
+      {% endfor %}{% if response.sales.size > 10 or response.next_page_key %}More sales exist than are shown here.{% endif %}{% else %}Gumroad returned an unexpected response.{% endif %}
+
+  - id: find_sales_by_license_key
+    title: Find Sales by License Key
+    description: Find the Gumroad sale a license key belongs to, and check whether the key is disabled and how many times it has been used. Use this when a customer gives a license key instead of an email address.
+    http_method: GET
+    endpoint_url: https://api.gumroad.com/v2/sales?license_key={{ license_key | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: license_key
+        type: string
+        description: The full license key, such as 83DB262A-C19D3B06-A5235A6B-8C079166.
+        required: true
+    response_template: |-
+      {% if response.success and response.sales %}{% for sale in response.sales limit: 5 %}- {{ sale.product_name }}{% if sale.variants_and_quantity and sale.variants_and_quantity != "" %} {{ sale.variants_and_quantity }}{% endif %} · {{ sale.created_at | slice: 0, 10 }} · {{ sale.formatted_total_price }}
+        Buyer: {{ sale.email }}
+        Sale ID: {{ sale.id }} · Product ID: {{ sale.product_id }}
+        License key: {{ sale.license_key }} · {% if sale.license_disabled %}disabled{% else %}enabled{% endif %}{% if sale.license_uses %} · used {{ sale.license_uses }} times{% endif %}
+        Status: {% if sale.chargedback %}charged back{% elsif sale.refunded %}refunded{% elsif sale.partially_refunded %}partially refunded{% elsif sale.disputed %}disputed{% else %}successful{% endif %}{% if sale.access_revoked %}, access revoked{% endif %}{% if sale.subscription_id %}
+        Subscription ID: {{ sale.subscription_id }}{% if sale.ended %} (ended){% elsif sale.cancelled %} (cancelled){% endif %}{% endif %}
+      {% else %}No sale found for this license key.
+      {% endfor %}{% else %}Gumroad returned an unexpected response.{% endif %}
+
+  - id: get_sale
+    title: Get Sale
+    description: Get the full details of one Gumroad sale, including amounts, refund and dispute status, payment card, discount code, license key, and shipping details for physical products. Use the sale ID from Find Sales by Email or Find Sales by License Key.
+    http_method: GET
+    endpoint_url: https://api.gumroad.com/v2/sales/{{ sale_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: sale_id
+        type: string
+        description: The Gumroad sale ID from Find Sales by Email or Find Sales by License Key, such as FO8TXN-dvxYabdavG97Y-Q==. This is not the numeric order ID.
+        required: true
+    response_template: |-
+      {% if response.success and response.sale.id %}{% assign sale = response.sale %}{{ sale.product_name }}{% if sale.variants_and_quantity and sale.variants_and_quantity != "" %} {{ sale.variants_and_quantity }}{% endif %} (sale ID {{ sale.id }})
+      Purchased: {{ sale.created_at | slice: 0, 10 }} by {{ sale.email }}
+      Order ID: {{ sale.order_id }} · Product ID: {{ sale.product_id }} · Quantity: {{ sale.quantity | default: 1 }}
+      Total: {{ sale.formatted_total_price }}{% if sale.currency %} ({{ sale.currency | upcase }}){% endif %}{% if sale.offer_code.name %}
+      Discount code: {{ sale.offer_code.name }}{% if sale.offer_code.displayed_amount_off %} ({{ sale.offer_code.displayed_amount_off }} off){% endif %}{% endif %}
+      Status: {% if sale.chargedback %}charged back{% elsif sale.refunded %}refunded{% elsif sale.partially_refunded %}partially refunded{% elsif sale.disputed %}disputed{% if sale.dispute_won %} (won by the seller){% endif %}{% else %}successful{% endif %}{% if sale.access_revoked %}, access revoked{% endif %}{% if sale.amount_refundable_in_currency %}
+      Still refundable: {{ sale.amount_refundable_in_currency }}{% if sale.currency %} {{ sale.currency | upcase }}{% endif %}{% endif %}{% if sale.card.visual %}
+      Card: {{ sale.card.type }} {{ sale.card.visual }}{% endif %}{% if sale.is_gift_sender_purchase %}
+      Sent as a gift{% endif %}{% if sale.is_gift_receiver_purchase %}
+      Received as a gift{% endif %}{% if sale.subscription_id %}
+      Subscription ID: {{ sale.subscription_id }}{% if sale.subscription_duration %} ({{ sale.subscription_duration }}){% endif %}{% if sale.ended %} · ended{% elsif sale.cancelled %} · cancelled{% endif %}{% if sale.subscription_end_date %} · ends {{ sale.subscription_end_date | slice: 0, 10 }}{% endif %}{% endif %}{% if sale.license_key %}
+      License key: {{ sale.license_key }} · {% if sale.license_disabled %}disabled{% else %}enabled{% endif %}{% if sale.license_uses %} · used {{ sale.license_uses }} times{% endif %}{% endif %}{% if sale.is_product_physical %}
+      Ship to: {{ sale.full_name }}, {{ sale.street_address }}, {{ sale.city }}, {{ sale.state }} {{ sale.zip_code }}, {{ sale.country }}
+      Shipping: {% if sale.shipped %}marked as shipped{% if sale.tracking_url %}, tracking {{ sale.tracking_url }}{% endif %}{% else %}not marked as shipped{% endif %}{% endif %}{% if sale.has_custom_fields %}{% for field in sale.custom_fields limit: 5 %}
+      {{ field[0] }}: {{ field[1] | truncate: 200 }}{% endfor %}{% endif %}{% if sale.review %}
+      Review: {{ sale.review | strip_newlines | truncate: 300 }}{% endif %}{% else %}Gumroad returned an unexpected response.{% endif %}
+
+  - id: list_products
+    title: List Products
+    description: List the products sold on the connected Gumroad account with their price, status, and link. Use this to answer questions about what is for sale, or to find the product ID that Get Product and Find Subscribers by Email need.
+    http_method: GET
+    endpoint_url: https://api.gumroad.com/v2/products
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    response_template: |-
+      {% if response.success and response.products %}{% for product in response.products limit: 25 %}- {{ product.name }} · {{ product.formatted_price }}{% if product.is_tiered_membership %} · membership{% endif %} · {% if product.deleted %}deleted{% elsif product.published %}published{% else %}unpublished{% endif %}
+        Product ID: {{ product.id }}{% if product.short_url %} · {{ product.short_url }}{% endif %}
+      {% else %}No products found on this Gumroad account.
+      {% endfor %}{% if response.products.size > 25 %}{{ response.products.size | minus: 25 }} more products are not shown.{% endif %}{% else %}Gumroad returned an unexpected response.{% endif %}
+
+  - id: get_product
+    title: Get Product
+    description: Get one Gumroad product's details, including price, description, variants or membership tiers, billing intervals, and whether it is published. Use the product ID from List Products or from a sale.
+    http_method: GET
+    endpoint_url: https://api.gumroad.com/v2/products/{{ product_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: product_id
+        type: string
+        description: The Gumroad product ID from List Products or from a sale, such as A-m3CDDC5dlrSdKZp0RFhA==.
+        required: true
+    response_template: |-
+      {% if response.success and response.product.id %}{% assign product = response.product %}{{ product.name }} (product ID {{ product.id }})
+      Price: {{ product.formatted_price }}{% if product.currency %} ({{ product.currency | upcase }}){% endif %}{% if product.customizable_price %} · pay what you want{% endif %}
+      Status: {% if product.deleted %}deleted{% elsif product.published %}published{% else %}unpublished{% endif %}{% if product.short_url %}
+      Link: {{ product.short_url }}{% endif %}{% if product.is_tiered_membership %}
+      Membership billed: {{ product.recurrences | join: ", " }}{% elsif product.subscription_duration %}
+      Subscription billed: {{ product.subscription_duration }}{% endif %}{% if product.require_shipping %}
+      Physical product that requires shipping{% endif %}{% if product.max_purchase_count %}
+      Limited to {{ product.max_purchase_count }} sales{% endif %}{% for variant in product.variants limit: 5 %}
+      {{ variant.title | default: "Options" }}: {% for option in variant.options limit: 15 %}{{ option.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endfor %}{% if product.custom_summary and product.custom_summary != "" %}
+      Summary: {{ product.custom_summary | replace: "<", " <" | strip_html | split: " " | join: " " | truncate: 300 }}{% endif %}{% if product.description and product.description != "" %}
+      Description: {{ product.description | replace: "<", " <" | strip_html | split: " " | join: " " | truncate: 600 }}{% endif %}{% else %}Gumroad returned an unexpected response.{% endif %}
+
+  - id: find_subscribers_by_email
+    title: Find Subscribers by Email
+    description: Find a customer's subscription to one Gumroad membership or subscription product by email, with its status, billing interval, and cancellation or failed-payment dates. Use the product ID from Find Sales by Email or List Products.
+    http_method: GET
+    endpoint_url: https://api.gumroad.com/v2/products/{{ product_id | strip | url_encode }}/subscribers?email={{ email | strip | url_encode }}&paginated=true
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: product_id
+        type: string
+        description: The Gumroad product ID of the membership or subscription product, from Find Sales by Email or List Products.
+        required: true
+      - name: email
+        type: string
+        description: The subscriber's email address.
+        required: true
+    response_template: |-
+      {% if response.success and response.subscribers %}{% for subscriber in response.subscribers limit: 10 %}- {{ subscriber.product_name }} · {{ subscriber.status | replace: "_", " " }}{% if subscriber.recurrence %} · billed {{ subscriber.recurrence }}{% endif %} · started {{ subscriber.created_at | slice: 0, 10 }}
+        Subscriber ID: {{ subscriber.id }} · {{ subscriber.user_email | default: subscriber.email }}{% if subscriber.free_trial_ends_at %}
+        Free trial ends: {{ subscriber.free_trial_ends_at | slice: 0, 10 }}{% endif %}{% if subscriber.user_requested_cancellation_at %}
+        Cancellation requested: {{ subscriber.user_requested_cancellation_at | slice: 0, 10 }}{% endif %}{% if subscriber.cancelled_at %}
+        Cancelled: {{ subscriber.cancelled_at | slice: 0, 10 }}{% endif %}{% if subscriber.failed_at %}
+        Payment failed: {{ subscriber.failed_at | slice: 0, 10 }}{% endif %}{% if subscriber.ended_at %}
+        Ended: {{ subscriber.ended_at | slice: 0, 10 }}{% endif %}{% if subscriber.license_key %}
+        License key: {{ subscriber.license_key }}{% endif %}
+      {% else %}No subscription found for this email address on this product.
+      {% endfor %}{% else %}Gumroad returned an unexpected response.{% endif %}
+
+  - id: get_subscriber
+    title: Get Subscriber
+    description: Get one Gumroad subscription's current status, billing interval, charge count, and cancellation, failed-payment, or end dates. Use the subscription ID shown on a sale from Find Sales by Email, or the subscriber ID from Find Subscribers by Email.
+    http_method: GET
+    endpoint_url: https://api.gumroad.com/v2/subscribers/{{ subscriber_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: subscriber_id
+        type: string
+        description: The Gumroad subscription ID from a sale, or the subscriber ID from Find Subscribers by Email, such as P5ppE6H8XIjy2JSCgUhbAw==.
+        required: true
+    response_template: |-
+      {% assign subscriber = response.subscribers | default: response.subscriber %}{% if response.success and subscriber.id %}{{ subscriber.product_name }} · {{ subscriber.status | replace: "_", " " }}{% if subscriber.recurrence %} · billed {{ subscriber.recurrence }}{% endif %}
+      Subscriber ID: {{ subscriber.id }} · {{ subscriber.user_email | default: subscriber.email }}
+      Product ID: {{ subscriber.product_id }}
+      Started: {{ subscriber.created_at | slice: 0, 10 }}{% if subscriber.charge_occurrence_count %}
+      Charges so far: {{ subscriber.charge_occurrence_count }}{% endif %}{% if subscriber.free_trial_ends_at %}
+      Free trial ends: {{ subscriber.free_trial_ends_at | slice: 0, 10 }}{% endif %}{% if subscriber.user_requested_cancellation_at %}
+      Cancellation requested: {{ subscriber.user_requested_cancellation_at | slice: 0, 10 }}{% endif %}{% if subscriber.cancelled_at %}
+      Cancelled: {{ subscriber.cancelled_at | slice: 0, 10 }}{% endif %}{% if subscriber.failed_at %}
+      Payment failed: {{ subscriber.failed_at | slice: 0, 10 }}{% endif %}{% if subscriber.ended_at %}
+      Ended: {{ subscriber.ended_at | slice: 0, 10 }}{% endif %}{% if subscriber.license_key %}
+      License key: {{ subscriber.license_key }}{% endif %}{% else %}Gumroad returned an unexpected response.{% endif %}
