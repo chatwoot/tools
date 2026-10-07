@@ -1,0 +1,156 @@
+version: 0.0.1
+kind: captain_toolset
+name: Customer.io
+author: chatwoot
+category: Marketing
+description: Look up people in Customer.io, their attributes, segments, subscription preferences, and the messages sent to them.
+
+inputs:
+  api_host:
+    label: App API host for your account region
+    type: select
+    options:
+      - api.customer.io
+      - api-eu.customer.io
+    required: true
+
+secrets:
+  app_api_key:
+    label: Customer.io App API key
+    type: password
+    required: true
+
+tools:
+  - id: find_customer
+    title: Find Customer
+    description: Find people in Customer.io by email address. Use this first to get the Customer.io ID (cio_id) the other Customer.io tools need.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v1/customers?email={{ email | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.app_api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The person's email address.
+        required: true
+    response_template: |-
+      {% if response.results %}{% for person in response.results limit: 5 %}- {{ person.email | default: "No email address" }}
+        Customer.io ID (cio_id): {{ person.cio_id }}{% if person.id %}
+        Your ID: {{ person.id }}{% endif %}
+      {% else %}No person found in Customer.io with this email address.
+      {% endfor %}{% else %}Customer.io returned an unexpected response.{% endif %}
+
+  - id: get_customer_attributes
+    title: Get Customer Attributes
+    description: Get a person's Customer.io profile, including whether they are globally unsubscribed, when they were last emailed, and their attributes such as plan or signup date. Use the cio_id from Find Customer.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v1/customers/{{ cio_id | strip | url_encode }}/attributes?id_type=cio_id
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.app_api_key }}
+    param_schema:
+      - name: cio_id
+        type: string
+        description: The Customer.io ID (cio_id) from Find Customer.
+        required: true
+    response_template: |-
+      {% if response.customer %}{% assign customer = response.customer %}{% assign hidden = "cio_id,email,id,unsubscribed,cio_subscription_preferences,_cio_subscription_preferences_computed" | split: "," %}{{ customer.attributes.email | default: customer.identifiers.email | default: "No email address" }} (cio_id {{ customer.identifiers.cio_id | default: customer.attributes.cio_id }})
+      Globally unsubscribed: {% if customer.unsubscribed %}yes{% if customer.timestamps.unsubscribed and customer.timestamps.unsubscribed > 0 %}, since {{ customer.timestamps.unsubscribed | date: "%Y-%m-%d" }}{% endif %}{% else %}no{% endif %}{% if customer.timestamps._last_emailed and customer.timestamps._last_emailed > 0 %}
+      Last emailed: {{ customer.timestamps._last_emailed | date: "%Y-%m-%d" }}{% endif %}
+      Devices: {{ customer.devices.size | default: 0 }}{% assign shown = 0 %}{% for attribute in customer.attributes %}{% unless hidden contains attribute[0] %}{% if attribute[1] != nil and attribute[1] != "" and shown < 30 %}{% assign shown = shown | plus: 1 %}
+      - {{ attribute[0] }}: {{ attribute[1] | truncate: 200 }}{% endif %}{% endunless %}{% endfor %}{% else %}Customer.io returned an unexpected response.{% endif %}
+
+  - id: list_customer_segments
+    title: List Customer Segments
+    description: List the Customer.io segments a person belongs to, such as paying customers or trial users. Use the cio_id from Find Customer.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v1/customers/{{ cio_id | strip | url_encode }}/segments?id_type=cio_id
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.app_api_key }}
+    param_schema:
+      - name: cio_id
+        type: string
+        description: The Customer.io ID (cio_id) from Find Customer.
+        required: true
+    response_template: |-
+      {% if response.segments %}{% for segment in response.segments limit: 40 %}- {{ segment.name }} (segment ID {{ segment.id }}){% if segment.description and segment.description != "" %}: {{ segment.description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 120 }}{% endif %}
+      {% else %}This person is not in any segment.
+      {% endfor %}{% if response.segments.size > 40 %}Showing 40 of {{ response.segments.size }}.{% endif %}{% else %}Customer.io returned an unexpected response.{% endif %}
+
+  - id: list_customer_messages
+    title: List Customer Messages
+    description: List the 10 most recent messages Customer.io created for a person in the last 6 months, with type, subject, recipient, delivery metrics, and any failure reason. Use this when a customer says they did not receive an email or asks what was sent to them. Use the cio_id from Find Customer.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v1/customers/{{ cio_id | strip | url_encode }}/messages?id_type=cio_id&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.app_api_key }}
+    param_schema:
+      - name: cio_id
+        type: string
+        description: The Customer.io ID (cio_id) from Find Customer.
+        required: true
+    response_template: |-
+      {% if response.messages %}{% for message in response.messages limit: 10 %}- {{ message.created | date: "%Y-%m-%d %H:%M" }} · {{ message.type }} · {{ message.subject | default: "No subject" | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 120 }}
+        To: {{ message.recipient | default: "unknown" }} · Message ID: {{ message.id }}{% capture metrics %}{% for metric in message.metrics %}{% if metric[1] %}{{ metric[0] }} {{ metric[1] | date: "%Y-%m-%d %H:%M" }}, {% endif %}{% endfor %}{% endcapture %}{% assign metrics = metrics | strip %}{% if metrics != "" %}
+        Metrics: {{ metrics | append: "#" | remove: ",#" }}{% endif %}{% if message.failure_message and message.failure_message != "" %}
+        Failure: {{ message.failure_message | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% else %}No messages found for this person in the last 6 months.
+      {% endfor %}{% else %}Customer.io returned an unexpected response.{% endif %}
+
+  - id: list_customer_activities
+    title: List Customer Activities
+    description: List a person's 20 most recent Customer.io activities, such as emails sent, delivered, opened, clicked, bounced, or failed, events, and attribute changes. Covers roughly the last 30 days. Use the cio_id from Find Customer.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v1/customers/{{ cio_id | strip | url_encode }}/activities?id_type=cio_id&limit=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.app_api_key }}
+    param_schema:
+      - name: cio_id
+        type: string
+        description: The Customer.io ID (cio_id) from Find Customer.
+        required: true
+    response_template: |-
+      {% if response.activities %}{% for activity in response.activities limit: 20 %}- {{ activity.timestamp | date: "%Y-%m-%d %H:%M" }} · {{ activity.type | replace: "_", " " }}{% if activity.name and activity.name != "" %} · {{ activity.name | truncate: 80 }}{% endif %}{% if activity.delivery_id and activity.delivery_id != "" %} · message ID {{ activity.delivery_id }}{% endif %}
+      {% else %}No recent activity found for this person.
+      {% endfor %}{% else %}Customer.io returned an unexpected response.{% endif %}
+
+  - id: get_subscription_preferences
+    title: Get Subscription Preferences
+    description: Check which Customer.io subscription topics a person is subscribed to or unsubscribed from, and whether they are unsubscribed from all messaging. Use this when a customer asks why they do or do not get certain emails. Use the cio_id from Find Customer.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v1/customers/{{ cio_id | strip | url_encode }}/subscription_preferences?id_type=cio_id
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.app_api_key }}
+    param_schema:
+      - name: cio_id
+        type: string
+        description: The Customer.io ID (cio_id) from Find Customer.
+        required: true
+    response_template: |-
+      {% if response.customer %}Unsubscribed from all messaging: {% if response.customer.unsubscribed %}yes{% else %}no{% endif %}
+      {% for topic in response.customer.topics limit: 30 %}- {{ topic.name }} (topic ID {{ topic.id }}): {% if topic.subscribed %}subscribed{% else %}unsubscribed{% endif %}
+      {% else %}No subscription topics are set up.
+      {% endfor %}{% else %}Customer.io returned an unexpected response.{% endif %}
+
+  - id: check_email_suppression
+    title: Check Email Suppression
+    description: Check whether an email address is suppressed by Customer.io's email provider because of a bounce or spam complaint, which blocks emails to it. Use this when a customer says they are not receiving any emails.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v1/esp/search_suppression/{{ email | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.app_api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address to check.
+        required: true
+    response_template: |-
+      {% if response.suppressions.size > 0 %}{% for suppression in response.suppressions limit: 5 %}- {{ suppression.email }} is suppressed ({{ response.category | default: "unknown category" }}) since {{ suppression.created | date: "%Y-%m-%d" }}{% if suppression.status and suppression.status != "" %} · status {{ suppression.status }}{% endif %}{% if suppression.reason and suppression.reason != "" %}
+        Reason: {{ suppression.reason | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% endfor %}{% elsif response.suppressions or response.category or response == empty %}This email address is not suppressed.{% else %}Customer.io returned an unexpected response.{% endif %}
