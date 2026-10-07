@@ -1,0 +1,158 @@
+version: 0.0.1
+kind: captain_toolset
+name: monday.com
+author: chatwoot
+category: Others
+description: Find items on monday.com boards, check their status and updates, and post updates to items.
+
+headers:
+  API-Version: '2026-07'
+
+secrets:
+  api_token:
+    label: monday.com API token
+    type: password
+    required: true
+
+tools:
+  - id: list_boards
+    title: List Boards
+    description: List the 50 most recently used active boards in monday.com with their board IDs. Use this first to find the board ID that Search Items and Get Board need.
+    http_method: POST
+    endpoint_url: https://api.monday.com/v2
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.api_token }}
+    request_template: '{"query":"query { boards(limit: 50, state: active, order_by: used_at) { id name description items_count type workspace { name } } }"}'
+    response_template: |-
+      {% if response.errors.size > 0 %}monday.com returned an error: {{ response.errors[0].message | truncate: 300 }}{% elsif response.data.boards %}{% assign shown = 0 %}{% for board in response.data.boards %}{% unless board.type == "sub_items_board" %}{% assign shown = shown | plus: 1 %}- {{ board.name }} (board ID {{ board.id }}) · {{ board.items_count | default: 0 }} items · Workspace: {{ board.workspace.name | default: "Main workspace" }}{% if board.description and board.description != "" %}
+        {{ board.description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 150 }}{% endif %}
+      {% endunless %}{% endfor %}{% if shown == 0 %}No active boards found.{% endif %}{% else %}monday.com returned an unexpected response.{% endif %}
+
+  - id: get_board
+    title: Get Board
+    description: Get a monday.com board's groups and its first 25 items in board order, to see what is tracked there. Use a board ID from List Boards.
+    http_method: POST
+    endpoint_url: https://api.monday.com/v2
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: board_id
+        type: string
+        description: The numeric monday.com board ID from List Boards.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"query":"query ($board: [ID!]) { boards(ids: $board) { id name description state items_count url groups { id title } items_page(limit: 25) { items { id name updated_at group { title } } } } }","variables":{"board":["{{ board_id | newline_to_br | replace: "<br />", " " | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}"]}}
+    response_template: |-
+      {% if response.errors.size > 0 %}monday.com returned an error: {{ response.errors[0].message | truncate: 300 }}{% elsif response.data.boards.size == 0 %}No board found with this ID.{% elsif response.data.boards[0].id %}{% assign board = response.data.boards[0] %}{{ board.name }} (board ID {{ board.id }}) · {{ board.state }} · {{ board.items_count | default: 0 }} items
+      Link: {{ board.url }}{% if board.description and board.description != "" %}
+      Description: {{ board.description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}
+      Groups: {% for group in board.groups limit: 20 %}{{ group.title }}{% unless forloop.last %}, {% endunless %}{% endfor %}
+      Items:
+      {% for item in board.items_page.items limit: 25 %}- {{ item.name | truncate: 120 }} (item ID {{ item.id }}) · Group: {{ item.group.title | default: "none" }} · Updated {{ item.updated_at | slice: 0, 10 }}
+      {% else %}No items on this board.
+      {% endfor %}{% else %}monday.com returned an unexpected response.{% endif %}
+
+  - id: search_items
+    title: Search Items
+    description: Search one monday.com board for items whose name contains the given text, such as a bug or feature request a customer mentions. Use a board ID from List Boards. Returns up to 10 items with the item IDs the other tools need.
+    http_method: POST
+    endpoint_url: https://api.monday.com/v2
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: board_id
+        type: string
+        description: The numeric monday.com board ID from List Boards.
+        required: true
+      - name: query
+        type: string
+        description: Text to look for in item names. Use one or two distinctive words.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"query":"query ($board: [ID!], $term: CompareValue!) { boards(ids: $board) { id name items_page(limit: 10, query_params: {rules: [{column_id: \"name\", compare_value: $term, operator: contains_text}]}) { items { id name state url updated_at group { title } } } } }","variables":{"board":["{{ board_id | newline_to_br | replace: "<br />", " " | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}"],"term":["{{ query | newline_to_br | replace: "<br />", " " | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}"]}}
+    response_template: |-
+      {% if response.errors.size > 0 %}monday.com returned an error: {{ response.errors[0].message | truncate: 300 }}{% elsif response.data.boards.size == 0 %}No board found with this ID.{% elsif response.data.boards[0].items_page %}{% assign board = response.data.boards[0] %}{% for item in board.items_page.items limit: 10 %}- {{ item.name | truncate: 150 }} (item ID {{ item.id }})
+        Board: {{ board.name }} · Group: {{ item.group.title | default: "none" }} · Updated {{ item.updated_at | slice: 0, 10 }}
+        {{ item.url }}
+      {% else %}No items on this board match that text.
+      {% endfor %}{% else %}monday.com returned an unexpected response.{% endif %}
+
+  - id: get_item
+    title: Get Item
+    description: Get one monday.com item's details, including its board, group, and column values such as status, owner, and dates. Use an item ID from Search Items or Get Board.
+    http_method: POST
+    endpoint_url: https://api.monday.com/v2
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: item_id
+        type: string
+        description: The numeric monday.com item ID from Search Items or Get Board.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"query":"query ($item: [ID!]) { items(ids: $item) { id name state url created_at updated_at board { id name } group { title } creator { name } column_values { id text type column { title } } } }","variables":{"item":["{{ item_id | newline_to_br | replace: "<br />", " " | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}"]}}
+    response_template: |-
+      {% if response.errors.size > 0 %}monday.com returned an error: {{ response.errors[0].message | truncate: 300 }}{% elsif response.data.items.size == 0 %}No item found with this ID.{% elsif response.data.items[0].id %}{% assign item = response.data.items[0] %}{{ item.name }} (item ID {{ item.id }}) · {{ item.state }}
+      Board: {{ item.board.name | default: "unknown" }} · Group: {{ item.group.title | default: "none" }}
+      Created: {{ item.created_at | slice: 0, 10 }}{% if item.creator.name %} by {{ item.creator.name }}{% endif %} · Updated: {{ item.updated_at | slice: 0, 10 }}
+      Link: {{ item.url }}{% assign shown = 0 %}{% for value in item.column_values %}{% if shown < 30 and value.text and value.text != "" %}{% assign shown = shown | plus: 1 %}
+      - {{ value.column.title | default: value.id }}: {{ value.text | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}{% endfor %}{% else %}monday.com returned an unexpected response.{% endif %}
+
+  - id: list_item_updates
+    title: List Item Updates
+    description: Read the 10 most recent updates posted on a monday.com item, such as progress notes from the team. Use an item ID from Search Items or Get Board.
+    http_method: POST
+    endpoint_url: https://api.monday.com/v2
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: item_id
+        type: string
+        description: The numeric monday.com item ID from Search Items or Get Board.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"query":"query ($item: [ID!]) { items(ids: $item) { id name updates(limit: 10) { id text_body created_at creator { name } } } }","variables":{"item":["{{ item_id | newline_to_br | replace: "<br />", " " | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}"]}}
+    response_template: |-
+      {% if response.errors.size > 0 %}monday.com returned an error: {{ response.errors[0].message | truncate: 300 }}{% elsif response.data.items.size == 0 %}No item found with this ID.{% elsif response.data.items[0].id %}{% assign item = response.data.items[0] %}Updates on {{ item.name }}:
+      {% for update in item.updates limit: 10 %}- {{ update.created_at | slice: 0, 10 }} · {{ update.creator.name | default: "Unknown user" }}: {{ update.text_body | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}
+      {% else %}No updates on this item.
+      {% endfor %}{% else %}monday.com returned an unexpected response.{% endif %}
+
+  - id: add_item_update
+    title: Add Item Update
+    description: Post an update on a monday.com item, for example to note that another customer reported the same issue, with a short summary. Use an item ID from Search Items. Only post an update when the conversation needs one.
+    http_method: POST
+    endpoint_url: https://api.monday.com/v2
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: item_id
+        type: string
+        description: The numeric monday.com item ID from Search Items or Get Board.
+        required: true
+      - name: body
+        type: string
+        description: The update text. Plain text only.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"query":"mutation ($item: ID, $body: String!) { create_update(item_id: $item, body: $body) { id } }","variables":{"item":"{{ item_id | newline_to_br | replace: "<br />", " " | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}","body":"{{ body | strip | replace: bs, escaped_bs | replace: '"', escaped_quote | newline_to_br | strip_newlines }}"}}
+    response_template: |-
+      {% if response.errors.size > 0 %}monday.com returned an error: {{ response.errors[0].message | truncate: 300 }}{% elsif response.data.create_update.id %}Posted the update on the item (update ID {{ response.data.create_update.id }}).{% else %}monday.com returned an unexpected response.{% endif %}
