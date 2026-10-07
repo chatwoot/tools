@@ -1,0 +1,150 @@
+version: 0.0.1
+kind: captain_toolset
+name: AfterShip Tracking
+author: chatwoot
+category: Shipping
+description: Look up shipment status, delivery estimates, and tracking history in AfterShip.
+
+secrets:
+  api_key:
+    label: AfterShip API key
+    type: password
+    required: true
+
+tools:
+  - id: find_tracking_by_number
+    title: Find Tracking by Number
+    description: Look up a shipment in AfterShip by its tracking number. Use this first when a customer gives a tracking number and asks where their package is. Returns the status, delivery estimate, latest update, and the tracking ID that Get Tracking needs.
+    http_method: GET
+    endpoint_url: 'https://api.aftership.com/tracking/2026-07/trackings?tracking_numbers={{ tracking_number | strip | remove: " " | url_encode }}&limit=5'
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: as-api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: tracking_number
+        type: string
+        description: The courier tracking number the customer was given.
+        required: true
+    response_template: |-
+      {% if response.data.trackings %}{% for t in response.data.trackings limit: 5 %}- {{ t.tracking_number }} · {{ t.slug }} · {{ t.subtag_message | default: t.tag }}
+        Tracking ID: {{ t.id }}{% if t.order_number or t.order_id %}
+        Order: {{ t.order_number | default: t.order_id }}{% endif %}{% if t.shipment_delivery_date %}
+        Delivered: {{ t.shipment_delivery_date }}{% if t.signed_by %}, signed by {{ t.signed_by }}{% endif %}{% elsif t.latest_estimated_delivery %}{% assign edd = t.latest_estimated_delivery %}
+        Estimated delivery: {% if edd.datetime %}{{ edd.datetime }}{% else %}{{ edd.datetime_min }} to {{ edd.datetime_max }}{% endif %}{% if edd.source %} ({{ edd.source }} estimate){% endif %}{% endif %}{% if t.origin_country_region or t.destination_country_region %}
+        Route: {{ t.origin_country_region | default: "unknown" }} to {{ t.destination_country_region | default: "unknown" }}{% endif %}{% if t.return_to_sender %}
+        Being returned to sender{% endif %}{% assign last = t.checkpoints | last %}{% if last %}
+        Latest update: {{ last.checkpoint_time }} · {{ last.message | truncate: 200 }}{% if last.location %} · {{ last.location }}{% endif %}{% endif %}{% if t.courier_tracking_link %}
+        Courier page: {{ t.courier_tracking_link }}{% endif %}{% if t.aftership_tracking_url %}
+        Tracking page: {{ t.aftership_tracking_url }}{% endif %}
+      {% else %}No shipment found with this tracking number. Use Add Tracking to start tracking it.
+      {% endfor %}{% else %}AfterShip returned an unexpected response.{% endif %}
+
+  - id: search_trackings
+    title: Search Trackings
+    description: Search AfterShip shipments by keyword when the customer has no tracking number. The keyword can be an order number, customer email address, or customer name. Returns up to 5 matching shipments with status and the tracking ID that Get Tracking needs.
+    http_method: GET
+    endpoint_url: https://api.aftership.com/tracking/2026-07/trackings?keyword={{ keyword | strip | url_encode }}&limit=5
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: as-api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: keyword
+        type: string
+        description: An order number, customer email address, or customer name to search for.
+        required: true
+    response_template: |-
+      {% if response.data.trackings %}{% for t in response.data.trackings limit: 5 %}- {{ t.tracking_number }} · {{ t.slug }} · {{ t.subtag_message | default: t.tag }}
+        Tracking ID: {{ t.id }}{% if t.order_number or t.order_id %}
+        Order: {{ t.order_number | default: t.order_id }}{% endif %}{% if t.title and t.title != t.tracking_number %}
+        Title: {{ t.title | truncate: 100 }}{% endif %}{% if t.shipment_delivery_date %}
+        Delivered: {{ t.shipment_delivery_date }}{% if t.signed_by %}, signed by {{ t.signed_by }}{% endif %}{% elsif t.latest_estimated_delivery %}{% assign edd = t.latest_estimated_delivery %}
+        Estimated delivery: {% if edd.datetime %}{{ edd.datetime }}{% else %}{{ edd.datetime_min }} to {{ edd.datetime_max }}{% endif %}{% if edd.source %} ({{ edd.source }} estimate){% endif %}{% endif %}{% assign last = t.checkpoints | last %}{% if last %}
+        Latest update: {{ last.checkpoint_time }} · {{ last.message | truncate: 200 }}{% if last.location %} · {{ last.location }}{% endif %}{% endif %}{% if t.aftership_tracking_url %}
+        Tracking page: {{ t.aftership_tracking_url }}{% endif %}
+      {% else %}No shipments found for this keyword.
+      {% endfor %}{% else %}AfterShip returned an unexpected response.{% endif %}
+
+  - id: get_tracking
+    title: Get Tracking
+    description: Get full details of one AfterShip shipment by tracking ID, including the 10 most recent tracking events, delivery estimate, shipping method, and failed delivery attempts. Use the tracking ID from Find Tracking by Number or Search Trackings.
+    http_method: GET
+    endpoint_url: https://api.aftership.com/tracking/2026-07/trackings/{{ tracking_id | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: as-api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: tracking_id
+        type: string
+        description: The AfterShip tracking ID from Find Tracking by Number or Search Trackings. This is not the courier tracking number.
+        required: true
+    response_template: |-
+      {% if response.data.id %}{% assign t = response.data %}{{ t.tracking_number }} · {{ t.slug }} · {{ t.subtag_message | default: t.tag }}
+      Tracking ID: {{ t.id }}{% if t.order_number or t.order_id %}
+      Order: {{ t.order_number | default: t.order_id }}{% endif %}{% if t.shipping_method or t.shipment_type %}
+      Service: {{ t.shipping_method | default: t.shipment_type }}{% endif %}{% if t.shipment_pickup_date %}
+      Picked up by courier: {{ t.shipment_pickup_date }}{% endif %}{% if t.shipment_delivery_date %}
+      Delivered: {{ t.shipment_delivery_date }}{% if t.signed_by %}, signed by {{ t.signed_by }}{% endif %}{% elsif t.latest_estimated_delivery %}{% assign edd = t.latest_estimated_delivery %}
+      Estimated delivery: {% if edd.datetime %}{{ edd.datetime }}{% else %}{{ edd.datetime_min }} to {{ edd.datetime_max }}{% endif %}{% if edd.source %} ({{ edd.source }} estimate){% endif %}{% endif %}{% if t.origin_country_region or t.destination_country_region %}
+      Route: {{ t.origin_country_region | default: "unknown" }} to {{ t.destination_country_region | default: "unknown" }}{% endif %}{% if t.transit_time %}
+      Days in transit: {{ t.transit_time }}{% endif %}{% if t.failed_delivery_attempts and t.failed_delivery_attempts > 0 %}
+      Failed delivery attempts: {{ t.failed_delivery_attempts }}{% endif %}{% if t.return_to_sender %}
+      Being returned to sender{% endif %}{% if t.pickup_location %}
+      Pickup location: {{ t.pickup_location | truncate: 200 }}{% endif %}{% if t.courier_tracking_link %}
+      Courier page: {{ t.courier_tracking_link }}{% endif %}{% if t.courier_redirect_link %}
+      Change delivery: {{ t.courier_redirect_link }}{% endif %}{% if t.aftership_tracking_url %}
+      Tracking page: {{ t.aftership_tracking_url }}{% endif %}
+      Recent events, newest first:{% assign events = t.checkpoints | reverse %}{% for c in events limit: 10 %}
+      - {{ c.checkpoint_time }} · {{ c.message | truncate: 200 }}{% if c.location %} · {{ c.location }}{% endif %}{% else %}
+      - No tracking events yet.{% endfor %}{% else %}AfterShip returned an unexpected response.{% endif %}
+
+  - id: detect_courier
+    title: Detect Courier
+    description: Identify which couriers a tracking number could belong to. Use this when a customer does not know their courier, or before Add Tracking when the courier is unclear. Returns the courier names and the courier codes Add Tracking accepts.
+    http_method: POST
+    endpoint_url: https://api.aftership.com/tracking/2026-07/couriers/detect
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: as-api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: tracking_number
+        type: string
+        description: The courier tracking number the customer was given.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{"tracking_number":"{{ tracking_number | strip_newlines | remove: " " | remove: bs | remove: '"' }}"}
+    response_template: |-
+      {% if response.data.couriers %}{% for courier in response.data.couriers limit: 5 %}- {{ courier.name }} (courier code {{ courier.slug }}){% if courier.web_url %} · {{ courier.web_url }}{% endif %}{% if courier.phone %} · {{ courier.phone }}{% endif %}
+      {% else %}No courier matches this tracking number.
+      {% endfor %}{% else %}AfterShip returned an unexpected response.{% endif %}
+
+  - id: add_tracking
+    title: Add Tracking
+    description: Start tracking a shipment in AfterShip. Only use this when Find Tracking by Number found nothing for a tracking number the customer gave. New shipments start as pending, so call Find Tracking by Number again a little later for the status. Fails if the number is already tracked or is not valid.
+    http_method: POST
+    endpoint_url: https://api.aftership.com/tracking/2026-07/trackings
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: as-api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: tracking_number
+        type: string
+        description: The courier tracking number the customer was given.
+        required: true
+      - name: courier_code
+        type: string
+        description: The AfterShip courier code from Detect Courier, such as ups or fedex. Leave empty to let AfterShip detect the courier.
+        required: false
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% assign courier_code = courier_code | strip_newlines | strip | downcase | remove: bs | remove: '"' %}{"tracking_number":"{{ tracking_number | strip_newlines | remove: " " | remove: bs | remove: '"' }}"{% if courier_code != "" %},"slug":"{{ courier_code }}"{% endif %}}
+    response_template: |-
+      {% if response.data.id %}Now tracking {{ response.data.tracking_number }} with {{ response.data.slug }}. Status: {{ response.data.subtag_message | default: response.data.tag }}. Tracking ID: {{ response.data.id }}{% else %}AfterShip returned an unexpected response.{% endif %}
