@@ -1,0 +1,178 @@
+version: 0.0.1
+kind: captain_toolset
+name: Document360
+author: chatwoot
+category: Others
+description: Search Document360 knowledge base articles, read their content, and ask Eddy AI questions.
+
+inputs:
+  api_host:
+    label: Document360 API host
+    type: select
+    options:
+      - apihub.document360.io
+      - apihub.us.document360.io
+    required: true
+
+secrets:
+  api_token:
+    label: Document360 API token
+    type: password
+    required: true
+
+tools:
+  - id: list_workspaces
+    title: List Workspaces
+    description: List the Document360 workspaces in the project with their workspace IDs and language codes. Call this first; the search, category, and Eddy AI tools need a workspace ID and a language code from here.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v2/ProjectVersions
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: api_token
+      key: ${{ secrets.api_token }}
+    response_template: |-
+      {% if response.data %}{% for workspace in response.data %}- {{ workspace.version_code_name | default: "Unnamed workspace" }} (workspace ID {{ workspace.id }}){% if workspace.is_main_version %} · main workspace{% endif %}{% if workspace.is_deprecated %} · deprecated{% endif %}{% if workspace.is_beta %} · beta{% endif %}{% if workspace.is_public == false %} · private{% endif %}{% if workspace.language_versions.size > 0 %}
+        Languages: {% for language in workspace.language_versions %}{{ language.code }}{% if language.set_as_default %} (default){% endif %}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}
+      {% else %}No Document360 workspaces found.
+      {% endfor %}{% else %}Document360 returned an unexpected response.{% endif %}
+
+  - id: search_articles
+    title: Search Articles
+    description: Search a Document360 workspace by keywords and get up to 10 matching published articles with article IDs and excerpts. Use the workspace ID and language code from List Workspaces, then call Get Article to read the full text.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v2/ProjectVersions/{{ workspace_id | strip | url_encode }}/{{ lang_code | strip | url_encode }}?searchQuery={{ query | strip | url_encode }}&hitsPerPage=10
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: api_token
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: workspace_id
+        type: string
+        description: The Document360 workspace ID from List Workspaces, a UUID.
+        required: true
+      - name: lang_code
+        type: string
+        description: The language code from List Workspaces, such as en. Use the workspace's default language unless the customer writes in another listed language.
+        required: true
+      - name: query
+        type: string
+        description: Keywords to search for, such as "single sign-on" or "export PDF".
+        required: true
+    response_template: |-
+      {% if response.data.hits %}{% assign shown = 0 %}{% for hit in response.data.hits %}{% unless hit.is_draft or hit.is_unpublished or hit.is_deleted %}{% assign shown = shown | plus: 1 %}- {{ hit.title | default: "Untitled" }} ({% if hit.is_category %}category ID {{ hit.category_id }}{% else %}article ID {{ hit.article_id }}{% endif %}){% if hit.breadcrumb and hit.breadcrumb != "" %} · {{ hit.breadcrumb }}{% endif %}{% assign excerpt = hit._snippet_result.content.value | default: hit.content | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}{% if excerpt != "" %}
+        {{ excerpt | truncate: 300 }}{% endif %}
+      {% endunless %}{% endfor %}{% if shown == 0 %}No published Document360 articles matched this search.{% endif %}{% else %}Document360 returned an unexpected response.{% endif %}
+
+  - id: get_article
+    title: Get Article
+    description: Read the published version of a Document360 article as text. Use the article ID from Search Articles, Get Category, or Ask Eddy AI, and a language code from List Workspaces. Long articles are cut off after about 6,000 characters.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v2/Articles/{{ article_id | strip | url_encode }}/{{ lang_code | strip | url_encode }}?isForDisplay=true&isPublished=true&appendSASToken=false
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: api_token
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: article_id
+        type: string
+        description: The Document360 article ID, a UUID.
+        required: true
+      - name: lang_code
+        type: string
+        description: The language code of the article, such as en.
+        required: true
+    response_template: |-
+      {% if response.data.id %}{% assign article = response.data %}{% capture nl %}
+      {% endcapture %}{% capture item %}{{ nl }}- {% endcapture %}{% capture heading_end %}{{ nl }}</h{% endcapture %}{% capture br %}{{ nl }}<br{% endcapture %}{% capture row %}{{ nl }}<tr{% endcapture %}{% assign text = article.content | strip %}{% if text == "" %}{% assign text = article.html_content | strip_newlines | replace: "</p>", nl | replace: "<li>", item | replace: "</h", heading_end | replace: "</ul>", nl | replace: "</ol>", nl | replace: "<tr", row | replace: "</table>", nl | replace: "</td>", " | " | replace: "</th>", " | " | replace: "<br", br | strip_html | replace: "&nbsp;", " " | replace: "&quot;", '"' | replace: "&#39;", "'" | replace: "&lt;", "<" | replace: "&gt;", ">" | replace: "&amp;", "&" | strip %}{% endif %}{{ article.title }} (article ID {{ article.id }}){% if article.modified_at %}
+      Last updated: {{ article.modified_at | slice: 0, 10 }}{% endif %}{% if article.url and article.url != "" %}
+      Link: {{ article.url }}{% endif %}{% if article.is_fall_back_content %}
+      This language has no translation, so the default language is shown.{% endif %}{% if article.description and article.description != "" %}
+      Summary: {{ article.description | truncate: 300 }}{% endif %}
+
+      {% if text == "" %}This article has no text content.{% else %}{{ text | truncate: 6000 }}{% endif %}{% else %}Document360 returned an unexpected response.{% endif %}
+
+  - id: list_categories
+    title: List Categories
+    description: List the categories of a Document360 workspace as an outline, up to three levels deep, with category IDs. Use the workspace ID from List Workspaces, then call Get Category to see the articles in a category.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v2/ProjectVersions/{{ workspace_id | strip | url_encode }}/categories?excludeArticles=true
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: api_token
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: workspace_id
+        type: string
+        description: The Document360 workspace ID from List Workspaces, a UUID.
+        required: true
+    response_template: |-
+      {% if response.data %}{% assign shown = 0 %}{% for category in response.data %}{% if shown < 150 %}{% assign shown = shown | plus: 1 %}- {{ category.name }} (category ID {{ category.id }}){% if category.hidden %} · hidden{% endif %}
+      {% for child in category.child_categories %}{% if shown < 150 %}{% assign shown = shown | plus: 1 %}  - {{ child.name }} (category ID {{ child.id }}){% if child.hidden %} · hidden{% endif %}
+      {% for grandchild in child.child_categories %}{% if shown < 150 %}{% assign shown = shown | plus: 1 %}    - {{ grandchild.name }} (category ID {{ grandchild.id }}){% if grandchild.hidden %} · hidden{% endif %}{% if grandchild.child_categories.size > 0 %} · has {{ grandchild.child_categories.size }} sub-categories{% endif %}
+      {% endif %}{% endfor %}{% endif %}{% endfor %}{% endif %}{% endfor %}{% if shown == 0 %}This workspace has no categories.{% elsif shown >= 150 %}Only the first 150 categories are shown.{% endif %}{% else %}Document360 returned an unexpected response.{% endif %}
+
+  - id: get_category
+    title: Get Category
+    description: List the articles and direct sub-categories inside a Document360 category, with article IDs. Use the category ID from List Categories or Search Articles, then call Get Article to read an article.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v2/Categories/{{ category_id | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: api_token
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: category_id
+        type: string
+        description: The Document360 category ID, a UUID.
+        required: true
+    response_template: |-
+      {% if response.data.id %}{% assign category = response.data %}{{ category.name }} (category ID {{ category.id }}){% if category.description and category.description != "" %}
+      {{ category.description | truncate: 300 }}{% endif %}
+
+      Articles:
+      {% for article in category.articles limit: 50 %}- {{ article.title | default: "Untitled article" }} (article ID {{ article.id }}){% if article.language_code %} · {{ article.language_code }}{% endif %}{% if article.hidden %} · hidden{% endif %}
+      {% else %}No articles in this category.
+      {% endfor %}{% if category.articles.size > 50 %}Only the first 50 articles are shown.
+      {% endif %}{% if category.child_categories.size > 0 %}
+      Sub-categories:
+      {% for child in category.child_categories limit: 50 %}- {{ child.name }} (category ID {{ child.id }})
+      {% endfor %}{% endif %}{% else %}Document360 returned an unexpected response.{% endif %}
+
+  - id: ask_eddy_ai
+    title: Ask Eddy AI
+    description: Ask Document360's Eddy AI a question in natural language and get an answer written from the workspace's articles, with source articles. Use the workspace ID and language code from List Workspaces. If it finds no answer, fall back to Search Articles and Get Article.
+    http_method: POST
+    endpoint_url: https://${{ inputs.api_host }}/v2/ProjectVersions/ask-eddy
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: api_token
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: workspace_id
+        type: string
+        description: The Document360 workspace ID from List Workspaces, a UUID.
+        required: true
+      - name: lang_code
+        type: string
+        description: The language code from List Workspaces, such as en.
+        required: true
+      - name: question
+        type: string
+        description: The customer's question as a full sentence, such as "How do I configure single sign-on?".
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"prompt":"{{ question | newline_to_br | replace: "<br />", " " | strip_newlines | replace: bs, escaped_bs | replace: '"', escaped_quote }}","version_id":"{{ workspace_id | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}","language_code":"{{ lang_code | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}"}
+    response_template: |-
+      {% if response.limit_exceeded %}Eddy AI has used up its credits for this project. Use Search Articles and Get Article instead.{% elsif response.success or response.result %}{% capture nl %}
+      {% endcapture %}{% capture item %}{{ nl }}- {% endcapture %}{% capture heading_end %}{{ nl }}</h{% endcapture %}{% assign answer = response.result | strip_newlines | replace: "<br>", "" | replace: "</p>", nl | replace: "<li>", item | replace: "</ul>", nl | replace: "</ol>", nl | replace: "</h", heading_end | strip_html | replace: "&nbsp;", " " | replace: "&quot;", '"' | replace: "&#39;", "'" | replace: "&lt;", "<" | replace: "&gt;", ">" | replace: "&amp;", "&" | strip %}{% if answer == "" %}Eddy AI could not find an answer in this workspace.{% else %}{{ answer | truncate: 4000 }}{% endif %}{% if response.reference_articles.size > 0 %}
+
+      Sources:
+      {% for source in response.reference_articles limit: 5 %}{% if source.article_id %}- {{ source.article_title | default: "Untitled article" }} (article ID {{ source.article_id }}){% if source.category_title %} · {{ source.category_title }}{% endif %}
+      {% elsif source.external_source_link %}- {{ source.external_source_name | default: "External source" }}: {{ source.external_source_link }}
+      {% endif %}{% endfor %}{% endif %}{% else %}Document360 returned an unexpected response.{% endif %}
