@@ -1,0 +1,145 @@
+version: 0.0.1
+kind: captain_toolset
+name: BigCommerce
+author: chatwoot
+category: Commerce
+description: Look up BigCommerce customers, orders, order items, and shipments.
+
+headers:
+  Accept: application/json
+
+inputs:
+  store_hash:
+    label: Store hash
+    placeholder: abc123xyz
+    required: true
+
+secrets:
+  access_token:
+    label: BigCommerce API access token
+    type: password
+    required: true
+
+tools:
+  - id: find_customers_by_email
+    title: Find Customers by Email
+    description: Find a BigCommerce customer account by email address, with name, phone, company, store credit, and the customer ID. Use this to check whether a customer has an account. Guests who checked out without an account are not listed, so use Find Orders by Email for their orders.
+    http_method: GET
+    endpoint_url: https://api.bigcommerce.com/stores/${{ inputs.store_hash }}/v3/customers?email:in={{ email | strip | url_encode }}&include=storecredit&limit=5
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Auth-Token
+      key: ${{ secrets.access_token }}
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for customer in response.data limit: 5 %}{% capture name %}{{ customer.first_name }} {{ customer.last_name }}{% endcapture %}{% assign name = name | strip %}- {{ name | default: "No name" }} <{{ customer.email }}>
+        Customer ID: {{ customer.id }}{% if customer.company and customer.company != "" %}
+        Company: {{ customer.company }}{% endif %}{% if customer.phone and customer.phone != "" %}
+        Phone: {{ customer.phone }}{% endif %}
+        Customer since: {{ customer.date_created | slice: 0, 10 }}{% if customer.customer_group_id and customer.customer_group_id != 0 %}
+        Customer group ID: {{ customer.customer_group_id }}{% endif %}{% for credit in customer.store_credit_amounts limit: 3 %}{% if credit.amount > 0 %}
+        Store credit: {{ credit.amount }}{% endif %}{% endfor %}{% if customer.notes and customer.notes != "" %}
+        Notes: {{ customer.notes | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% else %}No BigCommerce customer account found with this email address.
+      {% endfor %}{% else %}BigCommerce returned an unexpected response.{% endif %}
+
+  - id: find_orders_by_email
+    title: Find Orders by Email
+    description: Find the 10 most recent BigCommerce orders placed with an email address, including guest orders. Use this first when a customer asks about an order and has not given an order number. Returns the order ID the other order tools need.
+    http_method: GET
+    endpoint_url: https://api.bigcommerce.com/stores/${{ inputs.store_hash }}/v2/orders?email={{ email | strip | url_encode }}&sort=date_created%3Adesc&limit=10
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Auth-Token
+      key: ${{ secrets.access_token }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address used to place the order.
+        required: true
+    response_template: |-
+      {% if response == "" or response == empty %}No orders found for this email address.{% elsif response.first.id %}{% for order in response limit: 10 %}- Order {{ order.id }} · {{ order.date_created | date: "%Y-%m-%d" }} · {{ order.status }} · {{ order.total_inc_tax }} {{ order.currency_code }}
+        Items: {{ order.items_total }} ({{ order.items_shipped }} shipped){% if order.payment_status and order.payment_status != "" %} · payment {{ order.payment_status }}{% endif %}{% if order.refunded_amount and order.refunded_amount != "0.0000" %} · refunded {{ order.refunded_amount }}{% endif %}
+      {% endfor %}{% else %}BigCommerce returned an unexpected response.{% endif %}
+
+  - id: get_order
+    title: Get Order
+    description: Get one BigCommerce order by order ID, with status, payment, totals, refunds, billing contact, and the customer's order comment. Use the order number the customer gives, or the order ID from Find Orders by Email.
+    http_method: GET
+    endpoint_url: 'https://api.bigcommerce.com/stores/${{ inputs.store_hash }}/v2/orders/{{ order_id | strip | remove: "#" | url_encode }}'
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Auth-Token
+      key: ${{ secrets.access_token }}
+    param_schema:
+      - name: order_id
+        type: string
+        description: The numeric BigCommerce order ID, such as 1042.
+        required: true
+    response_template: |-
+      {% if response.id %}{% assign order = response %}Order {{ order.id }} · {{ order.status }}
+      Placed: {{ order.date_created | date: "%Y-%m-%d %H:%M" }}{% if order.date_shipped and order.date_shipped != "" %}
+      Shipped: {{ order.date_shipped | date: "%Y-%m-%d %H:%M" }}{% endif %}
+      Customer: {{ order.billing_address.first_name }} {{ order.billing_address.last_name }} <{{ order.billing_address.email }}>{% if order.customer_id and order.customer_id != 0 %} (customer ID {{ order.customer_id }}){% else %} (guest){% endif %}
+      Items: {{ order.items_total }} ({{ order.items_shipped }} shipped){% if order.order_is_digital %} · digital order{% endif %}
+      Subtotal: {{ order.subtotal_inc_tax }} {{ order.currency_code }}
+      Shipping: {{ order.shipping_cost_inc_tax }} {{ order.currency_code }}{% if order.discount_amount and order.discount_amount != "0.0000" %}
+      Discount: {{ order.discount_amount }} {{ order.currency_code }}{% endif %}{% if order.coupon_discount and order.coupon_discount != "0.0000" %}
+      Coupon discount: {{ order.coupon_discount }} {{ order.currency_code }}{% endif %}
+      Total: {{ order.total_inc_tax }} {{ order.currency_code }}
+      Payment: {{ order.payment_method | default: "unknown method" }}{% if order.payment_status and order.payment_status != "" %} · {{ order.payment_status }}{% endif %}{% if order.refunded_amount and order.refunded_amount != "0.0000" %}
+      Refunded: {{ order.refunded_amount }} {{ order.currency_code }}{% endif %}{% if order.store_credit_amount and order.store_credit_amount != "0.0000" %}
+      Store credit used: {{ order.store_credit_amount }} {{ order.currency_code }}{% endif %}{% if order.customer_message and order.customer_message != "" %}
+      Customer comment: {{ order.customer_message | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}{% else %}BigCommerce returned an unexpected response.{% endif %}
+
+  - id: list_order_products
+    title: List Order Products
+    description: List up to 20 items in a BigCommerce order with name, SKU, options, quantity, price, and how many were shipped or refunded. Use this when a customer asks what was in an order or which items shipped. Use the order ID from Find Orders by Email.
+    http_method: GET
+    endpoint_url: 'https://api.bigcommerce.com/stores/${{ inputs.store_hash }}/v2/orders/{{ order_id | strip | remove: "#" | url_encode }}/products?limit=50'
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Auth-Token
+      key: ${{ secrets.access_token }}
+    param_schema:
+      - name: order_id
+        type: string
+        description: The numeric BigCommerce order ID, such as 1042.
+        required: true
+    response_template: |-
+      {% if response == "" or response == empty %}No items found for this order.{% elsif response.first.id %}{% for item in response limit: 20 %}- {{ item.quantity }} × {{ item.name }}{% if item.sku and item.sku != "" %} (SKU {{ item.sku }}){% endif %} · {{ item.total_inc_tax }} total · {{ item.type }}{% if item.product_options.size > 0 %}
+        Options: {% for option in item.product_options limit: 5 %}{{ option.display_name }}: {{ option.display_value | truncate: 60 }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}
+        Shipped: {{ item.quantity_shipped | default: 0 }} of {{ item.quantity }}{% if item.quantity_refunded and item.quantity_refunded > 0 %} · refunded: {{ item.quantity_refunded }}{% endif %}
+      {% endfor %}{% if response.size > 20 %}Showing 20 of {{ response.size }} items.{% endif %}{% else %}BigCommerce returned an unexpected response.{% endif %}
+
+  - id: list_order_shipments
+    title: List Order Shipments
+    description: List the shipments of a BigCommerce order with carrier, tracking number, tracking link, ship date, and destination. Use this when a customer asks where their order is. Use the order ID from Find Orders by Email.
+    http_method: GET
+    endpoint_url: 'https://api.bigcommerce.com/stores/${{ inputs.store_hash }}/v2/orders/{{ order_id | strip | remove: "#" | url_encode }}/shipments?limit=10'
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Auth-Token
+      key: ${{ secrets.access_token }}
+    param_schema:
+      - name: order_id
+        type: string
+        description: The numeric BigCommerce order ID, such as 1042.
+        required: true
+    response_template: |-
+      {% if response == "" or response == empty %}No shipments have been created for this order yet.{% elsif response.first.id %}{% for shipment in response limit: 10 %}{% assign carrier = shipment.shipping_provider_display_name | default: shipment.tracking_carrier | default: shipment.shipping_provider %}{% assign link = shipment.tracking_link | default: shipment.generated_tracking_link %}{% assign units = 0 %}{% for item in shipment.items %}{% assign units = units | plus: item.quantity %}{% endfor %}- Shipment {{ shipment.id }} · shipped {{ shipment.date_created | date: "%Y-%m-%d" }}{% if carrier and carrier != "" %} · {{ carrier }}{% endif %}{% if shipment.shipping_method and shipment.shipping_method != "" %} · {{ shipment.shipping_method }}{% endif %}
+        Tracking number: {{ shipment.tracking_number | default: "none provided" }}{% if link and link != "" %}
+        Tracking link: {{ link }}{% endif %}
+        Items in shipment: {{ units }}{% if shipment.shipping_address.city %}
+        Shipping to: {{ shipment.shipping_address.city }}, {{ shipment.shipping_address.state }} {{ shipment.shipping_address.zip }}, {{ shipment.shipping_address.country }}{% endif %}{% if shipment.comments and shipment.comments != "" %}
+        Comments: {{ shipment.comments | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% endfor %}{% else %}BigCommerce returned an unexpected response.{% endif %}
