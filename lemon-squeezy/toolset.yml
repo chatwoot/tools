@@ -1,0 +1,124 @@
+version: 0.0.1
+kind: captain_toolset
+name: Lemon Squeezy
+author: chatwoot
+category: Payments & billing
+description: Check customer orders, subscriptions, invoices, and license keys in Lemon Squeezy.
+
+headers:
+  Accept: application/vnd.api+json
+
+secrets:
+  api_key:
+    label: Lemon Squeezy API key
+    type: password
+    required: true
+
+tools:
+  - id: find_customers_by_email
+    title: Find Customers by Email
+    description: Find Lemon Squeezy customers by email address, with their total spend and location. Use this to confirm that an email address belongs to a customer. The other Lemon Squeezy tools search by the same email address.
+    http_method: GET
+    endpoint_url: https://api.lemonsqueezy.com/v1/customers?filter%5Bemail%5D={{ email | strip | url_encode }}&page%5Bsize%5D=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for customer in response.data %}{% assign a = customer.attributes %}- {{ a.name | default: "No name" }} <{{ a.email }}>
+        Customer ID: {{ customer.id }} · store ID {{ a.store_id }}{% if a.country_formatted %} · {{ a.country_formatted }}{% endif %}
+        Customer since: {{ a.created_at | slice: 0, 10 }} · total spent {{ a.total_revenue_currency_formatted }}{% if a.mrr > 0 %} · monthly recurring revenue {{ a.mrr_formatted }}{% endif %}
+      {% else %}No Lemon Squeezy customer found with this email address.
+      {% endfor %}{% else %}Lemon Squeezy returned an unexpected response.{% endif %}
+
+  - id: list_orders
+    title: List Orders
+    description: Check the 10 most recent orders placed with an email address, with product, total, status, refunds, and receipt links. Use this when a customer asks about a purchase, a charge, or a refund. The order ID is needed for List License Keys.
+    http_method: GET
+    endpoint_url: https://api.lemonsqueezy.com/v1/orders?filter%5Buser_email%5D={{ email | strip | url_encode }}&page%5Bsize%5D=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address used for the order.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for order in response.data %}{% assign a = order.attributes %}- Order #{{ a.order_number }} · {{ a.created_at | slice: 0, 10 }} · {{ a.total_formatted }} {{ a.currency }} · {{ a.status_formatted | default: a.status }}
+        Order ID: {{ order.id }}{% if a.first_order_item %} · {{ a.first_order_item.product_name }}{% if a.first_order_item.variant_name %} ({{ a.first_order_item.variant_name }}){% endif %}{% endif %}{% if a.refunded_amount > 0 %}
+        Refunded: {{ a.refunded_amount_formatted }}{% if a.refunded_at %} on {{ a.refunded_at | slice: 0, 10 }}{% endif %}{% elsif a.refunded %}
+        Fully refunded{% if a.refunded_at %} on {{ a.refunded_at | slice: 0, 10 }}{% endif %}{% endif %}{% if a.urls.receipt %}
+        Receipt: {{ a.urls.receipt }}{% endif %}
+      {% else %}No orders found for this email address.
+      {% endfor %}{% else %}Lemon Squeezy returned an unexpected response.{% endif %}
+
+  - id: list_subscriptions
+    title: List Subscriptions
+    description: Check the 10 most recent subscriptions for an email address, including cancelled and expired ones, with product, status, renewal or end date, trial, pause, and card. The subscription ID is needed for List Subscription Invoices.
+    http_method: GET
+    endpoint_url: https://api.lemonsqueezy.com/v1/subscriptions?filter%5Buser_email%5D={{ email | strip | url_encode }}&page%5Bsize%5D=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address used for the subscription.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for subscription in response.data %}{% assign a = subscription.attributes %}- {{ a.product_name }}{% if a.variant_name %} ({{ a.variant_name }}){% endif %} · {{ a.status_formatted | default: a.status }}
+        Subscription ID: {{ subscription.id }} · order ID {{ a.order_id }} · started {{ a.created_at | slice: 0, 10 }}{% if a.status == "on_trial" and a.trial_ends_at %}
+        Trial ends: {{ a.trial_ends_at | slice: 0, 10 }}{% endif %}{% if a.status == "cancelled" or a.status == "expired" %}{% if a.ends_at %}
+        {% if a.status == "cancelled" %}Cancelled, access ends{% else %}Ended{% endif %}: {{ a.ends_at | slice: 0, 10 }}{% endif %}{% elsif a.status == "paused" and a.pause %}
+        Payment collection paused{% if a.pause.resumes_at %}, resumes {{ a.pause.resumes_at | slice: 0, 10 }}{% endif %}{% elsif a.renews_at %}
+        {% if a.status == "past_due" %}Next payment retry{% else %}Renews{% endif %}: {{ a.renews_at | slice: 0, 10 }}{% endif %}{% if a.card_last_four and a.card_last_four != "" %}
+        Card: {{ a.card_brand }} ending {{ a.card_last_four }}{% endif %}
+      {% else %}No subscriptions found for this email address.
+      {% endfor %}{% else %}Lemon Squeezy returned an unexpected response.{% endif %}
+
+  - id: list_subscription_invoices
+    title: List Subscription Invoices
+    description: Check the 10 most recent invoices for a subscription, with total, status, billing reason, refunds, card, and invoice links. Use this when a customer asks about a renewal charge or needs an invoice. Use a subscription ID from List Subscriptions.
+    http_method: GET
+    endpoint_url: https://api.lemonsqueezy.com/v1/subscription-invoices?filter%5Bsubscription_id%5D={{ subscription_id | strip | url_encode }}&page%5Bsize%5D=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: subscription_id
+        type: string
+        description: The numeric Lemon Squeezy subscription ID from List Subscriptions.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for invoice in response.data %}{% assign a = invoice.attributes %}- {{ a.created_at | slice: 0, 10 }} · {{ a.total_formatted }} {{ a.currency }} · {{ a.status_formatted | default: a.status }}{% if a.billing_reason %} · {{ a.billing_reason | replace: "_", " " }}{% endif %}
+        Invoice ID: {{ invoice.id }}{% if a.card_last_four and a.card_last_four != "" %} · {{ a.card_brand }} ending {{ a.card_last_four }}{% endif %}{% if a.refunded_amount > 0 %}
+        Refunded: {{ a.refunded_amount_formatted }}{% if a.refunded_at %} on {{ a.refunded_at | slice: 0, 10 }}{% endif %}{% elsif a.refunded %}
+        Fully refunded{% if a.refunded_at %} on {{ a.refunded_at | slice: 0, 10 }}{% endif %}{% endif %}{% if a.urls.invoice_url %}
+        Invoice: {{ a.urls.invoice_url }}{% endif %}
+      {% else %}No invoices found for this subscription.
+      {% endfor %}{% else %}Lemon Squeezy returned an unexpected response.{% endif %}
+
+  - id: list_license_keys
+    title: List License Keys
+    description: Check the license keys issued for an order, with status, activations used, activation limit, and expiry. Use this when a customer says a license key is not working or cannot be activated. Use an order ID from List Orders. Keys are shown shortened, so ask the customer for the last part of their key to match it.
+    http_method: GET
+    endpoint_url: https://api.lemonsqueezy.com/v1/license-keys?filter%5Border_id%5D={{ order_id | strip | url_encode }}&page%5Bsize%5D=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: order_id
+        type: string
+        description: The numeric Lemon Squeezy order ID from List Orders. This is the order ID, not the order number shown after the # sign.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for license in response.data %}{% assign a = license.attributes %}- {{ a.key_short }} · {{ a.status_formatted | default: a.status }}
+        License key ID: {{ license.id }} · activations used: {{ a.instances_count | default: 0 }}{% if a.activation_limit %} of {{ a.activation_limit }}{% endif %}
+        Expires: {% if a.expires_at %}{{ a.expires_at | slice: 0, 10 }}{% else %}never{% endif %}
+      {% else %}No license keys found for this order.
+      {% endfor %}{% else %}Lemon Squeezy returned an unexpected response.{% endif %}
