@@ -1,0 +1,182 @@
+version: 0.0.1
+kind: captain_toolset
+name: GoCardless
+author: chatwoot
+category: Payments & billing
+description: Check customer mandates, payments, subscriptions, and refunds in GoCardless.
+
+headers:
+  GoCardless-Version: '2015-07-06'
+
+secrets:
+  access_token:
+    label: GoCardless read-only access token
+    type: password
+    required: true
+
+tools:
+  - id: find_mandates_by_reference
+    title: Find Mandates by Reference
+    description: Find GoCardless mandates by the mandate reference shown on the customer's bank statement or Direct Debit notification. Use this first when you do not have a GoCardless ID. It returns the mandate ID and customer ID the other GoCardless tools need. GoCardless cannot search customers by email.
+    http_method: GET
+    endpoint_url: https://api.gocardless.com/mandates?reference={{ reference | strip | url_encode }}&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: reference
+        type: string
+        description: The exact mandate reference from the customer's bank statement or Direct Debit notification.
+        required: true
+    response_template: |-
+      {% if response.mandates %}{% for mandate in response.mandates limit: 10 %}- Mandate {{ mandate.id }} · {{ mandate.status | replace: "_", " " }}{% if mandate.scheme %} · {{ mandate.scheme | replace: "_", " " }}{% endif %}
+        Reference: {{ mandate.reference }}
+        Customer ID: {{ mandate.links.customer }}
+        Created: {{ mandate.created_at | date: "%Y-%m-%d" }}{% if mandate.next_possible_charge_date %} · earliest next charge {{ mandate.next_possible_charge_date }}{% endif %}
+      {% else %}No mandate found with this reference.
+      {% endfor %}{% else %}GoCardless returned an unexpected response.{% endif %}
+
+  - id: get_customer
+    title: Get Customer
+    description: Look up one GoCardless customer by customer ID to confirm their name, company, and email address before sharing payment details. The customer ID comes from Find Mandates by Reference or from the customer's record in your own system.
+    http_method: GET
+    endpoint_url: https://api.gocardless.com/customers/{{ customer_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The GoCardless customer ID, starting with CU.
+        required: true
+    response_template: |-
+      {% if response.customers.id %}{% assign customer = response.customers %}{% capture name %}{{ customer.given_name }} {{ customer.family_name }}{% endcapture %}{% assign name = name | strip %}{{ name | default: customer.company_name | default: "No name" }} <{{ customer.email | default: "no email" }}>{% if customer.company_name and name != "" %} · {{ customer.company_name }}{% endif %}
+      Customer ID: {{ customer.id }}
+      Customer since: {{ customer.created_at | date: "%Y-%m-%d" }}{% if customer.country_code %} · country {{ customer.country_code }}{% endif %}{% else %}GoCardless returned an unexpected response.{% endif %}
+
+  - id: list_mandates
+    title: List Mandates
+    description: Check a customer's 10 most recent mandates, with status, scheme, reference, and the earliest date a new payment can be charged. Use this when payments stop collecting or a customer asks whether their Direct Debit is active.
+    http_method: GET
+    endpoint_url: https://api.gocardless.com/mandates?customer={{ customer_id | strip | url_encode }}&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The GoCardless customer ID, starting with CU.
+        required: true
+    response_template: |-
+      {% if response.mandates %}{% for mandate in response.mandates limit: 10 %}- Mandate {{ mandate.id }} · {{ mandate.status | replace: "_", " " }}{% if mandate.scheme %} · {{ mandate.scheme | replace: "_", " " }}{% endif %}
+        Reference: {{ mandate.reference }}
+        Created: {{ mandate.created_at | date: "%Y-%m-%d" }}{% if mandate.next_possible_charge_date %} · earliest next charge {{ mandate.next_possible_charge_date }}{% endif %}{% if mandate.links.new_mandate %}
+        Replaced by mandate: {{ mandate.links.new_mandate }}{% endif %}
+      {% else %}No mandates found for this customer.
+      {% endfor %}{% else %}GoCardless returned an unexpected response.{% endif %}
+
+  - id: list_payments
+    title: List Payments
+    description: Check a customer's 10 most recent GoCardless payments, with amount, charge date, status, refunded amount, and the mandate and subscription they belong to. Use the customer ID from Find Mandates by Reference. Pass a payment ID to List Payment Events to see why a payment failed.
+    http_method: GET
+    endpoint_url: https://api.gocardless.com/payments?customer={{ customer_id | strip | url_encode }}&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The GoCardless customer ID, starting with CU.
+        required: true
+    response_template: |-
+      {% if response.payments %}{% for payment in response.payments limit: 10 %}- Payment {{ payment.id }} · {{ payment.amount | divided_by: 100.0 }} {{ payment.currency }} · {{ payment.status | replace: "_", " " }}{% if payment.charge_date %} · charge date {{ payment.charge_date }}{% endif %}{% if payment.description and payment.description != "" %}
+        Description: {{ payment.description | truncate: 120 }}{% endif %}{% if payment.reference and payment.reference != "" %}
+        Bank statement reference: {{ payment.reference }}{% endif %}{% if payment.amount_refunded > 0 %}
+        Refunded: {{ payment.amount_refunded | divided_by: 100.0 }} {{ payment.currency }}{% endif %}
+        Mandate: {{ payment.links.mandate }}{% if payment.links.subscription %} · subscription {{ payment.links.subscription }}{% endif %}
+      {% else %}No payments found for this customer.
+      {% endfor %}{% else %}GoCardless returned an unexpected response.{% endif %}
+
+  - id: get_payment
+    title: Get Payment
+    description: Check one GoCardless payment by its payment ID, including amount, charge date, status, refunded amount, and the mandate it was collected under. Use this when the customer gives a payment ID starting with PM.
+    http_method: GET
+    endpoint_url: https://api.gocardless.com/payments/{{ payment_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: payment_id
+        type: string
+        description: The GoCardless payment ID, starting with PM.
+        required: true
+    response_template: |-
+      {% if response.payments.id %}{% assign payment = response.payments %}Payment {{ payment.id }} · {{ payment.amount | divided_by: 100.0 }} {{ payment.currency }} · {{ payment.status | replace: "_", " " }}
+      Created: {{ payment.created_at | date: "%Y-%m-%d" }}{% if payment.charge_date %} · charge date {{ payment.charge_date }}{% endif %}{% if payment.description and payment.description != "" %}
+      Description: {{ payment.description | truncate: 200 }}{% endif %}{% if payment.reference and payment.reference != "" %}
+      Bank statement reference: {{ payment.reference }}{% endif %}{% if payment.amount_refunded > 0 %}
+      Refunded: {{ payment.amount_refunded | divided_by: 100.0 }} {{ payment.currency }}{% endif %}{% if payment.status == "failed" and payment.retry_if_possible %}
+      Automatic retries are enabled for this payment.{% endif %}
+      Mandate: {{ payment.links.mandate }}{% if payment.links.subscription %} · subscription {{ payment.links.subscription }}{% endif %}{% else %}GoCardless returned an unexpected response.{% endif %}
+
+  - id: list_payment_events
+    title: List Payment Events
+    description: Check the 10 most recent events for one GoCardless payment, such as submitted, confirmed, failed, or charged back, with the cause and whether it will be retried. Use this to explain why a payment failed or was cancelled. Events older than 18 months are not returned.
+    http_method: GET
+    endpoint_url: https://api.gocardless.com/events?payment={{ payment_id | strip | url_encode }}&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: payment_id
+        type: string
+        description: The GoCardless payment ID from List Payments, starting with PM.
+        required: true
+    response_template: |-
+      {% if response.events %}{% for event in response.events limit: 10 %}- {{ event.created_at | date: "%Y-%m-%d" }} · {{ event.action | replace: "_", " " }}{% if event.details.cause %} · cause {{ event.details.cause | replace: "_", " " }}{% endif %}{% if event.details.description %}
+        {{ event.details.description | truncate: 250 }}{% endif %}{% if event.details.will_attempt_retry %}
+        GoCardless will retry this payment automatically.{% endif %}
+      {% else %}No events found for this payment.
+      {% endfor %}{% else %}GoCardless returned an unexpected response.{% endif %}
+
+  - id: list_subscriptions
+    title: List Subscriptions
+    description: Check a customer's 10 most recent GoCardless subscriptions, including cancelled and finished ones, with amount, interval, status, and upcoming payment dates. Use the customer ID from Find Mandates by Reference.
+    http_method: GET
+    endpoint_url: https://api.gocardless.com/subscriptions?customer={{ customer_id | strip | url_encode }}&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The GoCardless customer ID, starting with CU.
+        required: true
+    response_template: |-
+      {% if response.subscriptions %}{% for subscription in response.subscriptions limit: 10 %}- Subscription {{ subscription.id }}{% if subscription.name and subscription.name != "" %} · {{ subscription.name | truncate: 80 }}{% endif %} · {{ subscription.status | replace: "_", " " }}
+        Price: {{ subscription.amount | divided_by: 100.0 }} {{ subscription.currency }} {% if subscription.interval > 1 %}every {{ subscription.interval }} {{ subscription.interval_unit | replace: "ly", "s" }}{% else %}{{ subscription.interval_unit }}{% endif %}
+        Started: {{ subscription.start_date }}{% if subscription.end_date %} · ends {{ subscription.end_date }}{% endif %}{% if subscription.upcoming_payments.size > 0 %}
+        Upcoming payments: {% for upcoming in subscription.upcoming_payments limit: 3 %}{{ upcoming.charge_date }} ({{ upcoming.amount | divided_by: 100.0 }} {{ subscription.currency }}){% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if subscription.earliest_charge_date_after_resume %}
+        Earliest charge date after resuming: {{ subscription.earliest_charge_date_after_resume }}{% endif %}
+        Mandate: {{ subscription.links.mandate }}
+      {% else %}No subscriptions found for this customer.
+      {% endfor %}{% else %}GoCardless returned an unexpected response.{% endif %}
+
+  - id: list_payment_refunds
+    title: List Payment Refunds
+    description: Check the 10 most recent refunds for one GoCardless payment, with amount, status, and reference. Use this when a customer asks where a refund is. Needs the payment ID from List Payments.
+    http_method: GET
+    endpoint_url: https://api.gocardless.com/refunds?payment={{ payment_id | strip | url_encode }}&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: payment_id
+        type: string
+        description: The GoCardless payment ID from List Payments, starting with PM.
+        required: true
+    response_template: |-
+      {% if response.refunds %}{% for refund in response.refunds limit: 10 %}- Refund {{ refund.id }} · {{ refund.created_at | date: "%Y-%m-%d" }} · {{ refund.amount | divided_by: 100.0 }} {{ refund.currency }}{% if refund.status %} · {{ refund.status | replace: "_", " " }}{% endif %}{% if refund.reference and refund.reference != "" %}
+        Bank statement reference: {{ refund.reference }}{% endif %}
+      {% else %}No refunds found for this payment.
+      {% endfor %}{% else %}GoCardless returned an unexpected response.{% endif %}
