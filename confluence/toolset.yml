@@ -1,0 +1,119 @@
+version: 0.0.1
+kind: captain_toolset
+name: Confluence
+author: chatwoot
+category: Others
+description: Search Confluence Cloud pages and read their content to answer customer questions.
+
+inputs:
+  site_subdomain:
+    label: Confluence site subdomain
+    placeholder: acme (from acme.atlassian.net)
+    required: true
+  email:
+    label: Atlassian account email
+    placeholder: support-bot@acme.com
+    required: true
+
+secrets:
+  api_token:
+    label: Atlassian API token
+    type: password
+    required: true
+
+tools:
+  - id: search_pages
+    title: Search Pages
+    description: Search Confluence pages by keywords and get the 10 best matches with page IDs and excerpts. Use this first when a customer asks something the knowledge base may answer, then call Get Page with a page ID to read the full text.
+    http_method: GET
+    endpoint_url: 'https://${{ inputs.site_subdomain }}.atlassian.net/wiki/rest/api/search?cql=type%3Dpage%20AND%20text~%22{{ query | strip | url_encode | remove: "%22" | remove: "%5C" }}%22&limit=10'
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.email }}
+      password: ${{ secrets.api_token }}
+    param_schema:
+      - name: query
+        type: string
+        description: Keywords to search for, such as "reset password" or "refund policy". Use a few key terms, not a full sentence.
+        required: true
+    response_template: |-
+      {% if response.results %}{% for result in response.results %}- {{ result.content.title | default: result.title }} (page ID {{ result.content.id }}){% if result.resultGlobalContainer.title %} · space: {{ result.resultGlobalContainer.title }}{% endif %}{% if result.friendlyLastModified %} · updated {{ result.friendlyLastModified }}{% endif %}{% assign excerpt = result.excerpt | remove: "@@@hl@@@" | remove: "@@@endhl@@@" | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}{% if excerpt != "" %}
+        {{ excerpt | truncate: 300 }}{% endif %}{% if result.url %}
+        Link: {{ response._links.base }}{{ result.url }}{% endif %}
+      {% else %}No Confluence pages matched this search.
+      {% endfor %}{% else %}Confluence returned an unexpected response.{% endif %}
+
+  - id: get_page
+    title: Get Page
+    description: Read a Confluence page's title and text content. Use the page ID from Search Pages, List Child Pages, or List Pages in Space. Long pages are cut off after about 6,000 characters.
+    http_method: GET
+    endpoint_url: https://${{ inputs.site_subdomain }}.atlassian.net/wiki/api/v2/pages/{{ page_id | strip | url_encode }}?body-format=view
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.email }}
+      password: ${{ secrets.api_token }}
+    param_schema:
+      - name: page_id
+        type: string
+        description: The numeric Confluence page ID, such as 123456789.
+        required: true
+    response_template: |-
+      {% if response.id %}{% capture nl %}
+      {% endcapture %}{% capture item %}{{ nl }}- {% endcapture %}{% capture heading_end %}{{ nl }}</h{% endcapture %}{% capture br %}{{ nl }}<br{% endcapture %}{% capture row %}{{ nl }}<tr{% endcapture %}{% assign text = response.body.view.value | strip_newlines | replace: "</p>", nl | replace: "<li>", item | replace: "</h", heading_end | replace: "</ul>", nl | replace: "</ol>", nl | replace: "<tr", row | replace: "</table>", nl | replace: "</td>", " | " | replace: "</th>", " | " | replace: "<br", br | strip_html | replace: "&nbsp;", " " | replace: "&quot;", '"' | replace: "&#39;", "'" | replace: "&lt;", "<" | replace: "&gt;", ">" | replace: "&amp;", "&" | strip %}{{ response.title }} (page ID {{ response.id }}, space ID {{ response.spaceId }})
+      Status: {{ response.status }}{% if response.version.createdAt %} · last updated {{ response.version.createdAt | slice: 0, 10 }}{% endif %}{% if response._links.webui %}
+      Link: {{ response._links.base }}{{ response._links.webui }}{% endif %}
+
+      {% if text == "" %}This page has no text content.{% else %}{{ text | truncate: 6000 }}{% endif %}{% else %}Confluence returned an unexpected response.{% endif %}
+
+  - id: list_spaces
+    title: List Spaces
+    description: List up to 50 current Confluence spaces with their space IDs, keys, and home page IDs. Use this to find which space holds a topic, then call List Pages in Space or List Child Pages.
+    http_method: GET
+    endpoint_url: https://${{ inputs.site_subdomain }}.atlassian.net/wiki/api/v2/spaces?status=current&sort=name&description-format=plain&limit=50
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.email }}
+      password: ${{ secrets.api_token }}
+    response_template: |-
+      {% if response.results %}{% for space in response.results %}- {{ space.name }} (space ID {{ space.id }}, key {{ space.key }}, {{ space.type | replace: "_", " " }}){% if space.homepageId %} · home page ID {{ space.homepageId }}{% endif %}{% assign about = space.description.plain.value | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}{% if about != "" %}
+        {{ about | truncate: 200 }}{% endif %}
+      {% else %}No Confluence spaces are visible to this account.
+      {% endfor %}{% if response._links.next %}More spaces exist; only the first 50 are shown.{% endif %}{% else %}Confluence returned an unexpected response.{% endif %}
+
+  - id: list_space_pages
+    title: List Pages in Space
+    description: List up to 50 top-level pages in a Confluence space, sorted by title. Use the space ID from List Spaces. Call List Child Pages to go deeper and Get Page to read a page.
+    http_method: GET
+    endpoint_url: https://${{ inputs.site_subdomain }}.atlassian.net/wiki/api/v2/spaces/{{ space_id | strip | url_encode }}/pages?depth=root&status=current&sort=title&limit=50
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.email }}
+      password: ${{ secrets.api_token }}
+    param_schema:
+      - name: space_id
+        type: string
+        description: The numeric Confluence space ID from List Spaces. This is not the space key.
+        required: true
+    response_template: |-
+      {% if response.results %}{% for page in response.results %}- {{ page.title }} (page ID {{ page.id }}){% if page.version.createdAt %} · updated {{ page.version.createdAt | slice: 0, 10 }}{% endif %}
+      {% else %}No pages found in this space.
+      {% endfor %}{% if response._links.next %}More pages exist; only the first 50 are shown.{% endif %}{% else %}Confluence returned an unexpected response.{% endif %}
+
+  - id: list_child_pages
+    title: List Child Pages
+    description: List up to 50 items directly under a Confluence page, in their sidebar order. Use a page ID from Search Pages or List Pages in Space, or a home page ID from List Spaces. Items of type page can be read with Get Page.
+    http_method: GET
+    endpoint_url: https://${{ inputs.site_subdomain }}.atlassian.net/wiki/api/v2/pages/{{ page_id | strip | url_encode }}/direct-children?sort=child-position&limit=50
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.email }}
+      password: ${{ secrets.api_token }}
+    param_schema:
+      - name: page_id
+        type: string
+        description: The numeric ID of the parent Confluence page.
+        required: true
+    response_template: |-
+      {% if response.results %}{% for child in response.results %}- {{ child.title }} ({{ child.type | default: "page" }} ID {{ child.id }}){% if child.status and child.status != "current" %} · {{ child.status }}{% endif %}
+      {% else %}This page has no child pages.
+      {% endfor %}{% if response._links.next %}More items exist; only the first 50 are shown.{% endif %}{% else %}Confluence returned an unexpected response.{% endif %}
