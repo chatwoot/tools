@@ -1,0 +1,166 @@
+version: 0.0.1
+kind: captain_toolset
+name: Luma
+author: chatwoot
+category: Scheduling
+description: Look up Luma events, guest registrations, ticket types, and calendar contacts.
+
+secrets:
+  api_key:
+    label: Luma API key
+    type: password
+    required: true
+
+tools:
+  - id: list_events
+    title: List Events
+    description: List the events your Luma calendar manages that start on or after a date, soonest first. Use this when a customer asks what events are coming up, or to find the event ID the other Luma tools need. Pass today's date to list upcoming events, or an earlier date to include past events.
+    http_method: GET
+    endpoint_url: https://public-api.luma.com/v1/calendars/events/list?after={{ after_date | strip | url_encode }}T00%3A00%3A00Z&sort_column=start_at&sort_direction=asc&pagination_limit=20
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-luma-api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: after_date
+        type: string
+        description: Only list events that start on or after this date, in YYYY-MM-DD format. Use today's date for upcoming events.
+        required: true
+    response_template: |-
+      {% if response.entries %}{% for event in response.entries limit: 20 %}- {{ event.name | truncate: 120 }} (event ID {{ event.id }})
+        Starts: {{ event.start_at }}, ends: {{ event.end_at }} (UTC; event time zone {{ event.timezone }})
+        Where: {% if event.geo_address_json.full_address %}{{ event.geo_address_json.full_address | truncate: 200 }}{% elsif event.geo_address_json.address %}{{ event.geo_address_json.address | truncate: 200 }}{% elsif event.location_type and event.location_type != "offline" and event.location_type != "missing" and event.location_type != "unknown" %}online ({{ event.location_type }}){% else %}not set{% endif %}{% if event.registration_open == false %}
+        Registration: closed{% elsif event.spots_remaining %}
+        Registration: open, {{ event.spots_remaining }} spots left{% elsif event.registration_open %}
+        Registration: open{% endif %}
+        Page: {{ event.url }}
+      {% else %}No events found on or after this date.
+      {% endfor %}{% if response.has_more %}More events exist than the 20 shown. Use a later date to see them.{% endif %}{% else %}Luma returned an unexpected response.{% endif %}
+
+  - id: find_event_by_url
+    title: Find Event by URL
+    description: Find a Luma event's ID from its event page URL or slug, such as https://luma.com/abc123 or abc123. Use this when a customer shares an event link, to get the event ID the other Luma tools need.
+    http_method: GET
+    endpoint_url: https://public-api.luma.com/v1/entities/lookup?slug={{ url_or_slug | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-luma-api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: url_or_slug
+        type: string
+        description: The Luma event page URL the customer shared, or just the slug at the end of it.
+        required: true
+    response_template: |-
+      {% assign has_entity = false %}{% if response.size == 1 %}{% for pair in response %}{% if pair[0] == "entity" %}{% assign has_entity = true %}{% endif %}{% endfor %}{% endif %}{% if response.entity.type == "event" %}{{ response.entity.event.name | truncate: 200 }} (event ID {{ response.entity.event.id }})
+      Starts: {{ response.entity.event.start_at }}, ends: {{ response.entity.event.end_at }} (UTC){% elsif response.entity.type == "calendar" %}This link is a Luma calendar, not an event: {{ response.entity.calendar.name }} (calendar ID {{ response.entity.calendar.id }}). Use List Events to see its events.{% elsif has_entity %}No Luma event or calendar found for this link.{% else %}Luma returned an unexpected response.{% endif %}
+
+  - id: get_event
+    title: Get Event
+    description: Get the details of one Luma event, including its time, location or meeting link, whether registration is open, spots left, starting price, hosts, and guest counts. Use the event ID from List Events or Find Event by URL.
+    http_method: GET
+    endpoint_url: https://public-api.luma.com/v1/events/get?event_id={{ event_id | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-luma-api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: event_id
+        type: string
+        description: The Luma event ID from List Events or Find Event by URL, usually starting with evt-.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.name | truncate: 200 }} (event ID {{ response.id }})
+      Starts: {{ response.start_at }}, ends: {{ response.end_at }} (UTC; event time zone {{ response.timezone }})
+      Where: {% if response.geo_address_json.full_address %}{{ response.geo_address_json.full_address | truncate: 200 }}{% elsif response.geo_address_json.address %}{{ response.geo_address_json.address | truncate: 200 }}{% elsif response.location_type and response.location_type != "offline" and response.location_type != "missing" and response.location_type != "unknown" %}online ({{ response.location_type }}){% else %}not set{% endif %}{% if response.location_visibility == "guests-only" %} (shown to approved guests only){% endif %}{% if response.meeting_url %}
+      Meeting link (share with approved guests only): {{ response.meeting_url }}{% endif %}
+      Visibility: {{ response.visibility }}
+      Registration: {% if response.registration_open %}open{% else %}closed{% endif %}{% if response.require_approval %}, host approval required{% endif %}{% if response.waitlist_status == "enabled" %}, waitlist enabled{% endif %}{% if response.max_capacity %}
+      Capacity: {{ response.max_capacity }}{% endif %}{% if response.spots_remaining %}
+      Spots left: {{ response.spots_remaining }}{% endif %}{% if response.display_price %}
+      Starting price: {{ response.display_price.amount }} {{ response.display_price.currency | upcase }} in the smallest currency unit, such as cents{% if response.display_price.is_flexible %} (pay what you want){% endif %}{% endif %}{% if response.guest_counts %}
+      Guests: {{ response.guest_counts.approved.guests | default: 0 }} going, {{ response.guest_counts.pending_approval.guests | default: 0 }} pending approval, {{ response.guest_counts.waitlist.guests | default: 0 }} on the waitlist{% endif %}{% if response.hosts.size > 0 %}
+      Hosts: {% for host in response.hosts limit: 5 %}{{ host.name | default: "Unnamed host" }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if response.description_md and response.description_md != "" %}
+      Description: {{ response.description_md | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 500 }}{% endif %}
+      Page: {{ response.url }}{% else %}Luma returned an unexpected response.{% endif %}
+
+  - id: get_guest
+    title: Get Guest
+    description: Check a customer's registration for one Luma event using their email address. Returns their approval status, tickets, check-in, and payment or refund amounts. Use the event ID from List Events or Find Event by URL. If the lookup fails with an error, the email is probably not on this event's guest list.
+    http_method: GET
+    endpoint_url: https://public-api.luma.com/v1/events/guests/get?event_id={{ event_id | strip | url_encode }}&id={{ email | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-luma-api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: event_id
+        type: string
+        description: The Luma event ID from List Events or Find Event by URL, usually starting with evt-.
+        required: true
+      - name: email
+        type: string
+        description: The email address the customer registered with.
+        required: true
+    response_template: |-
+      {% assign guest = response %}{% if guest.id %}{{ guest.user_name | default: "Unnamed guest" }} <{{ guest.user_email }}> (guest ID {{ guest.id }})
+      Status: {{ guest.approval_status | replace: "_", " " }}{% if guest.registered_at %}
+      Registered: {{ guest.registered_at }}{% elsif guest.invited_at %}
+      Invited: {{ guest.invited_at }}{% endif %}{% if guest.phone_number %}
+      Phone: {{ guest.phone_number }}{% endif %}
+      Tickets:{% for ticket in guest.event_tickets limit: 10 %}
+      - {{ ticket.name }}: {{ ticket.amount }} {{ ticket.currency | upcase }}{% if ticket.amount_discount > 0 %}, discount {{ ticket.amount_discount }}{% endif %}{% if ticket.checked_in_at %}, checked in {{ ticket.checked_in_at }}{% else %}, not checked in{% endif %}{% else %}
+      No tickets.{% endfor %}{% if guest.event_ticket_orders.size > 0 %}
+      Orders:{% for order in guest.event_ticket_orders limit: 5 %}
+      - {{ order.amount }} {{ order.currency | upcase }}{% if order.is_captured %} charged{% else %} not charged{% endif %}{% if order.amount_refunded > 0 %}, {{ order.amount_refunded }} refunded{% endif %}{% if order.coupon_info.code %}, coupon {{ order.coupon_info.code }}{% endif %}{% endfor %}{% endif %}
+      Amounts are in the smallest currency unit, such as cents.{% else %}Luma returned an unexpected response.{% endif %}
+
+  - id: list_ticket_types
+    title: List Ticket Types
+    description: List the ticket types for one Luma event, with price, capacity, and whether host approval is required. Use this when a customer asks what tickets exist or what they cost. Use the event ID from List Events or Find Event by URL.
+    http_method: GET
+    endpoint_url: https://public-api.luma.com/v1/events/ticket-types/list?event_id={{ event_id | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-luma-api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: event_id
+        type: string
+        description: The Luma event ID from List Events or Find Event by URL, usually starting with evt-.
+        required: true
+    response_template: |-
+      {% if response.entries %}{% for ticket in response.entries limit: 30 %}- {{ ticket.name | truncate: 120 }} (ticket type ID {{ ticket.id }}): {% if ticket.type == "free" %}free{% else %}{{ ticket.cents }} {{ ticket.currency | upcase }} in the smallest currency unit, such as cents{% if ticket.is_flexible %} (pay what you want, minimum {{ ticket.min_cents }}){% endif %}{% endif %}{% if ticket.max_capacity %}, capacity {{ ticket.max_capacity }}{% endif %}{% if ticket.require_approval %}, host approval required{% endif %}{% if ticket.valid_start_at or ticket.valid_end_at %}
+        On sale: {{ ticket.valid_start_at | default: "now" }} to {{ ticket.valid_end_at | default: "no end date" }}{% endif %}{% if ticket.description and ticket.description != "" %}
+        {{ ticket.description | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 200 }}{% endif %}
+      {% else %}No ticket types found for this event.
+      {% endfor %}{% else %}Luma returned an unexpected response.{% endif %}
+
+  - id: find_contact
+    title: Find Contact
+    description: Search your Luma calendar's contacts by email address or name. Use this to check whether a customer is known to your calendar, how many of your events they were approved for or checked in to, and their membership status. It does not say which events, so use Get Guest for a specific event.
+    http_method: GET
+    endpoint_url: https://public-api.luma.com/v1/calendars/contacts/list?query={{ query | strip | url_encode }}&pagination_limit=10
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-luma-api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: query
+        type: string
+        description: The customer's email address, or their name if the email is unknown.
+        required: true
+    response_template: |-
+      {% if response.entries %}{% for contact in response.entries limit: 10 %}- {{ contact.name | default: "Unnamed contact" }} <{{ contact.email }}> (contact ID {{ contact.id }})
+        Contact since: {{ contact.created_at }}
+        Events approved for: {{ contact.event_approved_count }}, checked in to: {{ contact.event_checked_in_count }}{% if contact.membership.status %}
+        Membership: {{ contact.membership.status | replace: "-", " " }}{% endif %}{% if contact.tags.size > 0 %}
+        Tags: {% for tag in contact.tags limit: 10 %}{{ tag.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}
+      {% else %}No contacts found matching this search.
+      {% endfor %}{% else %}Luma returned an unexpected response.{% endif %}
