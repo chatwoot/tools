@@ -1,0 +1,143 @@
+version: 0.0.1
+kind: captain_toolset
+name: Linear
+author: chatwoot
+category: Engineering & status
+description: Search Linear issues and projects, read their status and comments, and add comments to issues.
+
+secrets:
+  api_key:
+    label: Linear API key
+    type: password
+    required: true
+
+tools:
+  - id: search_issues
+    title: Search Issues
+    description: Search Linear issues by text, for example to check whether a bug or feature request a customer describes is already tracked. Returns up to 10 matches by relevance with the issue identifier the other Linear tools need. Use this first unless the customer already gave an identifier such as ENG-123.
+    http_method: POST
+    endpoint_url: https://api.linear.app/graphql
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: query
+        type: string
+        description: Keywords describing the bug or request, such as "export CSV timeout". Keep it short.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"query":"query SearchIssues($term: String!) { searchIssues(term: $term, first: 10) { nodes { identifier title url priorityLabel updatedAt state { name } team { name } assignee { name } } } }","variables":{"term":"{{ query | newline_to_br | replace: "<br />", " " | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}"}}
+    response_template: |-
+      {% if response.errors %}Linear could not complete the request: {{ response.errors[0].message | truncate: 200 }}{% elsif response.data.searchIssues.nodes %}{% for issue in response.data.searchIssues.nodes %}- {{ issue.identifier }}: {{ issue.title | truncate: 150 }}
+        Status: {{ issue.state.name }} · Priority: {{ issue.priorityLabel }} · Team: {{ issue.team.name }} · Assignee: {{ issue.assignee.name | default: "unassigned" }} · Updated: {{ issue.updatedAt | slice: 0, 10 }}
+        {{ issue.url }}
+      {% else %}No Linear issues match this search.
+      {% endfor %}{% else %}Linear returned an unexpected response.{% endif %}
+
+  - id: get_issue
+    title: Get Issue
+    description: Get one Linear issue with its status, priority, assignee, project, labels, dates, and description. Use an identifier such as ENG-123 given by the customer or returned by Search Issues.
+    http_method: POST
+    endpoint_url: https://api.linear.app/graphql
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: issue_id
+        type: string
+        description: The Linear issue identifier, such as ENG-123, or the issue's UUID.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"query":"query GetIssue($id: String!) { issue(id: $id) { identifier title description url priorityLabel createdAt updatedAt completedAt canceledAt dueDate state { name type } team { name } assignee { name } creator { name } project { name } parent { identifier title } labels(first: 10) { nodes { name } } } }","variables":{"id":"{{ issue_id | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}"}}
+    response_template: |-
+      {% if response.errors %}Linear could not complete the request: {{ response.errors[0].message | truncate: 200 }}{% elsif response.data.issue.identifier %}{% assign issue = response.data.issue %}{{ issue.identifier }}: {{ issue.title }}
+      Status: {{ issue.state.name }} ({{ issue.state.type }})
+      Priority: {{ issue.priorityLabel }}
+      Team: {{ issue.team.name }}
+      Assignee: {{ issue.assignee.name | default: "unassigned" }}{% if issue.project %}
+      Project: {{ issue.project.name }}{% endif %}{% if issue.parent %}
+      Parent issue: {{ issue.parent.identifier }} {{ issue.parent.title | truncate: 100 }}{% endif %}{% if issue.labels.nodes.size > 0 %}
+      Labels: {{ issue.labels.nodes | map: "name" | join: ", " }}{% endif %}
+      Created: {{ issue.createdAt | slice: 0, 10 }}{% if issue.creator %} by {{ issue.creator.name }}{% endif %} · Updated: {{ issue.updatedAt | slice: 0, 10 }}{% if issue.dueDate %}
+      Due: {{ issue.dueDate }}{% endif %}{% if issue.completedAt %}
+      Completed: {{ issue.completedAt | slice: 0, 10 }}{% endif %}{% if issue.canceledAt %}
+      Canceled: {{ issue.canceledAt | slice: 0, 10 }}{% endif %}
+      Open in Linear: {{ issue.url }}
+      Description: {% if issue.description and issue.description != "" %}{{ issue.description | truncate: 1500 }}{% else %}none{% endif %}{% else %}Linear returned an unexpected response.{% endif %}
+
+  - id: list_issue_comments
+    title: List Issue Comments
+    description: Read the 10 most recent comments on a Linear issue, such as engineering updates or workarounds. Use an identifier such as ENG-123 from the customer or Search Issues.
+    http_method: POST
+    endpoint_url: https://api.linear.app/graphql
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: issue_id
+        type: string
+        description: The Linear issue identifier, such as ENG-123, or the issue's UUID.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"query":"query IssueComments($id: String!) { issue(id: $id) { identifier title comments(first: 50) { nodes { body createdAt user { name } botActor { name } externalUser { name } } } } }","variables":{"id":"{{ issue_id | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}"}}
+    response_template: |-
+      {% if response.errors %}Linear could not complete the request: {{ response.errors[0].message | truncate: 200 }}{% elsif response.data.issue.identifier %}{% assign issue = response.data.issue %}{% assign comments = issue.comments.nodes | sort: "createdAt" | reverse %}Comments on {{ issue.identifier }} ({{ issue.title | truncate: 100 }}), newest first:
+      {% for comment in comments limit: 10 %}- {{ comment.createdAt | slice: 0, 10 }} · {{ comment.user.name | default: comment.externalUser.name | default: comment.botActor.name | default: "Unknown author" }}: {{ comment.body | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}
+      {% else %}No comments on this issue.
+      {% endfor %}{% else %}Linear returned an unexpected response.{% endif %}
+
+  - id: search_projects
+    title: Search Projects
+    description: Search Linear projects by text to check the status, progress, and target date of a planned feature or initiative, for example when a customer asks when something will ship. Returns up to 5 matches.
+    http_method: POST
+    endpoint_url: https://api.linear.app/graphql
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: query
+        type: string
+        description: Keywords from the feature or project name, such as "SSO" or "mobile app".
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"query":"query SearchProjects($term: String!) { searchProjects(term: $term, first: 5) { nodes { name description url progress startDate targetDate health status { name } lead { name } } } }","variables":{"term":"{{ query | newline_to_br | replace: "<br />", " " | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}"}}
+    response_template: |-
+      {% if response.errors %}Linear could not complete the request: {{ response.errors[0].message | truncate: 200 }}{% elsif response.data.searchProjects.nodes %}{% for project in response.data.searchProjects.nodes %}- {{ project.name }}
+        Status: {{ project.status.name }} · Progress: {{ project.progress | times: 100 | round }}%{% if project.health %} · Health: {{ project.health }}{% endif %}{% if project.lead %} · Lead: {{ project.lead.name }}{% endif %}
+        Start: {{ project.startDate | default: "not set" }} · Target: {{ project.targetDate | default: "not set" }}{% if project.description != "" %}
+        Summary: {{ project.description | truncate: 200 }}{% endif %}
+        {{ project.url }}
+      {% else %}No Linear projects match this search.
+      {% endfor %}{% else %}Linear returned an unexpected response.{% endif %}
+
+  - id: add_issue_comment
+    title: Add Issue Comment
+    description: Add a comment to a Linear issue, for example to record that another customer reported the same bug with a link to the conversation. Find the issue with Search Issues first. Only comment when the conversation adds new information for the team.
+    http_method: POST
+    endpoint_url: https://api.linear.app/graphql
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: issue_id
+        type: string
+        description: The Linear issue identifier, such as ENG-123, or the issue's UUID.
+        required: true
+      - name: body
+        type: string
+        description: The comment text. Markdown is supported. Do not include sensitive customer data.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% capture escaped_newline %}\\n{% endcapture %}{"query":"mutation AddComment($issueId: String!, $body: String!) { commentCreate(input: { issueId: $issueId, body: $body }) { success comment { url issue { identifier } } } }","variables":{"issueId":"{{ issue_id | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}","body":"{{ body | strip | replace: bs, escaped_bs | replace: '"', escaped_quote | newline_to_br | strip_newlines | replace: "<br />", escaped_newline }}"}}
+    response_template: |-
+      {% if response.errors %}Linear could not add the comment: {{ response.errors[0].message | truncate: 200 }}{% elsif response.data.commentCreate.success %}Added the comment to {{ response.data.commentCreate.comment.issue.identifier | default: "the issue" }}: {{ response.data.commentCreate.comment.url }}{% else %}Linear returned an unexpected response.{% endif %}
