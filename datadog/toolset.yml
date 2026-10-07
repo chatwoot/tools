@@ -1,0 +1,168 @@
+version: 0.0.1
+kind: captain_toolset
+name: Datadog
+author: chatwoot
+category: Engineering & status
+description: Check Datadog monitors, incidents, and scheduled downtimes.
+
+inputs:
+  site:
+    label: Datadog site
+    type: select
+    options:
+      - datadoghq.com
+      - us3.datadoghq.com
+      - us5.datadoghq.com
+      - datadoghq.eu
+      - ap1.datadoghq.com
+      - ap2.datadoghq.com
+      - uk1.datadoghq.com
+      - ddog-gov.com
+      - us2.ddog-gov.com
+    required: true
+
+secrets:
+  access_token:
+    label: Datadog service access token
+    type: password
+    required: true
+
+tools:
+  - id: list_triggered_monitors
+    title: List Triggered Monitors
+    description: List Datadog monitors that are currently in Alert, Warn, or No Data. Use this first when a customer reports that something is down, slow, or failing.
+    http_method: GET
+    endpoint_url: https://api.${{ inputs.site }}/api/v1/monitor/search?query=status%3A%28Alert%20OR%20Warn%20OR%20%22No%20Data%22%29&per_page=20&page=0
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    response_template: |-
+      {% if response.monitors %}{% for monitor in response.monitors limit: 20 %}- {{ monitor.name | truncate: 120 }} (monitor ID {{ monitor.id }}): {{ monitor.status }} · {{ monitor.type }}{% if monitor.last_triggered_ts %} · last triggered {{ monitor.last_triggered_ts | date: "%Y-%m-%d %H:%M %Z" }}{% endif %}{% if monitor.tags.size > 0 %} · tags: {{ monitor.tags | join: ", " | truncate: 120 }}{% endif %}
+      {% else %}No monitors are in Alert, Warn, or No Data right now.
+      {% endfor %}{% if response.metadata.total_count > 20 %}Showing 20 of {{ response.metadata.total_count }} triggered monitors.{% endif %}{% else %}Datadog returned an unexpected response.{% endif %}
+
+  - id: search_monitors
+    title: Search Monitors
+    description: Find Datadog monitors by name, service, or tag and see their current status. Use this to check a specific service or feature the customer mentions, and to get the monitor ID for Get Monitor.
+    http_method: GET
+    endpoint_url: https://api.${{ inputs.site }}/api/v1/monitor/search?query={{ query | strip | url_encode }}&per_page=20&page=0
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: query
+        type: string
+        description: A Datadog monitor search query. Plain words match monitor titles and messages, such as checkout. Filters also work, such as service:payments, env:production, or status:Alert, and can be joined with AND or OR.
+        required: true
+    response_template: |-
+      {% if response.monitors %}{% for monitor in response.monitors limit: 20 %}- {{ monitor.name | truncate: 120 }} (monitor ID {{ monitor.id }}): {{ monitor.status }} · {{ monitor.type }}{% if monitor.last_triggered_ts %} · last triggered {{ monitor.last_triggered_ts | date: "%Y-%m-%d %H:%M %Z" }}{% endif %}{% if monitor.tags.size > 0 %} · tags: {{ monitor.tags | join: ", " | truncate: 120 }}{% endif %}
+      {% else %}No monitors match this search.
+      {% endfor %}{% if response.metadata.total_count > 20 %}Showing 20 of {{ response.metadata.total_count }} matching monitors. Narrow the search to see the rest.{% endif %}{% else %}Datadog returned an unexpected response.{% endif %}
+
+  - id: get_monitor
+    title: Get Monitor
+    description: Get one Datadog monitor's overall state, the groups that are not OK, its query, and its notification message. Use the monitor ID from List Triggered Monitors or Search Monitors.
+    http_method: GET
+    endpoint_url: https://api.${{ inputs.site }}/api/v1/monitor/{{ monitor_id | url_encode }}?group_states=all
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: monitor_id
+        type: integer
+        description: The numeric Datadog monitor ID from List Triggered Monitors or Search Monitors.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.name | truncate: 200 }} (monitor ID {{ response.id }})
+      State: {{ response.overall_state | default: "unknown" }}
+      Type: {{ response.type }}{% if response.priority %}
+      Priority: P{{ response.priority }}{% endif %}{% if response.tags.size > 0 %}
+      Tags: {{ response.tags | join: ", " | truncate: 200 }}{% endif %}
+      Query: {{ response.query | truncate: 300 }}
+      Last edited: {{ response.modified }}{% if response.message and response.message != "" %}
+      Message: {{ response.message | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 400 }}{% endif %}{% assign shown = 0 %}{% assign hidden = 0 %}{% for group in response.state.groups %}{% unless group[1].status == "OK" %}{% if shown < 10 %}{% if shown == 0 %}
+      Groups not OK:{% endif %}
+      - {{ group[1].name | default: group[0] | truncate: 120 }}: {{ group[1].status }}{% if group[1].last_triggered_ts %}, triggered {{ group[1].last_triggered_ts | date: "%Y-%m-%d %H:%M %Z" }}{% endif %}{% assign shown = shown | plus: 1 %}{% else %}{% assign hidden = hidden | plus: 1 %}{% endif %}{% endunless %}{% endfor %}{% if hidden > 0 %}
+      {{ hidden }} more groups are not OK.{% endif %}{% else %}Datadog returned an unexpected response.{% endif %}
+
+  - id: list_active_incidents
+    title: List Active Incidents
+    description: List Datadog incidents that are still active or stable, newest first. Use this when a customer reports a problem that may be a known incident. Returns the incident ID that Get Incident needs.
+    http_method: GET
+    endpoint_url: https://api.${{ inputs.site }}/api/v2/incidents/search?query=state%3A%28active%20OR%20stable%29&sort=-created&page%5Bsize%5D=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    response_template: |-
+      {% if response.data.attributes.incidents %}{% for entry in response.data.attributes.incidents limit: 10 %}{% assign incident = entry.data.attributes %}- Incident {{ incident.public_id }}: {{ incident.title | truncate: 140 }}{% if incident.is_test %} (test incident){% endif %}
+        Incident ID: {{ entry.data.id }}
+        State: {{ incident.state | default: "unknown" }} · Severity: {{ incident.severity | default: "UNKNOWN" }} · Customers impacted: {% if incident.customer_impacted %}yes{% else %}no{% endif %}
+        Created: {{ incident.created }}
+      {% else %}No active or stable incidents.
+      {% endfor %}{% if response.data.attributes.total > 10 %}Showing 10 of {{ response.data.attributes.total }} incidents.{% endif %}{% else %}Datadog returned an unexpected response.{% endif %}
+
+  - id: search_incidents
+    title: Search Incidents
+    description: Search Datadog incidents, including resolved ones, newest first. Use this to find a past incident or to filter by state or severity. Returns the incident ID that Get Incident needs.
+    http_method: GET
+    endpoint_url: https://api.${{ inputs.site }}/api/v2/incidents/search?query={{ query | strip | url_encode }}&sort=-created&page%5Bsize%5D=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: query
+        type: string
+        description: A Datadog incident search query made of facets joined with AND, such as state:resolved, state:(active OR stable), or state:active AND severity:(SEV-1 OR SEV-2).
+        required: true
+    response_template: |-
+      {% if response.data.attributes.incidents %}{% for entry in response.data.attributes.incidents limit: 10 %}{% assign incident = entry.data.attributes %}- Incident {{ incident.public_id }}: {{ incident.title | truncate: 140 }}{% if incident.is_test %} (test incident){% endif %}
+        Incident ID: {{ entry.data.id }}
+        State: {{ incident.state | default: "unknown" }} · Severity: {{ incident.severity | default: "UNKNOWN" }} · Customers impacted: {% if incident.customer_impacted %}yes{% else %}no{% endif %}
+        Created: {{ incident.created }}{% if incident.resolved %} · Resolved: {{ incident.resolved }}{% endif %}
+      {% else %}No incidents match this search.
+      {% endfor %}{% if response.data.attributes.total > 10 %}Showing 10 of {{ response.data.attributes.total }} incidents.{% endif %}{% else %}Datadog returned an unexpected response.{% endif %}
+
+  - id: get_incident
+    title: Get Incident
+    description: Get a Datadog incident's state, severity, customer impact, timeline, and custom fields such as summary and root cause. Use the incident ID from List Active Incidents or Search Incidents.
+    http_method: GET
+    endpoint_url: https://api.${{ inputs.site }}/api/v2/incidents/{{ incident_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: incident_id
+        type: string
+        description: The Datadog incident ID, a UUID from List Active Incidents or Search Incidents. This is not the short incident number.
+        required: true
+    response_template: |-
+      {% if response.data.attributes %}{% assign incident = response.data.attributes %}Incident {{ incident.public_id }}: {{ incident.title | truncate: 200 }}{% if incident.is_test %} (test incident){% endif %}
+      State: {{ incident.state | default: "unknown" }}
+      Severity: {{ incident.severity | default: "UNKNOWN" }}
+      Customers impacted: {% if incident.customer_impacted %}yes{% else %}no{% endif %}{% if incident.customer_impact_scope and incident.customer_impact_scope != "" %}
+      Customer impact: {{ incident.customer_impact_scope | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 400 }}{% endif %}{% if incident.customer_impact_start %}
+      Customer impact started: {{ incident.customer_impact_start }}{% endif %}{% if incident.customer_impact_end %}
+      Customer impact ended: {{ incident.customer_impact_end }}{% endif %}
+      Created: {{ incident.created }}{% if incident.detected %}
+      Detected: {{ incident.detected }}{% endif %}{% if incident.resolved %}
+      Resolved: {{ incident.resolved }}{% endif %}
+      Last modified: {{ incident.modified }}{% for field in incident.fields limit: 15 %}{% capture value %}{{ field[1].value | join: ", " }}{% endcapture %}{% assign value = value | strip_newlines | strip %}{% if value != "" and field[0] != "state" and field[0] != "severity" %}
+      - {{ field[0] }}: {{ value | truncate: 300 }}{% endif %}{% endfor %}{% else %}Datadog returned an unexpected response.{% endif %}
+
+  - id: list_active_downtimes
+    title: List Active Downtimes
+    description: List Datadog downtimes that are active right now, which mute monitor alerts during planned maintenance. Use this when a customer asks about maintenance or when a service looks down but no monitor is alerting.
+    http_method: GET
+    endpoint_url: https://api.${{ inputs.site }}/api/v2/downtime?current_only=true&page%5Blimit%5D=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    response_template: |-
+      {% if response.data %}{% for downtime in response.data limit: 20 %}{% assign details = downtime.attributes %}- Scope: {{ details.scope | default: "not set" | truncate: 160 }} · {{ details.status }}{% if details.monitor_identifier.monitor_id %}
+        Monitor ID: {{ details.monitor_identifier.monitor_id }}{% elsif details.monitor_identifier.monitor_tags %}
+        Monitor tags: {{ details.monitor_identifier.monitor_tags | join: ", " | truncate: 160 }}{% endif %}{% if details.schedule.current_downtime %}
+        Current window: {{ details.schedule.current_downtime.start }} to {{ details.schedule.current_downtime.end | default: "no end set" }}{% elsif details.schedule.start %}
+        Window: {{ details.schedule.start }} to {{ details.schedule.end | default: "no end set" }}{% endif %}{% if details.message and details.message != "" %}
+        Message: {{ details.message | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% else %}No downtimes are active right now.
+      {% endfor %}{% else %}Datadog returned an unexpected response.{% endif %}
