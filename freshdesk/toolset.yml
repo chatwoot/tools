@@ -1,0 +1,158 @@
+version: 0.0.1
+kind: captain_toolset
+name: Freshdesk
+author: chatwoot
+category: Others
+description: Look up contacts, tickets, ticket conversations, and solution articles in Freshdesk, and add private notes to tickets.
+
+inputs:
+  subdomain:
+    label: Freshdesk subdomain
+    placeholder: acme
+    required: true
+
+secrets:
+  api_key:
+    label: Freshdesk API key
+    type: password
+    required: true
+
+tools:
+  - id: find_contact_by_email
+    title: Find Contact by Email
+    description: Find a Freshdesk contact by email address. Use this first to get the contact ID that List Contact Tickets needs.
+    http_method: GET
+    endpoint_url: https://${{ inputs.subdomain }}.freshdesk.com/api/v2/contacts?email={{ email | strip | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: X
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    response_template: |-
+      {% if response.first.id %}{% for contact in response limit: 5 %}- {{ contact.name | default: "No name" }} <{{ contact.email }}>
+        Contact ID: {{ contact.id }}{% if contact.phone or contact.mobile %}
+        Phone: {{ contact.phone | default: contact.mobile }}{% endif %}{% if contact.job_title %}
+        Job title: {{ contact.job_title }}{% endif %}{% if contact.company_id %}
+        Company ID: {{ contact.company_id }}{% endif %}{% if contact.time_zone %}
+        Time zone: {{ contact.time_zone }}{% endif %}
+        Contact since: {{ contact.created_at | slice: 0, 10 }}{% if contact.description %}
+        About: {{ contact.description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% endfor %}{% elsif response == empty %}No Freshdesk contact found with this email address.{% else %}Freshdesk returned an unexpected response.{% endif %}
+
+  - id: list_contact_tickets
+    title: List Contact Tickets
+    description: List a contact's 10 most recently created Freshdesk tickets with status and priority. Use the contact ID from Find Contact by Email.
+    http_method: GET
+    endpoint_url: https://${{ inputs.subdomain }}.freshdesk.com/api/v2/tickets?requester_id={{ contact_id | url_encode }}&updated_since=2015-01-01T00%3A00%3A00Z&order_by=created_at&order_type=desc&per_page=10
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: X
+    param_schema:
+      - name: contact_id
+        type: integer
+        description: The numeric Freshdesk contact ID from Find Contact by Email.
+        required: true
+    response_template: |-
+      {% if response.first.id %}{% for ticket in response limit: 10 %}- Ticket {{ ticket.id }} · {{ ticket.subject | default: "No subject" | truncate: 120 }}
+        Status: {% case ticket.status %}{% when 2 %}open{% when 3 %}pending{% when 4 %}resolved{% when 5 %}closed{% else %}custom status {{ ticket.status }}{% endcase %} · Priority: {% case ticket.priority %}{% when 1 %}low{% when 2 %}medium{% when 3 %}high{% when 4 %}urgent{% else %}{{ ticket.priority }}{% endcase %}{% if ticket.type %} · Type: {{ ticket.type }}{% endif %}
+        Created: {{ ticket.created_at | slice: 0, 10 }} · Updated: {{ ticket.updated_at | slice: 0, 10 }}
+      {% endfor %}{% elsif response == empty %}No tickets found for this contact.{% else %}Freshdesk returned an unexpected response.{% endif %}
+
+  - id: get_ticket
+    title: Get Ticket
+    description: Get a Freshdesk ticket's details, including status, priority, requester, due dates, tags, custom fields, and the original description. Use a ticket ID from List Contact Tickets or one the customer gives you.
+    http_method: GET
+    endpoint_url: https://${{ inputs.subdomain }}.freshdesk.com/api/v2/tickets/{{ ticket_id | url_encode }}?include=requester,stats
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: X
+    param_schema:
+      - name: ticket_id
+        type: integer
+        description: The numeric Freshdesk ticket ID.
+        required: true
+    response_template: |-
+      {% if response.id %}Ticket {{ response.id }} · {{ response.subject | default: "No subject" | truncate: 200 }}
+      Status: {% case response.status %}{% when 2 %}open{% when 3 %}pending{% when 4 %}resolved{% when 5 %}closed{% else %}custom status {{ response.status }}{% endcase %} · Priority: {% case response.priority %}{% when 1 %}low{% when 2 %}medium{% when 3 %}high{% when 4 %}urgent{% else %}{{ response.priority }}{% endcase %}{% if response.type %} · Type: {{ response.type }}{% endif %}
+      Source: {% case response.source %}{% when 1 %}email{% when 2 %}portal{% when 3 %}phone{% when 7 %}chat{% when 9 %}feedback widget{% when 10 %}outbound email{% else %}source {{ response.source }}{% endcase %}{% if response.requester %}
+      Requester: {{ response.requester.name }} <{{ response.requester.email }}> (contact ID {{ response.requester.id }}){% else %}
+      Requester contact ID: {{ response.requester_id }}{% endif %}
+      Assigned agent ID: {{ response.responder_id | default: "unassigned" }}{% if response.group_id %} · Group ID: {{ response.group_id }}{% endif %}
+      Created: {{ response.created_at }} · Updated: {{ response.updated_at }}{% if response.due_by %}
+      Resolution due: {{ response.due_by }}{% if response.is_escalated %} (overdue, escalated){% endif %}{% endif %}{% if response.fr_due_by %}
+      First response due: {{ response.fr_due_by }}{% if response.fr_escalated %} (overdue, escalated){% endif %}{% endif %}{% if response.stats.first_responded_at %}
+      First responded: {{ response.stats.first_responded_at }}{% endif %}{% if response.stats.resolved_at %}
+      Resolved: {{ response.stats.resolved_at }}{% endif %}{% if response.stats.closed_at %}
+      Closed: {{ response.stats.closed_at }}{% endif %}{% if response.tags.size > 0 %}
+      Tags: {{ response.tags | join: ", " | truncate: 200 }}{% endif %}{% for field in response.custom_fields %}{% if field[1] != nil and field[1] != "" %}
+      {{ field[0] }}: {{ field[1] | truncate: 150 }}{% endif %}{% endfor %}
+      Description: {{ response.description_text | default: "None" | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 1500 }}{% else %}Freshdesk returned an unexpected response.{% endif %}
+
+  - id: list_ticket_conversations
+    title: List Ticket Conversations
+    description: Read the 10 most recent replies and notes on a Freshdesk ticket, newest first, to see what was already said to the customer. Private notes are for agents only and must not be shared with the customer. Use a ticket ID from List Contact Tickets.
+    http_method: GET
+    endpoint_url: https://${{ inputs.subdomain }}.freshdesk.com/api/v2/tickets/{{ ticket_id | url_encode }}/conversations?per_page=50
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: X
+    param_schema:
+      - name: ticket_id
+        type: integer
+        description: The numeric Freshdesk ticket ID.
+        required: true
+    response_template: |-
+      {% if response.first.id %}{% assign entries = response | reverse %}{% if response.size >= 50 %}This ticket has 50 or more replies and notes. Only the first 50 were read, so newer ones may be missing.
+      {% endif %}{% for entry in entries limit: 10 %}- {{ entry.created_at | slice: 0, 16 | replace: "T", " " }} · {% if entry.private %}private note (agents only){% elsif entry.incoming %}customer reply{% elsif entry.source == 2 %}public note{% else %}agent reply{% endif %}{% if entry.from_email %} · from {{ entry.from_email }}{% endif %}
+        {{ entry.body_text | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 600 }}
+      {% endfor %}{% elsif response == empty %}This ticket has no replies or notes yet.{% else %}Freshdesk returned an unexpected response.{% endif %}
+
+  - id: search_solution_articles
+    title: Search Solution Articles
+    description: Search the Freshdesk knowledge base for published solution articles matching a keyword. Use this to answer how-to questions from the help center content. Returns up to 5 articles.
+    http_method: GET
+    endpoint_url: https://${{ inputs.subdomain }}.freshdesk.com/api/v2/search/solutions?term={{ query | strip | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: X
+    param_schema:
+      - name: query
+        type: string
+        description: A keyword or short phrase to search for, such as "reset password".
+        required: true
+    response_template: |-
+      {% if response.first.id %}{% assign shown = 0 %}{% for article in response %}{% if shown >= 5 %}{% break %}{% endif %}{% if article.status == 2 %}{% assign shown = shown | plus: 1 %}- {{ article.title }} (article ID {{ article.id }}){% if article.category_name %}
+        In: {{ article.category_name }}{% if article.folder_name %} > {{ article.folder_name }}{% endif %}{% endif %}
+        {{ article.description_text | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 700 }}
+      {% endif %}{% endfor %}{% if shown == 0 %}No published solution articles match this search.{% endif %}{% elsif response == empty %}No published solution articles match this search.{% else %}Freshdesk returned an unexpected response.{% endif %}
+
+  - id: add_private_note
+    title: Add Private Note
+    description: Add a private note to a Freshdesk ticket, for example a summary of this conversation or a follow-up request for the assigned agent. The note is visible to agents only and is never sent to the customer. Only add a note when the conversation needs one.
+    http_method: POST
+    endpoint_url: https://${{ inputs.subdomain }}.freshdesk.com/api/v2/tickets/{{ ticket_id | url_encode }}/notes
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: X
+    param_schema:
+      - name: ticket_id
+        type: integer
+        description: The numeric Freshdesk ticket ID.
+        required: true
+      - name: content
+        type: string
+        description: The note text. Plain text only.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{"body":"{{ content | strip | escape | replace: bs, escaped_bs | newline_to_br | strip_newlines }}","private":true}
+    response_template: |-
+      {% if response.id %}Added a private note to ticket {{ response.ticket_id }}.{% else %}Freshdesk returned an unexpected response.{% endif %}
