@@ -1,0 +1,144 @@
+version: 0.0.1
+kind: captain_toolset
+name: Jotform
+author: chatwoot
+category: Others
+description: Find Jotform forms and look up what a customer submitted.
+
+inputs:
+  api_host:
+    label: Jotform API host
+    type: select
+    options:
+      - api.jotform.com
+      - eu-api.jotform.com
+      - hipaa-api.jotform.com
+    placeholder: api.jotform.com
+    required: true
+
+secrets:
+  api_key:
+    label: Jotform API key
+    type: password
+    required: true
+
+tools:
+  - id: list_forms
+    title: List Forms
+    description: List forms in the Jotform account, 20 at a time, with form IDs, status, and submission counts. Use this first to get the form ID the other Jotform tools need. Start with offset 0 and add 20 for the next page.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/user/forms?limit=20&offset={{ offset | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: APIKEY
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: offset
+        type: integer
+        description: Number of forms to skip, starting at 0.
+        required: true
+    response_template: |-
+      {% if response.responseCode == 200 %}{% for form in response.content limit: 20 %}- {{ form.title | default: "Untitled form" }} (form ID {{ form.id }}) · {{ form.status | downcase }} · {{ form.count }} submissions{% if form.last_submission %} · last submission {{ form.last_submission }}{% endif %}
+      {% else %}No forms found at this offset.{% endfor %}{% else %}Jotform returned an unexpected response.{% endif %}
+
+  - id: get_form
+    title: Get Form
+    description: Get a Jotform form's title, status, link, and submission counts. Use this to check whether a form is enabled and when it last received a submission.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/form/{{ form_id | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: APIKEY
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: form_id
+        type: string
+        description: The numeric Jotform form ID from List Forms, or the number at the end of the form URL.
+        required: true
+    response_template: |-
+      {% assign form = response.content %}{% unless form.id %}{% assign form = response.content[0] %}{% endunless %}{% if response.responseCode == 200 and form.id %}{{ form.title | default: "Untitled form" }} (form ID {{ form.id }})
+      Status: {{ form.status | downcase }}
+      Submissions: {{ form.count }} total, {{ form.new }} unread{% if form.last_submission %}
+      Last submission: {{ form.last_submission }}{% endif %}
+      Created: {{ form.created_at }}{% if form.updated_at %} · Updated: {{ form.updated_at }}{% endif %}{% if form.url %}
+      Link: {{ form.url }}{% endif %}{% else %}Jotform returned an unexpected response.{% endif %}
+
+  - id: list_form_questions
+    title: List Form Questions
+    description: List the questions on a Jotform form with their labels, types, and question IDs. Use this to tell a customer what a form asks or which fields are required.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/form/{{ form_id | strip | url_encode }}/questions
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: APIKEY
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: form_id
+        type: string
+        description: The numeric Jotform form ID from List Forms, or the number at the end of the form URL.
+        required: true
+    response_template: |-
+      {% if response.responseCode == 200 %}{% for pair in response.content limit: 80 %}{% assign question = pair[1] %}- {{ question.text | default: question.name | strip_html | strip_newlines | truncate: 150 }} ({{ question.type | remove_first: "control_" }}, question ID {{ question.qid | default: pair[0] }}){% if question.required == "Yes" %} · required{% endif %}
+      {% else %}This form has no questions.{% endfor %}{% else %}Jotform returned an unexpected response.{% endif %}
+
+  - id: search_submissions
+    title: Search Submissions
+    description: Find a person's submissions across every form in the Jotform account by a word or phrase in their answers, such as their email address or name. Returns up to 10 matches with their answers. Use this when you do not know which form the customer filled in.
+    http_method: GET
+    endpoint_url: 'https://${{ inputs.api_host }}/user/submissions?limit=10&orderby=created_at&filter=%7B%22fullText%22%3A%22{{ query | strip_newlines | strip | url_encode | remove: "%22" | remove: "%5C" }}%22%7D'
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: APIKEY
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: query
+        type: string
+        description: The text to look for in submission answers, usually the customer's email address.
+        required: true
+    response_template: |-
+      {% if response.responseCode == 200 %}{% for submission in response.content limit: 10 %}- Submission {{ submission.id }} · form ID {{ submission.form_id }} · submitted {{ submission.created_at }}{% if submission.status and submission.status != "ACTIVE" %} · {{ submission.status }}{% endif %}{% if submission.workflowStatus %} · workflow: {{ submission.workflowStatus }}{% endif %}{% assign shown = 0 %}{% for pair in submission.answers %}{% assign a = pair[1] %}{% if shown < 15 %}{% capture value %}{% if a.prettyFormat and a.prettyFormat != "" %}{{ a.prettyFormat | strip_html }}{% else %}{% for part in a.answer %}{{ part[1] | default: part }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% endcapture %}{% assign value = value | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}{% if value != "" %}{% assign shown = shown | plus: 1 %}
+        - {{ a.text | default: a.name | default: pair[0] | strip_html | strip_newlines | truncate: 100 }}: {{ value | truncate: 200 }}{% endif %}{% endif %}{% endfor %}
+      {% else %}No submissions contain that text.{% endfor %}{% else %}Jotform returned an unexpected response.{% endif %}
+
+  - id: list_form_submissions
+    title: List Form Submissions
+    description: List up to 10 submissions to one Jotform form with their answers. Use this when you know which form the customer filled in. Get the form ID from List Forms first.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/form/{{ form_id | strip | url_encode }}/submissions?limit=10&orderby=created_at
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: APIKEY
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: form_id
+        type: string
+        description: The numeric Jotform form ID from List Forms, or the number at the end of the form URL.
+        required: true
+    response_template: |-
+      {% if response.responseCode == 200 %}{% for submission in response.content limit: 10 %}- Submission {{ submission.id }} · form ID {{ submission.form_id }} · submitted {{ submission.created_at }}{% if submission.status and submission.status != "ACTIVE" %} · {{ submission.status }}{% endif %}{% if submission.workflowStatus %} · workflow: {{ submission.workflowStatus }}{% endif %}{% assign shown = 0 %}{% for pair in submission.answers %}{% assign a = pair[1] %}{% if shown < 15 %}{% capture value %}{% if a.prettyFormat and a.prettyFormat != "" %}{{ a.prettyFormat | strip_html }}{% else %}{% for part in a.answer %}{{ part[1] | default: part }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% endcapture %}{% assign value = value | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}{% if value != "" %}{% assign shown = shown | plus: 1 %}
+        - {{ a.text | default: a.name | default: pair[0] | strip_html | strip_newlines | truncate: 100 }}: {{ value | truncate: 200 }}{% endif %}{% endif %}{% endfor %}
+      {% else %}This form has no submissions.{% endfor %}{% else %}Jotform returned an unexpected response.{% endif %}
+
+  - id: get_submission
+    title: Get Submission
+    description: Read one Jotform submission in full, with every answer. Use the submission ID from Search Submissions or List Form Submissions.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/submission/{{ submission_id | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: APIKEY
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: submission_id
+        type: string
+        description: The numeric Jotform submission ID from Search Submissions or List Form Submissions.
+        required: true
+    response_template: |-
+      {% if response.responseCode == 200 and response.content.id %}{% assign submission = response.content %}Submission {{ submission.id }} · form ID {{ submission.form_id }} · submitted {{ submission.created_at }}{% if submission.status and submission.status != "ACTIVE" %} · {{ submission.status }}{% endif %}{% if submission.workflowStatus %} · workflow: {{ submission.workflowStatus }}{% endif %}{% assign shown = 0 %}{% for pair in submission.answers %}{% assign a = pair[1] %}{% if shown < 100 %}{% capture value %}{% if a.prettyFormat and a.prettyFormat != "" %}{{ a.prettyFormat | strip_html }}{% else %}{% for part in a.answer %}{{ part[1] | default: part }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% endcapture %}{% assign value = value | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}{% if value != "" %}{% assign shown = shown | plus: 1 %}
+        - {{ a.text | default: a.name | default: pair[0] | strip_html | strip_newlines | truncate: 100 }}: {{ value | truncate: 1000 }}{% endif %}{% endif %}{% endfor %}{% else %}Jotform returned an unexpected response.{% endif %}
