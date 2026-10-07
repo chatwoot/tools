@@ -1,0 +1,136 @@
+version: 0.0.1
+kind: captain_toolset
+name: Jira
+author: chatwoot
+category: Engineering & status
+description: Search Jira Cloud issues, read their status, comments, and release versions, and add comments to issues.
+
+inputs:
+  site_subdomain:
+    label: Jira site subdomain
+    placeholder: acme
+    required: true
+  email:
+    label: Atlassian account email
+    placeholder: support-bot@acme.com
+    required: true
+
+secrets:
+  api_token:
+    label: Atlassian API token
+    type: password
+    required: true
+
+tools:
+  - id: search_issues
+    title: Search Issues
+    description: Search Jira issues by text, for example to check whether a bug or feature request a customer describes is already tracked. Returns the 10 most recently updated matches with the issue key the other Jira tools need. Use this first unless the customer already gave a key such as PROJ-123.
+    http_method: GET
+    endpoint_url: 'https://${{ inputs.site_subdomain }}.atlassian.net/rest/api/2/search/jql?jql=text%20~%20%22{{ query | strip_newlines | strip | url_encode | replace: "%22", "+" | replace: "%5C", "+" }}%22%20ORDER%20BY%20updated%20DESC&maxResults=10&fields=summary,status,issuetype,priority,assignee,updated'
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.email }}
+      password: ${{ secrets.api_token }}
+    param_schema:
+      - name: query
+        type: string
+        description: Keywords describing the bug or request, such as "export CSV timeout". Keep it short.
+        required: true
+    response_template: |-
+      {% if response.issues %}{% for issue in response.issues %}- {{ issue.key }}: {{ issue.fields.summary | truncate: 150 }}
+        Type: {{ issue.fields.issuetype.name }} · Status: {{ issue.fields.status.name }} · Priority: {{ issue.fields.priority.name | default: "none" }} · Assignee: {{ issue.fields.assignee.displayName | default: "unassigned" }} · Updated: {{ issue.fields.updated | slice: 0, 10 }}
+        {{ issue.self | split: "/rest/" | first }}/browse/{{ issue.key }}
+      {% else %}No Jira issues match this search.
+      {% endfor %}{% else %}Jira returned an unexpected response.{% endif %}
+
+  - id: get_issue
+    title: Get Issue
+    description: Get one Jira issue with its status, resolution, priority, assignee, fix versions, labels, dates, and description. Use an issue key such as PROJ-123 given by the customer or returned by Search Issues.
+    http_method: GET
+    endpoint_url: https://${{ inputs.site_subdomain }}.atlassian.net/rest/api/2/issue/{{ issue_key | strip | upcase | url_encode }}?fields=summary,status,issuetype,priority,assignee,reporter,created,updated,resolution,resolutiondate,duedate,labels,components,fixVersions,project,description
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.email }}
+      password: ${{ secrets.api_token }}
+    param_schema:
+      - name: issue_key
+        type: string
+        description: The Jira issue key, such as PROJ-123.
+        required: true
+    response_template: |-
+      {% if response.key %}{% assign f = response.fields %}{{ response.key }}: {{ f.summary }}
+      Project: {{ f.project.name }} ({{ f.project.key }})
+      Type: {{ f.issuetype.name }}
+      Status: {{ f.status.name }}{% if f.resolution %}
+      Resolution: {{ f.resolution.name }}{% if f.resolutiondate %} on {{ f.resolutiondate | slice: 0, 10 }}{% endif %}{% endif %}
+      Priority: {{ f.priority.name | default: "none" }}
+      Assignee: {{ f.assignee.displayName | default: "unassigned" }}
+      Reporter: {{ f.reporter.displayName | default: "unknown" }}{% if f.fixVersions.size > 0 %}
+      Fix versions: {% for version in f.fixVersions limit: 5 %}{{ version.name }}{% if version.released %} (released{% if version.releaseDate %} {{ version.releaseDate }}{% endif %}){% else %} (unreleased{% if version.releaseDate %}, planned {{ version.releaseDate }}{% endif %}){% endif %}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if f.components.size > 0 %}
+      Components: {{ f.components | map: "name" | join: ", " | truncate: 200 }}{% endif %}{% if f.labels.size > 0 %}
+      Labels: {{ f.labels | join: ", " | truncate: 200 }}{% endif %}
+      Created: {{ f.created | slice: 0, 10 }} · Updated: {{ f.updated | slice: 0, 10 }}{% if f.duedate %}
+      Due: {{ f.duedate }}{% endif %}
+      Open in Jira: {{ response.self | split: "/rest/" | first }}/browse/{{ response.key }}
+      Description: {% if f.description and f.description != "" %}{{ f.description | truncate: 1500 }}{% else %}none{% endif %}{% else %}Jira returned an unexpected response.{% endif %}
+
+  - id: list_issue_comments
+    title: List Issue Comments
+    description: Read the 10 most recent comments on a Jira issue, such as engineering updates or workarounds. Use an issue key such as PROJ-123 from the customer or Search Issues.
+    http_method: GET
+    endpoint_url: https://${{ inputs.site_subdomain }}.atlassian.net/rest/api/2/issue/{{ issue_key | strip | upcase | url_encode }}/comment?orderBy=-created&maxResults=10
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.email }}
+      password: ${{ secrets.api_token }}
+    param_schema:
+      - name: issue_key
+        type: string
+        description: The Jira issue key, such as PROJ-123.
+        required: true
+    response_template: |-
+      {% if response.comments %}{% for comment in response.comments limit: 10 %}- {{ comment.created | slice: 0, 10 }} · {{ comment.author.displayName | default: "Unknown author" }}{% if comment.jsdPublic == false %} (internal){% endif %}: {{ comment.body | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}
+      {% else %}No comments on this issue.
+      {% endfor %}{% else %}Jira returned an unexpected response.{% endif %}
+
+  - id: list_project_versions
+    title: List Project Versions
+    description: List the 15 latest release versions of a Jira project with their release dates and whether they have shipped. Use this when a customer asks when a fix or feature will be released. The project key is the part of an issue key before the dash, such as PROJ in PROJ-123, and version names appear under Fix versions in Get Issue.
+    http_method: GET
+    endpoint_url: https://${{ inputs.site_subdomain }}.atlassian.net/rest/api/2/project/{{ project_key | strip | upcase | url_encode }}/version?orderBy=-releaseDate&status=released,unreleased&maxResults=15
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.email }}
+      password: ${{ secrets.api_token }}
+    param_schema:
+      - name: project_key
+        type: string
+        description: The Jira project key, such as PROJ.
+        required: true
+    response_template: |-
+      {% if response.values %}{% for version in response.values limit: 15 %}- {{ version.name }}: {% if version.released %}released{% if version.releaseDate %} on {{ version.releaseDate }}{% endif %}{% else %}unreleased{% if version.releaseDate %}, planned for {{ version.releaseDate }}{% endif %}{% if version.overdue %} (overdue){% endif %}{% endif %}{% if version.description and version.description != "" %} · {{ version.description | strip_newlines | truncate: 150 }}{% endif %}
+      {% else %}This project has no release versions.
+      {% endfor %}{% else %}Jira returned an unexpected response.{% endif %}
+
+  - id: add_issue_comment
+    title: Add Issue Comment
+    description: Add a comment to a Jira issue, for example to record that another customer reported the same bug with a link to the conversation. Find the issue with Search Issues first. Only comment when the conversation adds new information for the team. On Jira Service Management requests the comment can be visible to the customer, so write nothing internal there.
+    http_method: POST
+    endpoint_url: https://${{ inputs.site_subdomain }}.atlassian.net/rest/api/2/issue/{{ issue_key | strip | upcase | url_encode }}/comment
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.email }}
+      password: ${{ secrets.api_token }}
+    param_schema:
+      - name: issue_key
+        type: string
+        description: The Jira issue key, such as PROJ-123.
+        required: true
+      - name: body
+        type: string
+        description: The comment text. Plain text; Jira wiki markup is supported. Do not include sensitive customer data.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% capture escaped_newline %}\\n{% endcapture %}{"body":"{{ body | strip | replace: bs, escaped_bs | replace: '"', escaped_quote | newline_to_br | strip_newlines | replace: "<br />", escaped_newline }}"}
+    response_template: |-
+      {% if response.id %}Added the comment to the issue (comment ID {{ response.id }}).{% else %}Jira returned an unexpected response.{% endif %}
