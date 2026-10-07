@@ -1,0 +1,150 @@
+version: 0.0.1
+kind: captain_toolset
+name: Kit
+author: chatwoot
+category: Marketing
+description: Look up Kit subscribers, their tags and email engagement, and tag a subscriber.
+
+secrets:
+  api_key:
+    label: Kit V4 API key
+    type: password
+    required: true
+
+tools:
+  - id: find_subscriber_by_email
+    title: Find Subscriber by Email
+    description: Find a Kit (formerly ConvertKit) subscriber by email address, in any state, including unsubscribed and bounced. Use this first to check whether someone is subscribed and to get the subscriber ID the other Kit tools need.
+    http_method: GET
+    endpoint_url: https://api.kit.com/v4/subscribers?email_address={{ email | strip | url_encode }}&status=all&include=tags%2Clocation&per_page=5
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Kit-Api-Key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The subscriber's exact email address.
+        required: true
+    response_template: |-
+      {% if response.subscribers %}{% for subscriber in response.subscribers limit: 5 %}- {{ subscriber.first_name | default: "No first name" }} <{{ subscriber.email_address }}>
+        Subscriber ID: {{ subscriber.id }}
+        State: {{ subscriber.state }}{% if subscriber.state == "cancelled" %} (unsubscribed){% endif %}
+        Subscribed since: {{ subscriber.created_at | slice: 0, 10 }}{% if subscriber.location.country %}
+        Location: {% if subscriber.location.city %}{{ subscriber.location.city }}, {% endif %}{{ subscriber.location.country }}{% endif %}{% if subscriber.tags.size > 0 %}
+        Tags: {% for tag in subscriber.tags limit: 20 %}{{ tag.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% if subscriber.tags.size > 20 %} and {{ subscriber.tags.size | minus: 20 }} more{% endif %}{% endif %}{% for field in subscriber.fields limit: 15 %}{% if field[1] and field[1] != "" %}
+        {{ field[0] }}: {{ field[1] | truncate: 150 }}{% endif %}{% endfor %}
+      {% else %}No Kit subscriber found with this email address.
+      {% endfor %}{% else %}Kit returned an unexpected response.{% endif %}
+
+  - id: list_subscriber_tags
+    title: List Subscriber Tags
+    description: List the tags applied to a Kit subscriber and when each was applied. Use the subscriber ID from Find Subscriber by Email. Call this when you need tag IDs or tagging dates; Find Subscriber by Email already shows tag names.
+    http_method: GET
+    endpoint_url: https://api.kit.com/v4/subscribers/{{ subscriber_id | url_encode }}/tags?per_page=50
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Kit-Api-Key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: subscriber_id
+        type: integer
+        description: The numeric Kit subscriber ID from Find Subscriber by Email.
+        required: true
+    response_template: |-
+      {% if response.tags %}{% for tag in response.tags limit: 50 %}- {{ tag.name }} (tag ID {{ tag.id }}), tagged {{ tag.tagged_at | slice: 0, 10 }}
+      {% else %}This subscriber has no tags.
+      {% endfor %}{% if response.pagination.has_next_page %}More tags exist; only the first 50 are shown.{% endif %}{% else %}Kit returned an unexpected response.{% endif %}
+
+  - id: get_subscriber_email_stats
+    title: Get Subscriber Email Stats
+    description: Check how many emails a Kit subscriber was sent, opened, and clicked, how many bounced, and when they were last sent an email. Use this when a customer says they are not receiving emails. Use the subscriber ID from Find Subscriber by Email.
+    http_method: GET
+    endpoint_url: https://api.kit.com/v4/subscribers/{{ subscriber_id | url_encode }}/stats
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Kit-Api-Key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: subscriber_id
+        type: integer
+        description: The numeric Kit subscriber ID from Find Subscriber by Email.
+        required: true
+    response_template: |-
+      {% if response.subscriber.stats %}{% assign stats = response.subscriber.stats %}Email stats for subscriber {{ response.subscriber.id }}:
+      Sent: {{ stats.sent | default: 0 }} · Opened: {{ stats.opened | default: 0 }} · Clicked: {{ stats.clicked | default: 0 }} · Bounced: {{ stats.bounced | default: 0 }}
+      Open rate: {{ stats.open_rate | default: 0 | times: 100 | round: 1 }}% · Click rate: {{ stats.click_rate | default: 0 | times: 100 | round: 1 }}%
+      Last sent: {{ stats.last_sent | default: "never" }}
+      Last opened: {{ stats.last_opened | default: "never" }}
+      Last clicked: {{ stats.last_clicked | default: "never" }}{% else %}Kit returned an unexpected response.{% endif %}
+
+  - id: list_tags
+    title: List Tags
+    description: List the tags in the Kit account with their IDs. Use this to find the tag ID that Tag Subscriber needs, or to explain which tags exist.
+    http_method: GET
+    endpoint_url: https://api.kit.com/v4/tags?per_page=100
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Kit-Api-Key
+      key: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.tags %}{% for tag in response.tags limit: 100 %}- {{ tag.name }} (tag ID {{ tag.id }})
+      {% else %}No tags found in this Kit account.
+      {% endfor %}{% if response.pagination.has_next_page %}More tags exist; only the first 100 are shown.{% endif %}{% else %}Kit returned an unexpected response.{% endif %}
+
+  - id: list_forms
+    title: List Forms
+    description: List the active sign-up forms and landing pages in the Kit account, with their public links. Use this when a customer asks where to subscribe or which form they signed up through.
+    http_method: GET
+    endpoint_url: https://api.kit.com/v4/forms?status=active&per_page=50
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Kit-Api-Key
+      key: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.forms %}{% for form in response.forms limit: 50 %}- {{ form.name }} (form ID {{ form.id }}) · {% if form.type == "hosted" %}landing page{% else %}{{ form.type }} form{% endif %}{% if form.embed_url %} · {{ form.embed_url }}{% endif %}
+      {% else %}No active forms found in this Kit account.
+      {% endfor %}{% if response.pagination.has_next_page %}More forms exist; only the first 50 are shown.{% endif %}{% else %}Kit returned an unexpected response.{% endif %}
+
+  - id: list_sequences
+    title: List Sequences
+    description: List the email sequences (automated email series) in the Kit account, whether each is active, and its sending schedule. Use this when a customer asks about an email series they expected to receive.
+    http_method: GET
+    endpoint_url: https://api.kit.com/v4/sequences?per_page=50
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Kit-Api-Key
+      key: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.sequences %}{% for sequence in response.sequences limit: 50 %}- {{ sequence.name }} (sequence ID {{ sequence.id }}) · {% if sequence.active %}active{% else %}not active{% endif %}{% if sequence.send_days.size > 0 %} · sends {{ sequence.send_days | join: ", " }} at {{ sequence.send_hour }}:00 {{ sequence.time_zone }}{% endif %}{% if sequence.repeat %} · subscribers can repeat it{% endif %}
+      {% else %}No sequences found in this Kit account.
+      {% endfor %}{% if response.pagination.has_next_page %}More sequences exist; only the first 50 are shown.{% endif %}{% else %}Kit returned an unexpected response.{% endif %}
+
+  - id: tag_subscriber
+    title: Tag Subscriber
+    description: Add a tag to an existing Kit subscriber. Tags can trigger automations in Kit, so only call this when the customer asks for something a specific tag is meant for. Get the subscriber ID from Find Subscriber by Email and the tag ID from List Tags first.
+    http_method: POST
+    endpoint_url: https://api.kit.com/v4/tags/{{ tag_id | url_encode }}/subscribers/{{ subscriber_id | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Kit-Api-Key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: tag_id
+        type: integer
+        description: The numeric Kit tag ID from List Tags.
+        required: true
+      - name: subscriber_id
+        type: integer
+        description: The numeric Kit subscriber ID from Find Subscriber by Email.
+        required: true
+    request_template: '{}'
+    response_template: |-
+      {% if response.subscriber.id %}Tagged {{ response.subscriber.email_address }} (subscriber ID {{ response.subscriber.id }}). Tag applied on {{ response.subscriber.tagged_at | slice: 0, 10 }}.{% else %}Kit returned an unexpected response.{% endif %}
