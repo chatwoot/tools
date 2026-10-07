@@ -1,0 +1,113 @@
+version: 0.0.1
+kind: captain_toolset
+name: Notion
+author: chatwoot
+category: Others
+description: Find Notion pages and databases shared with the connection and read their content, properties, and comments.
+
+headers:
+  Notion-Version: '2026-03-11'
+
+secrets:
+  api_token:
+    label: Notion API token
+    type: password
+    required: true
+
+tools:
+  - id: search
+    title: Search Pages
+    description: Search Notion pages and databases by title, for example to find an internal guide, policy, or known-issue page. Returns up to 10 matches with the page ID or data source ID the other Notion tools need. Notion matches titles only, not page text, so search with a few likely title words and then read the page with Get Page Content.
+    http_method: POST
+    endpoint_url: https://api.notion.com/v1/search
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: query
+        type: string
+        description: Words likely to appear in the page title, such as "refund policy".
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"query":"{{ query | newline_to_br | replace: "<br />", " " | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}","page_size":10}
+    response_template: |-
+      {% if response.object == "list" %}{% for item in response.results limit: 10 %}{% if item.object == "data_source" %}{% capture title %}{% for part in item.title %}{{ part.plain_text }}{% endfor %}{% endcapture %}- Database: {{ title | strip | default: "Untitled" | truncate: 150 }} (data source ID {{ item.id }}){% else %}{% capture title %}{% for property in item.properties %}{% if property[1].type == "title" %}{% for part in property[1].title %}{{ part.plain_text }}{% endfor %}{% endif %}{% endfor %}{% endcapture %}- Page: {{ title | strip | default: "Untitled" | truncate: 150 }} (page ID {{ item.id }}){% endif %}{% if item.last_edited_time %} · edited {{ item.last_edited_time | slice: 0, 10 }}{% endif %}{% if item.url %}
+        {{ item.url }}{% endif %}
+      {% else %}No Notion pages or databases have a matching title. Only content shared with the connection can be found.
+      {% endfor %}{% else %}Notion returned an unexpected response.{% endif %}
+
+  - id: get_page_content
+    title: Get Page Content
+    description: Read the text of a Notion page as Markdown, up to about 6,000 characters. Use the page ID from Search Pages or List Database Pages, or the 32-character ID at the end of a Notion page URL.
+    http_method: GET
+    endpoint_url: https://api.notion.com/v1/pages/{{ page_id | strip | url_encode }}/markdown
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: page_id
+        type: string
+        description: The Notion page ID, a UUID with or without dashes.
+        required: true
+    response_template: |-
+      {% if response.object == "page_markdown" %}{% assign content = response.markdown | strip %}{% if content == "" %}This page has no text content.{% else %}{{ content | truncate: 6000 }}{% if content.size > 6000 or response.truncated %}
+
+      (The page is longer than what is shown here.){% endif %}{% endif %}{% else %}Notion returned an unexpected response.{% endif %}
+
+  - id: get_page
+    title: Get Page Properties
+    description: Get a Notion page's title, link, last edited date, and database properties such as status, tags, owner, or dates. Use this for pages that are rows in a database, such as a known-issues or feature-request tracker. Use the page ID from Search Pages or List Database Pages.
+    http_method: GET
+    endpoint_url: https://api.notion.com/v1/pages/{{ page_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: page_id
+        type: string
+        description: The Notion page ID, a UUID with or without dashes.
+        required: true
+    response_template: |-
+      {% if response.object == "page" %}{% capture title %}{% for property in response.properties %}{% if property[1].type == "title" %}{% for part in property[1].title %}{{ part.plain_text }}{% endfor %}{% endif %}{% endfor %}{% endcapture %}{{ title | strip | default: "Untitled" }} (page ID {{ response.id }})
+      Open in Notion: {{ response.url }}
+      Last edited: {{ response.last_edited_time | slice: 0, 10 }}{% if response.in_trash %}
+      This page is in the trash.{% endif %}{% if response.parent.data_source_id %}
+      In database: data source ID {{ response.parent.data_source_id }}{% endif %}{% for property in response.properties limit: 40 %}{% assign value = property[1] %}{% capture shown %}{% case value.type %}{% when "rich_text" %}{% for part in value.rich_text %}{{ part.plain_text }}{% endfor %}{% when "select" %}{{ value.select.name }}{% when "status" %}{{ value.status.name }}{% when "multi_select" %}{{ value.multi_select | map: "name" | join: ", " }}{% when "number" %}{{ value.number }}{% when "checkbox" %}{% if value.checkbox %}yes{% else %}no{% endif %}{% when "url" %}{{ value.url }}{% when "email" %}{{ value.email }}{% when "phone_number" %}{{ value.phone_number }}{% when "date" %}{{ value.date.start }}{% if value.date.end %} to {{ value.date.end }}{% endif %}{% when "people" %}{{ value.people | map: "name" | compact | join: ", " }}{% when "created_time" %}{{ value.created_time | slice: 0, 10 }}{% when "last_edited_time" %}{{ value.last_edited_time | slice: 0, 10 }}{% when "unique_id" %}{% if value.unique_id.prefix %}{{ value.unique_id.prefix }}-{% endif %}{{ value.unique_id.number }}{% when "formula" %}{% case value.formula.type %}{% when "string" %}{{ value.formula.string }}{% when "number" %}{{ value.formula.number }}{% when "boolean" %}{{ value.formula.boolean }}{% when "date" %}{{ value.formula.date.start }}{% endcase %}{% endcase %}{% endcapture %}{% assign shown = shown | strip %}{% if shown != "" %}
+      - {{ property[0] }}: {{ shown | truncate: 300 }}{% endif %}{% endfor %}{% else %}Notion returned an unexpected response.{% endif %}
+
+  - id: list_database_pages
+    title: List Database Pages
+    description: List the 20 most recently edited pages in a Notion database, such as a known-issues list, FAQ, or roadmap, with each page's status and select properties. Use the data source ID shown for databases in Search Pages or under "In database" in Get Page Properties.
+    http_method: POST
+    endpoint_url: https://api.notion.com/v1/data_sources/{{ data_source_id | strip | url_encode }}/query
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: data_source_id
+        type: string
+        description: The Notion data source ID, a UUID with or without dashes. This is not the same as a database ID or page ID.
+        required: true
+    request_template: '{"page_size":20,"sorts":[{"timestamp":"last_edited_time","direction":"descending"}]}'
+    response_template: |-
+      {% if response.object == "list" %}{% for item in response.results limit: 20 %}{% capture title %}{% for property in item.properties %}{% if property[1].type == "title" %}{% for part in property[1].title %}{{ part.plain_text }}{% endfor %}{% endif %}{% endfor %}{% endcapture %}{% capture details %}{% for property in item.properties %}{% if property[1].type == "status" and property[1].status.name %} · {{ property[0] }}: {{ property[1].status.name }}{% elsif property[1].type == "select" and property[1].select.name %} · {{ property[0] }}: {{ property[1].select.name }}{% endif %}{% endfor %}{% endcapture %}- {{ title | strip | default: "Untitled" | truncate: 150 }} (page ID {{ item.id }}) · edited {{ item.last_edited_time | slice: 0, 10 }}{{ details | truncate: 200 }}
+      {% else %}This database has no pages.
+      {% endfor %}{% else %}Notion returned an unexpected response.{% endif %}
+
+  - id: list_page_comments
+    title: List Page Comments
+    description: Read the 10 most recent open comments on a Notion page, such as review notes or corrections that are not yet in the page text. Resolved comments are not returned. Use the page ID from Search Pages or List Database Pages.
+    http_method: GET
+    endpoint_url: https://api.notion.com/v1/comments?block_id={{ page_id | strip | url_encode }}&page_size=100
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: page_id
+        type: string
+        description: The Notion page ID, a UUID with or without dashes.
+        required: true
+    response_template: |-
+      {% if response.object == "list" %}{% assign comments = response.results | sort: "created_time" | reverse %}{% for comment in comments limit: 10 %}{% capture text %}{% for part in comment.rich_text %}{{ part.plain_text }}{% endfor %}{% endcapture %}- {{ comment.created_time | slice: 0, 10 }}{% if comment.display_name.resolved_name %} · {{ comment.display_name.resolved_name }}{% endif %}: {{ text | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}
+      {% else %}No open comments on this page.
+      {% endfor %}{% else %}Notion returned an unexpected response.{% endif %}
