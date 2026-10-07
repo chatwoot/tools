@@ -1,0 +1,152 @@
+version: 0.0.1
+kind: captain_toolset
+name: Mailchimp
+author: chatwoot
+category: Marketing
+description: Look up Mailchimp contacts, their subscription status, tags, and email activity, add notes, and unsubscribe contacts on request.
+
+inputs:
+  data_center:
+    label: Data center (the part after the dash in your API key)
+    type: string
+    placeholder: us21
+    required: true
+
+secrets:
+  api_key:
+    label: Mailchimp API key
+    type: password
+    required: true
+
+tools:
+  - id: find_member
+    title: Find Member
+    description: Find a Mailchimp contact by email address across every audience. Use this first to see their subscription status, tags, and rating in each audience, and to get the audience ID and member ID the other Mailchimp tools need.
+    http_method: GET
+    endpoint_url: https://${{ inputs.data_center }}.api.mailchimp.com/3.0/search-members?query={{ email | strip | url_encode }}&exclude_fields=full_search,exact_matches.members._links,_links
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The contact's email address.
+        required: true
+    response_template: |-
+      {% if response.exact_matches.members %}{% for member in response.exact_matches.members limit: 10 %}{{ member.full_name | default: "No name" }} <{{ member.email_address }}>
+      Audience ID: {{ member.list_id }} · Member ID: {{ member.id }}
+      Status: {{ member.status }}{% if member.status == "unsubscribed" and member.unsubscribe_reason and member.unsubscribe_reason != "" %} (reason: {{ member.unsubscribe_reason | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 150 }}){% endif %}{% if member.status == "cleaned" %} (the address bounced and Mailchimp stopped sending to it){% endif %}{% if member.status == "pending" %} (has not confirmed the opt-in email yet){% endif %}{% if member.timestamp_opt and member.timestamp_opt != "" %}
+      Opted in: {{ member.timestamp_opt | slice: 0, 10 }}{% endif %}{% if member.last_changed and member.last_changed != "" %}
+      Last changed: {{ member.last_changed | slice: 0, 10 }}{% endif %}{% if member.source and member.source != "" %}
+      Source: {{ member.source | truncate: 80 }}{% endif %}
+      Member rating: {{ member.member_rating | default: "unknown" }} of 5{% if member.vip %} · VIP{% endif %}{% if member.stats.avg_open_rate %} · average open rate {{ member.stats.avg_open_rate | times: 100 | round }}% · average click rate {{ member.stats.avg_click_rate | times: 100 | round }}%{% endif %}
+      Tags: {% if member.tags.size > 0 %}{% for tag in member.tags limit: 20 %}{{ tag.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% else %}none{% endif %}{% assign shown = 0 %}{% for field in member.merge_fields %}{% unless field[1].first %}{% if field[1] != nil and field[1] != "" and shown < 10 %}{% assign shown = shown | plus: 1 %}
+      - {{ field[0] }}: {{ field[1] | truncate: 150 }}{% endif %}{% endunless %}{% endfor %}{% if member.last_note.note %}
+      Last note ({{ member.last_note.created_at | slice: 0, 10 }}): {{ member.last_note.note | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% unless forloop.last %}
+      {% endunless %}{% else %}No Mailchimp contact found with this email address.{% endfor %}{% else %}Mailchimp returned an unexpected response.{% endif %}
+
+  - id: list_audiences
+    title: List Audiences
+    description: List the audiences (lists) in the Mailchimp account with their IDs, names, and subscriber counts. Use this to turn an audience ID from Find Member into a name.
+    http_method: GET
+    endpoint_url: https://${{ inputs.data_center }}.api.mailchimp.com/3.0/lists?count=50&offset=0&fields=lists.id,lists.name,lists.stats.member_count,lists.stats.unsubscribe_count,lists.double_optin,total_items
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.lists %}{% for list in response.lists limit: 50 %}- {{ list.name }} (audience ID {{ list.id }}): {{ list.stats.member_count | default: 0 }} subscribed, {{ list.stats.unsubscribe_count | default: 0 }} unsubscribed{% if list.double_optin %}, double opt-in{% endif %}
+      {% else %}No audiences found.
+      {% endfor %}{% if response.total_items > 50 %}Showing 50 of {{ response.total_items }}.{% endif %}{% else %}Mailchimp returned an unexpected response.{% endif %}
+
+  - id: list_member_activity
+    title: List Member Activity
+    description: Check a contact's 15 most recent email events in one audience, such as campaigns sent to them, opens, clicks, bounces, and unsubscribes. Use this when a customer asks whether an email was sent to them or when they unsubscribed. Use the audience ID and member ID from Find Member.
+    http_method: GET
+    endpoint_url: https://${{ inputs.data_center }}.api.mailchimp.com/3.0/lists/{{ list_id | strip | url_encode }}/members/{{ member_id | strip | downcase | url_encode }}/activity?exclude_fields=_links
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: list_id
+        type: string
+        description: The audience ID from Find Member.
+        required: true
+      - name: member_id
+        type: string
+        description: The member ID from Find Member. The contact's email address also works.
+        required: true
+    response_template: |-
+      {% if response.activity %}{% for event in response.activity limit: 15 %}- {{ event.timestamp | slice: 0, 16 | replace: "T", " " }} · {{ event.action }}{% if event.title and event.title != "" %} · {{ event.title | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 100 }}{% endif %}{% if event.type and event.type != "" %} ({{ event.type }}){% endif %}{% if event.url and event.url != "" %}
+        Link: {{ event.url | truncate: 200 }}{% endif %}
+      {% else %}No email activity found for this contact in this audience.
+      {% endfor %}{% else %}Mailchimp returned an unexpected response.{% endif %}
+
+  - id: list_member_notes
+    title: List Member Notes
+    description: Read the 5 most recent notes the team left on a contact in one Mailchimp audience. Use the audience ID and member ID from Find Member.
+    http_method: GET
+    endpoint_url: https://${{ inputs.data_center }}.api.mailchimp.com/3.0/lists/{{ list_id | strip | url_encode }}/members/{{ member_id | strip | downcase | url_encode }}/notes?count=5&offset=0&sort_field=created_at&sort_dir=DESC&exclude_fields=_links,notes._links
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: list_id
+        type: string
+        description: The audience ID from Find Member.
+        required: true
+      - name: member_id
+        type: string
+        description: The member ID from Find Member, a 32-character hash. An email address does not work here.
+        required: true
+    response_template: |-
+      {% if response.notes %}{% for note in response.notes limit: 5 %}- {{ note.created_at | slice: 0, 10 }} · {{ note.created_by | default: "Unknown author" }}: {{ note.note | newline_to_br | replace: "<br />", " " | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 400 }}
+      {% else %}No notes on this contact.
+      {% endfor %}{% else %}Mailchimp returned an unexpected response.{% endif %}
+
+  - id: add_member_note
+    title: Add Member Note
+    description: Add a note to a contact in one Mailchimp audience, for example a summary of this conversation or a follow-up request for the team. Only add a note when the conversation needs one. Use the audience ID and member ID from Find Member.
+    http_method: POST
+    endpoint_url: https://${{ inputs.data_center }}.api.mailchimp.com/3.0/lists/{{ list_id | strip | url_encode }}/members/{{ member_id | strip | downcase | url_encode }}/notes
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: list_id
+        type: string
+        description: The audience ID from Find Member.
+        required: true
+      - name: member_id
+        type: string
+        description: The member ID from Find Member, a 32-character hash. An email address does not work here.
+        required: true
+      - name: note
+        type: string
+        description: The note text, up to 1000 characters. Plain text only.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"note":"{{ note | newline_to_br | replace: "<br />", " " | strip_newlines | replace: "	", " " | strip | truncate: 1000 | replace: bs, escaped_bs | replace: '"', escaped_quote }}"}
+    response_template: |-
+      {% if response.id %}Added the note to the Mailchimp contact.{% else %}Mailchimp returned an unexpected response.{% endif %}
+
+  - id: unsubscribe_member
+    title: Unsubscribe Member
+    description: Unsubscribe a contact from one Mailchimp audience so they stop receiving its marketing emails. Only use this when the customer clearly asks to unsubscribe. Use the audience ID and member ID from Find Member, and repeat for each audience the customer wants to leave.
+    http_method: PATCH
+    endpoint_url: https://${{ inputs.data_center }}.api.mailchimp.com/3.0/lists/{{ list_id | strip | url_encode }}/members/{{ member_id | strip | downcase | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: list_id
+        type: string
+        description: The audience ID from Find Member.
+        required: true
+      - name: member_id
+        type: string
+        description: The member ID from Find Member. The contact's email address also works.
+        required: true
+    request_template: '{"status":"unsubscribed"}'
+    response_template: |-
+      {% if response.status %}{{ response.email_address }} is now {{ response.status }} in audience {{ response.list_id }}.{% else %}Mailchimp returned an unexpected response.{% endif %}
