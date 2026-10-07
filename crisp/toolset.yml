@@ -1,0 +1,148 @@
+version: 0.0.1
+kind: captain_toolset
+name: Crisp
+author: chatwoot
+category: Others
+description: Look up contact profiles, conversations, and messages in Crisp, and add private notes to conversations.
+
+headers:
+  X-Crisp-Tier: website
+
+inputs:
+  website_id:
+    label: Crisp website ID
+    placeholder: 8c842203-7ed8-4e29-a608-7cf78a7d2fcc
+    required: true
+
+secrets:
+  token_identifier:
+    label: Crisp API token identifier
+    type: password
+    required: true
+  token_key:
+    label: Crisp API token key
+    type: password
+    required: true
+
+tools:
+  - id: search_conversations
+    title: Search Conversations
+    description: Search Crisp conversations by the customer's email address, name, or a keyword. Use this first to find a customer's past conversations and get the session ID the other Crisp tools need. Returns up to 10 conversations.
+    http_method: GET
+    endpoint_url: https://api.crisp.chat/v1/website/${{ inputs.website_id }}/conversations/1?search_query={{ query | strip | url_encode }}&search_type=text&per_page=20
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.token_identifier }}
+      password: ${{ secrets.token_key }}
+    param_schema:
+      - name: query
+        type: string
+        description: The customer's email address, their name, or a keyword to search for.
+        required: true
+    response_template: |-
+      {% if response.error == false and response.data %}{% for conversation in response.data limit: 10 %}- {{ conversation.meta.nickname | default: "Unknown visitor" }}{% if conversation.meta.email and conversation.meta.email != "" %} <{{ conversation.meta.email }}>{% endif %} · {{ conversation.state }}
+        Session ID: {{ conversation.session_id }}{% if conversation.meta.subject and conversation.meta.subject != "" %}
+        Subject: {{ conversation.meta.subject | truncate: 120 }}{% endif %}{% if conversation.topic and conversation.topic != "" %}
+        Topic: {{ conversation.topic | truncate: 120 }}{% endif %}
+        Created: {{ conversation.created_at | divided_by: 1000 | date: "%Y-%m-%d" }} · Updated: {{ conversation.updated_at | divided_by: 1000 | date: "%Y-%m-%d" }}{% if conversation.assigned.user_id %} · Assigned to operator {{ conversation.assigned.user_id }}{% endif %}{% if conversation.last_message and conversation.last_message != "" %}
+        Last customer message: {{ conversation.last_message | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% else %}No conversations match this search.
+      {% endfor %}{% else %}Crisp returned an unexpected response.{% endif %}
+
+  - id: get_contact_profile
+    title: Get Contact Profile
+    description: Get a customer's Crisp contact profile by email address, including company, location, segments, and the team's private notepad. If this fails, no contact has that email address.
+    http_method: GET
+    endpoint_url: https://api.crisp.chat/v1/website/${{ inputs.website_id }}/people/profile/{{ email | strip | downcase | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.token_identifier }}
+      password: ${{ secrets.token_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    response_template: |-
+      {% if response.error == false and response.data.people_id %}{% assign profile = response.data %}{{ profile.person.nickname | default: "No name" }} <{{ profile.email }}> (people ID {{ profile.people_id }}){% if profile.person.phone %}
+      Phone: {{ profile.person.phone }}{% endif %}{% if profile.person.address %}
+      Address: {{ profile.person.address | truncate: 150 }}{% endif %}{% if profile.person.geolocation.country %}
+      Location: {% if profile.person.geolocation.city %}{{ profile.person.geolocation.city }}, {% endif %}{{ profile.person.geolocation.country }}{% endif %}{% if profile.person.employment.name %}
+      Works at: {{ profile.person.employment.name }}{% if profile.person.employment.title %} as {{ profile.person.employment.title }}{% endif %}{% endif %}{% if profile.company.name %}
+      Company: {{ profile.company.name }}{% if profile.company.domain %} ({{ profile.company.domain }}){% endif %}{% endif %}{% if profile.segments.size > 0 %}
+      Segments: {{ profile.segments | join: ", " | truncate: 200 }}{% endif %}{% if profile.score %}
+      Rating score: {{ profile.score }} out of 5{% endif %}{% if profile.created_at %}
+      Contact since: {{ profile.created_at | divided_by: 1000 | date: "%Y-%m-%d" }}{% endif %}{% if profile.active.last %}
+      Last active: {{ profile.active.last | divided_by: 1000 | date: "%Y-%m-%d" }}{% endif %}{% if profile.notepad and profile.notepad != "" %}
+      Private notepad (do not share): {{ profile.notepad | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 400 }}{% endif %}{% else %}Crisp returned an unexpected response.{% endif %}
+
+  - id: get_conversation
+    title: Get Conversation
+    description: Get a Crisp conversation's details, including state, visitor contact details, subject, segments, and assigned operator. Use a session ID from Search Conversations. Call List Conversation Messages to read what was said.
+    http_method: GET
+    endpoint_url: https://api.crisp.chat/v1/website/${{ inputs.website_id }}/conversation/{{ session_id | strip | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.token_identifier }}
+      password: ${{ secrets.token_key }}
+    param_schema:
+      - name: session_id
+        type: string
+        description: The Crisp conversation session ID from Search Conversations, starting with session_.
+        required: true
+    response_template: |-
+      {% if response.error == false and response.data.session_id %}{% assign conversation = response.data %}Conversation {{ conversation.session_id }} · {{ conversation.state }}
+      Visitor: {{ conversation.meta.nickname | default: "Unknown visitor" }}{% if conversation.meta.email and conversation.meta.email != "" %} <{{ conversation.meta.email }}>{% endif %}{% if conversation.is_verified %} (email verified){% endif %}{% if conversation.is_blocked %} (blocked){% endif %}{% if conversation.meta.phone and conversation.meta.phone != "" %}
+      Phone: {{ conversation.meta.phone }}{% endif %}{% if conversation.meta.subject and conversation.meta.subject != "" %}
+      Subject: {{ conversation.meta.subject | truncate: 200 }}{% endif %}{% if conversation.topic and conversation.topic != "" %}
+      Topic: {{ conversation.topic | truncate: 200 }}{% endif %}{% if conversation.meta.origin %}
+      Channel: {{ conversation.meta.origin }}{% endif %}{% if conversation.people_id %}
+      People ID: {{ conversation.people_id }}{% endif %}
+      Created: {{ conversation.created_at | divided_by: 1000 | date: "%Y-%m-%d" }} · Updated: {{ conversation.updated_at | divided_by: 1000 | date: "%Y-%m-%d" }}{% if conversation.waiting_since %} · Waiting for a reply since: {{ conversation.waiting_since | divided_by: 1000 | date: "%Y-%m-%d" }}{% endif %}
+      Assigned to: {% if conversation.assigned.user_id %}operator {{ conversation.assigned.user_id }}{% else %}nobody{% endif %}{% if conversation.meta.segments.size > 0 %}
+      Segments: {{ conversation.meta.segments | join: ", " | truncate: 200 }}{% endif %}{% if conversation.meta.device.geolocation.country %}
+      Location: {% if conversation.meta.device.geolocation.city %}{{ conversation.meta.device.geolocation.city }}, {% endif %}{{ conversation.meta.device.geolocation.country }}{% endif %}{% assign shown = 0 %}{% for item in conversation.meta.data %}{% if shown < 15 and item[1] != nil and item[1] != "" %}{% assign shown = shown | plus: 1 %}
+      {{ item[0] }}: {{ item[1] | truncate: 150 }}{% endif %}{% endfor %}{% else %}Crisp returned an unexpected response.{% endif %}
+
+  - id: list_conversation_messages
+    title: List Conversation Messages
+    description: Read the 10 most recent messages in a Crisp conversation, newest first, to see what the customer and the team already said. Private notes are for operators only and must not be shared with the customer. Use a session ID from Search Conversations.
+    http_method: GET
+    endpoint_url: https://api.crisp.chat/v1/website/${{ inputs.website_id }}/conversation/{{ session_id | strip | url_encode }}/messages
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.token_identifier }}
+      password: ${{ secrets.token_key }}
+    param_schema:
+      - name: session_id
+        type: string
+        description: The Crisp conversation session ID from Search Conversations, starting with session_.
+        required: true
+    response_template: |-
+      {% if response.error == false and response.data %}{% assign messages = response.data | sort: "timestamp" | reverse %}{% for message in messages limit: 10 %}- {{ message.timestamp | divided_by: 1000 | date: "%Y-%m-%d" }} · {% if message.type == "note" %}private note (operators only){% elsif message.from == "operator" %}operator{% else %}customer{% endif %}{% if message.user.nickname and message.user.nickname != "" %} · {{ message.user.nickname }}{% endif %}{% if message.automated %} · automated{% endif %}
+        {% if message.type == "text" or message.type == "note" %}{{ message.content | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 600 }}{% else %}[{{ message.type }}]{% if message.content.text %} {{ message.content.text | truncate: 300 }}{% elsif message.content.name %} {{ message.content.name | truncate: 150 }}{% elsif message.content.namespace %} {{ message.content.namespace }}{% endif %}{% endif %}
+      {% else %}This conversation has no messages.
+      {% endfor %}{% else %}Crisp returned an unexpected response.{% endif %}
+
+  - id: add_private_note
+    title: Add Private Note
+    description: Add a private note to a Crisp conversation, for example a summary of this chat or a follow-up request for the team. The note is visible to operators only and is never sent to the customer. Only add a note when the conversation needs one.
+    http_method: POST
+    endpoint_url: https://api.crisp.chat/v1/website/${{ inputs.website_id }}/conversation/{{ session_id | strip | url_encode }}/message
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.token_identifier }}
+      password: ${{ secrets.token_key }}
+    param_schema:
+      - name: session_id
+        type: string
+        description: The Crisp conversation session ID from Search Conversations, starting with session_.
+        required: true
+      - name: content
+        type: string
+        description: The note text. Plain text only.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% capture escaped_newline %}\\n{% endcapture %}{"type":"note","from":"operator","origin":"chat","content":"{{ content | strip | replace: bs, escaped_bs | replace: '"', escaped_quote | newline_to_br | strip_newlines | replace: "<br />", escaped_newline }}"}
+    response_template: |-
+      {% if response.error == false %}Added the private note to the conversation.{% else %}Crisp returned an unexpected response.{% endif %}
