@@ -1,0 +1,186 @@
+version: 0.0.1
+kind: captain_toolset
+name: Lago
+author: chatwoot
+category: Payments & billing
+description: Look up customers, subscriptions, invoices, payments, wallets, and current usage in Lago.
+
+inputs:
+  api_host:
+    label: Lago API host
+    placeholder: api.getlago.com
+    required: true
+
+secrets:
+  api_key:
+    label: Lago API key
+    type: password
+    required: true
+
+tools:
+  - id: find_customers
+    title: Find Customers
+    description: Find Lago customers by email address, name, or external ID. Use this first to get the external customer ID the other Lago tools need.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/api/v1/customers?search_term={{ query | strip | url_encode }}&per_page=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: query
+        type: string
+        description: The customer's email address, name, or external ID. Matches any customer whose details contain this text.
+        required: true
+    response_template: |-
+      {% if response.customers %}{% for customer in response.customers %}{% capture full_name %}{{ customer.firstname }} {{ customer.lastname }}{% endcapture %}{% assign full_name = full_name | strip %}- {{ customer.name | default: full_name | default: customer.legal_name | default: "No name" }} <{{ customer.email | default: "no email" }}>
+        External customer ID: {{ customer.external_id }}{% if customer.currency %}
+        Currency: {{ customer.currency }}{% endif %}{% if customer.country %}
+        Country: {{ customer.country }}{% endif %}
+        Customer since: {{ customer.created_at | slice: 0, 10 }}
+      {% else %}No Lago customer found for this search.
+      {% endfor %}{% if response.meta.total_count > 10 %}Showing 10 of {{ response.meta.total_count }} matches. Search with the full email address to narrow this down.{% endif %}{% else %}Lago returned an unexpected response.{% endif %}
+
+  - id: list_subscriptions
+    title: List Subscriptions
+    description: List a Lago customer's subscriptions in any status, with plan, base price, billing period, and end or downgrade dates. Returns the external subscription ID that Get Current Usage needs. Use the external customer ID from Find Customers.
+    http_method: GET
+    endpoint_url: 'https://${{ inputs.api_host }}/api/v1/customers/{{ external_customer_id | strip | url_encode | replace: "+", "%20" }}/subscriptions?status%5B%5D=active&status%5B%5D=pending&status%5B%5D=terminated&status%5B%5D=canceled&per_page=10'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: external_customer_id
+        type: string
+        description: The external customer ID from Find Customers.
+        required: true
+    response_template: |-
+      {% if response.subscriptions %}{% assign zero_decimal = "BIF CLP DJF GNF ISK JPY KMF KRW PYG RWF UGX VND VUV XAF XOF XPF" | split: " " %}{% assign three_decimal = "BHD IQD JOD KWD LYD OMR TND" | split: " " %}{% for subscription in response.subscriptions %}{% if zero_decimal contains subscription.plan_amount_currency %}{% assign divisor = 1 %}{% elsif three_decimal contains subscription.plan_amount_currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}- {{ subscription.name | default: subscription.plan_code }} · {{ subscription.status }} · plan {{ subscription.plan_code }} · base price {{ subscription.plan_amount_cents | divided_by: divisor }} {{ subscription.plan_amount_currency }}
+        External subscription ID: {{ subscription.external_id }}{% if subscription.started_at %}
+        Started: {{ subscription.started_at | slice: 0, 10 }}{% endif %}{% if subscription.status == "active" and subscription.current_billing_period_ending_at %}
+        Current billing period: {{ subscription.current_billing_period_started_at | slice: 0, 10 }} to {{ subscription.current_billing_period_ending_at | slice: 0, 10 }}{% endif %}{% if subscription.trial_ended_at %}
+        Trial ended: {{ subscription.trial_ended_at | slice: 0, 10 }}{% endif %}{% if subscription.status == "active" and subscription.ending_at %}
+        Ends on: {{ subscription.ending_at | slice: 0, 10 }}{% endif %}{% if subscription.next_plan_code %}
+        Changes to plan {{ subscription.next_plan_code }}{% if subscription.downgrade_plan_date %} on {{ subscription.downgrade_plan_date | slice: 0, 10 }}{% endif %}{% endif %}{% if subscription.terminated_at %}
+        Terminated: {{ subscription.terminated_at | slice: 0, 10 }}{% endif %}{% if subscription.canceled_at %}
+        Canceled: {{ subscription.canceled_at | slice: 0, 10 }}{% endif %}
+      {% else %}No subscriptions found for this customer.
+      {% endfor %}{% else %}Lago returned an unexpected response.{% endif %}
+
+  - id: list_invoices
+    title: List Invoices
+    description: List a Lago customer's 10 most recent invoices with status, payment status, total, amount due, and PDF link. Returns the invoice ID that Get Invoice needs. Use the external customer ID from Find Customers.
+    http_method: GET
+    endpoint_url: 'https://${{ inputs.api_host }}/api/v1/customers/{{ external_customer_id | strip | url_encode | replace: "+", "%20" }}/invoices?per_page=10'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: external_customer_id
+        type: string
+        description: The external customer ID from Find Customers.
+        required: true
+    response_template: |-
+      {% if response.invoices %}{% assign zero_decimal = "BIF CLP DJF GNF ISK JPY KMF KRW PYG RWF UGX VND VUV XAF XOF XPF" | split: " " %}{% assign three_decimal = "BHD IQD JOD KWD LYD OMR TND" | split: " " %}{% for invoice in response.invoices %}{% if zero_decimal contains invoice.currency %}{% assign divisor = 1 %}{% elsif three_decimal contains invoice.currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}- Invoice {{ invoice.number }} · {{ invoice.issuing_date }} · {{ invoice.status }} · payment {{ invoice.payment_status }} · total {{ invoice.total_amount_cents | divided_by: divisor }} {{ invoice.currency }}
+        Invoice ID: {{ invoice.lago_id }} · type {{ invoice.invoice_type | replace: "_", " " }}{% if invoice.status == "finalized" and invoice.total_due_amount_cents > 0 %}
+        Amount due: {{ invoice.total_due_amount_cents | divided_by: divisor }} {{ invoice.currency }}{% if invoice.payment_due_date %}, due {{ invoice.payment_due_date }}{% endif %}{% if invoice.payment_overdue %} (overdue){% endif %}{% endif %}{% if invoice.file_url %}
+        PDF: {{ invoice.file_url }}{% endif %}
+      {% else %}No invoices found for this customer.
+      {% endfor %}{% else %}Lago returned an unexpected response.{% endif %}
+
+  - id: get_invoice
+    title: Get Invoice
+    description: Get one Lago invoice with its line items, taxes, credits, amount paid, and amount due. Use this to explain a charge. Use an invoice ID from List Invoices.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/api/v1/invoices/{{ invoice_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: invoice_id
+        type: string
+        description: The Lago invoice ID, a UUID from List Invoices. This is not the invoice number.
+        required: true
+    response_template: |-
+      {% if response.invoice.lago_id %}{% assign invoice = response.invoice %}{% assign zero_decimal = "BIF CLP DJF GNF ISK JPY KMF KRW PYG RWF UGX VND VUV XAF XOF XPF" | split: " " %}{% assign three_decimal = "BHD IQD JOD KWD LYD OMR TND" | split: " " %}{% if zero_decimal contains invoice.currency %}{% assign divisor = 1 %}{% elsif three_decimal contains invoice.currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}Invoice {{ invoice.number }} · {{ invoice.issuing_date }} · {{ invoice.status }} · payment {{ invoice.payment_status }}
+      Type: {{ invoice.invoice_type | replace: "_", " " }}
+      Line items:
+      {% for fee in invoice.fees limit: 15 %}- {{ fee.item.name | default: fee.item.code | default: "Fee" | truncate: 80 }} ({{ fee.item.type | replace: "_", " " }}){% if fee.units %} · {{ fee.units }} units{% endif %} · {{ fee.amount_cents | divided_by: divisor }} {{ invoice.currency }}{% if fee.from_date %} · {{ fee.from_date | slice: 0, 10 }} to {{ fee.to_date | slice: 0, 10 }}{% endif %}
+      {% else %}- None
+      {% endfor %}{% if invoice.fees.size > 15 %}Showing 15 of {{ invoice.fees.size }} line items.
+      {% endif %}Fees: {{ invoice.fees_amount_cents | divided_by: divisor }} {{ invoice.currency }}{% if invoice.coupons_amount_cents > 0 %}
+      Coupons: -{{ invoice.coupons_amount_cents | divided_by: divisor }} {{ invoice.currency }}{% endif %}
+      Taxes: {{ invoice.taxes_amount_cents | divided_by: divisor }} {{ invoice.currency }}{% if invoice.prepaid_credit_amount_cents > 0 %}
+      Prepaid credits applied: -{{ invoice.prepaid_credit_amount_cents | divided_by: divisor }} {{ invoice.currency }}{% endif %}{% if invoice.credit_notes_amount_cents > 0 %}
+      Credit notes applied: -{{ invoice.credit_notes_amount_cents | divided_by: divisor }} {{ invoice.currency }}{% endif %}
+      Total: {{ invoice.total_amount_cents | divided_by: divisor }} {{ invoice.currency }}
+      Paid: {{ invoice.total_paid_amount_cents | divided_by: divisor }} {{ invoice.currency }}
+      Amount due: {{ invoice.total_due_amount_cents | divided_by: divisor }} {{ invoice.currency }}{% if invoice.payment_due_date %}, due {{ invoice.payment_due_date }}{% endif %}{% if invoice.payment_overdue %} (overdue){% endif %}{% if invoice.voided_at %}
+      Voided: {{ invoice.voided_at | slice: 0, 10 }}{% endif %}{% if invoice.file_url %}
+      PDF: {{ invoice.file_url }}{% endif %}{% else %}Lago returned an unexpected response.{% endif %}
+
+  - id: list_payments
+    title: List Payments
+    description: List a Lago customer's 10 most recent payments with amount, status, payment provider, and the invoices each one paid. Use the external customer ID from Find Customers.
+    http_method: GET
+    endpoint_url: 'https://${{ inputs.api_host }}/api/v1/customers/{{ external_customer_id | strip | url_encode | replace: "+", "%20" }}/payments?per_page=10'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: external_customer_id
+        type: string
+        description: The external customer ID from Find Customers.
+        required: true
+    response_template: |-
+      {% if response.payments %}{% assign zero_decimal = "BIF CLP DJF GNF ISK JPY KMF KRW PYG RWF UGX VND VUV XAF XOF XPF" | split: " " %}{% assign three_decimal = "BHD IQD JOD KWD LYD OMR TND" | split: " " %}{% for payment in response.payments %}{% if zero_decimal contains payment.amount_currency %}{% assign divisor = 1 %}{% elsif three_decimal contains payment.amount_currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}- {{ payment.created_at | slice: 0, 10 }} · {{ payment.amount_cents | divided_by: divisor }} {{ payment.amount_currency }} · {{ payment.payment_status }} · {% if payment.type == "manual" %}manual payment{% else %}via {{ payment.payment_provider_type | default: "payment provider" }}{% endif %}{% if payment.invoice_numbers.size > 0 %}
+        Invoices: {{ payment.invoice_numbers | join: ", " | truncate: 200 }}{% endif %}{% if payment.reference %}
+        Reference: {{ payment.reference | truncate: 100 }}{% endif %}
+      {% else %}No payments found for this customer.
+      {% endfor %}{% else %}Lago returned an unexpected response.{% endif %}
+
+  - id: list_wallets
+    title: List Wallets
+    description: List a Lago customer's prepaid credit wallets with current balance, consumed credits, and expiration. Use this when a customer asks about prepaid credits. Use the external customer ID from Find Customers.
+    http_method: GET
+    endpoint_url: 'https://${{ inputs.api_host }}/api/v1/customers/{{ external_customer_id | strip | url_encode | replace: "+", "%20" }}/wallets?per_page=10'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: external_customer_id
+        type: string
+        description: The external customer ID from Find Customers.
+        required: true
+    response_template: |-
+      {% if response.wallets %}{% assign zero_decimal = "BIF CLP DJF GNF ISK JPY KMF KRW PYG RWF UGX VND VUV XAF XOF XPF" | split: " " %}{% assign three_decimal = "BHD IQD JOD KWD LYD OMR TND" | split: " " %}{% for wallet in response.wallets %}{% if zero_decimal contains wallet.currency %}{% assign divisor = 1 %}{% elsif three_decimal contains wallet.currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}- {{ wallet.name | default: "Unnamed wallet" }} · {{ wallet.status }}
+        Balance: {{ wallet.credits_balance }} credits ({{ wallet.balance_cents | divided_by: divisor }} {{ wallet.currency }})
+        Balance after current usage: {{ wallet.credits_ongoing_balance }} credits ({{ wallet.ongoing_balance_cents | divided_by: divisor }} {{ wallet.currency }})
+        Consumed: {{ wallet.consumed_credits }} credits · 1 credit = {{ wallet.rate_amount }} {{ wallet.currency }}{% if wallet.expiration_at %}
+        Expires: {{ wallet.expiration_at | slice: 0, 10 }}{% endif %}{% if wallet.terminated_at %}
+        Terminated: {{ wallet.terminated_at | slice: 0, 10 }}{% endif %}
+      {% else %}No wallets found for this customer.
+      {% endfor %}{% else %}Lago returned an unexpected response.{% endif %}
+
+  - id: get_current_usage
+    title: Get Current Usage
+    description: Get a Lago customer's usage and charges so far in the current billing period for one subscription, broken down by billable metric. Use the external customer ID from Find Customers and an external subscription ID from List Subscriptions.
+    http_method: GET
+    endpoint_url: 'https://${{ inputs.api_host }}/api/v1/customers/{{ external_customer_id | strip | url_encode | replace: "+", "%20" }}/current_usage?external_subscription_id={{ external_subscription_id | strip | url_encode }}'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: external_customer_id
+        type: string
+        description: The external customer ID from Find Customers.
+        required: true
+      - name: external_subscription_id
+        type: string
+        description: The external subscription ID of an active subscription from List Subscriptions.
+        required: true
+    response_template: |-
+      {% if response.customer_usage %}{% assign usage = response.customer_usage %}{% assign zero_decimal = "BIF CLP DJF GNF ISK JPY KMF KRW PYG RWF UGX VND VUV XAF XOF XPF" | split: " " %}{% assign three_decimal = "BHD IQD JOD KWD LYD OMR TND" | split: " " %}{% if zero_decimal contains usage.currency %}{% assign divisor = 1 %}{% elsif three_decimal contains usage.currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}Usage from {{ usage.from_datetime | slice: 0, 10 }} to {{ usage.to_datetime | slice: 0, 10 }}
+      {% for charge in usage.charges_usage limit: 20 %}- {{ charge.charge.invoice_display_name | default: charge.billable_metric.name | default: charge.billable_metric.code | truncate: 80 }}: {{ charge.units }} units · {{ charge.events_count }} events · {{ charge.amount_cents | divided_by: divisor }} {{ usage.currency }}
+      {% else %}- No usage-based charges in this period.
+      {% endfor %}{% if usage.charges_usage.size > 20 %}Showing 20 of {{ usage.charges_usage.size }} charges.
+      {% endif %}Usage charges so far: {{ usage.amount_cents | divided_by: divisor }} {{ usage.currency }} before tax, {{ usage.total_amount_cents | divided_by: divisor }} {{ usage.currency }} with tax{% else %}Lago returned an unexpected response.{% endif %}
