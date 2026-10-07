@@ -1,0 +1,118 @@
+version: 0.0.1
+kind: captain_toolset
+name: Paddle
+author: chatwoot
+category: Payments & billing
+description: Check customer subscriptions, transactions, invoices, and refunds in Paddle Billing.
+
+headers:
+  Paddle-Version: '1'
+
+secrets:
+  api_key:
+    label: Paddle API key
+    type: password
+    required: true
+
+tools:
+  - id: find_customers_by_email
+    title: Find Customers by Email
+    description: Find Paddle customers by their exact email address, including archived ones. Use this first to get the customer ID the other Paddle tools need.
+    http_method: GET
+    endpoint_url: https://api.paddle.com/customers?email={{ email | strip | url_encode }}&status=active,archived&per_page=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for customer in response.data %}- {{ customer.name | default: "No name" }} <{{ customer.email }}>
+        Customer ID: {{ customer.id }}
+        Status: {{ customer.status }} · customer since {{ customer.created_at | slice: 0, 10 }}
+      {% else %}No Paddle customer found with this email address.
+      {% endfor %}{% else %}Paddle returned an unexpected response.{% endif %}
+
+  - id: list_subscriptions
+    title: List Subscriptions
+    description: Check a customer's 10 most recent subscriptions, including canceled ones, with plan, price, next billing date, trial, and scheduled pause or cancellation. Use the customer ID from Find Customers by Email.
+    http_method: GET
+    endpoint_url: https://api.paddle.com/subscriptions?customer_id={{ customer_id | strip | url_encode }}&per_page=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Paddle customer ID from Find Customers by Email, starting with ctm_.
+        required: true
+    response_template: |-
+      {% if response.data %}{% assign zero_decimal = "CLP JPY KRW VND" | split: " " %}{% for subscription in response.data %}- Subscription {{ subscription.id }} · {{ subscription.status | replace: "_", " " }}{% if subscription.started_at %} · started {{ subscription.started_at | slice: 0, 10 }}{% endif %}{% for item in subscription.items %}{% assign price = item.price %}{% if zero_decimal contains price.unit_price.currency_code %}{% assign divisor = 1 %}{% else %}{% assign divisor = 100.0 %}{% endif %}
+        Plan: {{ item.product.name | default: price.description }}{% if price.name %} ({{ price.name }}){% endif %} · {{ price.unit_price.amount | divided_by: divisor }} {{ price.unit_price.currency_code }}{% if price.billing_cycle %} every {% if price.billing_cycle.frequency > 1 %}{{ price.billing_cycle.frequency }} {{ price.billing_cycle.interval }}s{% else %}{{ price.billing_cycle.interval }}{% endif %}{% endif %}{% if item.quantity > 1 %} × {{ item.quantity }}{% endif %}{% if item.status == "trialing" and item.trial_dates %} · trial ends {{ item.trial_dates.ends_at | slice: 0, 10 }}{% endif %}{% endfor %}{% if subscription.next_billed_at %}
+        Next billing date: {{ subscription.next_billed_at | slice: 0, 10 }}{% endif %}{% if subscription.scheduled_change %}
+        Scheduled to {{ subscription.scheduled_change.action }} on {{ subscription.scheduled_change.effective_at | slice: 0, 10 }}{% if subscription.scheduled_change.resume_at %}, resuming {{ subscription.scheduled_change.resume_at | slice: 0, 10 }}{% endif %}{% endif %}{% if subscription.status == "canceled" and subscription.canceled_at %}
+        Canceled on: {{ subscription.canceled_at | slice: 0, 10 }}{% endif %}{% if subscription.status == "paused" and subscription.paused_at %}
+        Paused on: {{ subscription.paused_at | slice: 0, 10 }}{% endif %}{% if subscription.collection_mode == "manual" %}
+        Billed by invoice{% endif %}
+      {% else %}No subscriptions found for this customer.
+      {% endfor %}{% else %}Paddle returned an unexpected response.{% endif %}
+
+  - id: list_transactions
+    title: List Transactions
+    description: Check a customer's 10 most recent transactions, including totals, status, items, payment method, and payment errors. Use the customer ID from Find Customers by Email. The transaction ID is needed for Get Invoice Link.
+    http_method: GET
+    endpoint_url: https://api.paddle.com/transactions?customer_id={{ customer_id | strip | url_encode }}&per_page=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Paddle customer ID from Find Customers by Email, starting with ctm_.
+        required: true
+    response_template: |-
+      {% if response.data %}{% assign zero_decimal = "CLP JPY KRW VND" | split: " " %}{% for transaction in response.data %}{% assign totals = transaction.details.totals %}{% if zero_decimal contains transaction.currency_code %}{% assign divisor = 1 %}{% else %}{% assign divisor = 100.0 %}{% endif %}{% assign payment = transaction.payments | first %}- {{ transaction.billed_at | default: transaction.created_at | slice: 0, 10 }} · {{ totals.total | divided_by: divisor }} {{ transaction.currency_code }} · {{ transaction.status | replace: "_", " " }} · {{ transaction.origin | replace: "_", " " }}
+        Transaction ID: {{ transaction.id }}{% if transaction.invoice_number %} · invoice {{ transaction.invoice_number }}{% endif %}{% if transaction.subscription_id %} · subscription {{ transaction.subscription_id }}{% endif %}{% if transaction.details.line_items.size > 0 %}
+        Items: {% for line in transaction.details.line_items limit: 5 %}{{ line.product.name }}{% if line.quantity > 1 %} × {{ line.quantity }}{% endif %}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if transaction.status == "billed" or transaction.status == "past_due" %}
+        Balance due: {{ totals.balance | divided_by: divisor }} {{ transaction.currency_code }}{% endif %}{% if payment %}
+        Latest payment attempt: {{ payment.status | replace: "_", " " }}{% if payment.method_details.card %} · {{ payment.method_details.card.type | replace: "_", " " }} ending {{ payment.method_details.card.last4 }}{% elsif payment.method_details.type %} · {{ payment.method_details.type | replace: "_", " " }}{% endif %}{% if payment.error_code %} · error: {{ payment.error_code | replace: "_", " " }}{% endif %}{% endif %}
+      {% else %}No transactions found for this customer.
+      {% endfor %}{% else %}Paddle returned an unexpected response.{% endif %}
+
+  - id: get_invoice_link
+    title: Get Invoice Link
+    description: Get a link to the invoice PDF for a Paddle transaction, to share when a customer asks for an invoice or receipt. Use a transaction ID from List Transactions. Only works for completed transactions, or billed ones collected by invoice, and not for zero-value transactions. The link expires after one hour.
+    http_method: GET
+    endpoint_url: https://api.paddle.com/transactions/{{ transaction_id | strip | url_encode }}/invoice?disposition=inline
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: transaction_id
+        type: string
+        description: The Paddle transaction ID from List Transactions, starting with txn_.
+        required: true
+    response_template: |-
+      {% if response.data.url %}Invoice PDF (link expires in one hour): {{ response.data.url }}{% else %}Paddle returned an unexpected response.{% endif %}
+
+  - id: list_adjustments
+    title: List Adjustments
+    description: Check a customer's 10 most recent refunds, credits, and chargebacks, with amount, reason, and approval status. Use this when a customer asks whether a refund was issued or approved. Use the customer ID from Find Customers by Email.
+    http_method: GET
+    endpoint_url: https://api.paddle.com/adjustments?customer_id={{ customer_id | strip | url_encode }}&per_page=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Paddle customer ID from Find Customers by Email, starting with ctm_.
+        required: true
+    response_template: |-
+      {% if response.data %}{% assign zero_decimal = "CLP JPY KRW VND" | split: " " %}{% for adjustment in response.data %}{% if zero_decimal contains adjustment.currency_code %}{% assign divisor = 1 %}{% else %}{% assign divisor = 100.0 %}{% endif %}- {{ adjustment.created_at | slice: 0, 10 }} · {{ adjustment.action | replace: "_", " " }}{% if adjustment.type %} ({{ adjustment.type }}){% endif %} · {{ adjustment.totals.total | divided_by: divisor }} {{ adjustment.currency_code }} · {{ adjustment.status | replace: "_", " " }}
+        Adjustment ID: {{ adjustment.id }} · transaction {{ adjustment.transaction_id }}{% if adjustment.subscription_id %} · subscription {{ adjustment.subscription_id }}{% endif %}{% if adjustment.reason and adjustment.reason != "" %}
+        Reason: {{ adjustment.reason | strip_newlines | truncate: 200 }}{% endif %}
+      {% else %}No refunds, credits, or chargebacks found for this customer.
+      {% endfor %}{% else %}Paddle returned an unexpected response.{% endif %}
