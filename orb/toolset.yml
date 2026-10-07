@@ -1,0 +1,182 @@
+version: 0.0.1
+kind: captain_toolset
+name: Orb
+author: chatwoot
+category: Payments & billing
+description: Look up customers, subscriptions, invoices, upcoming charges, and prepaid credits in Orb.
+
+secrets:
+  api_key:
+    label: Orb API key
+    type: password
+    required: true
+
+tools:
+  - id: get_customer_by_external_id
+    title: Get Customer by External ID
+    description: Look up an Orb customer by external customer ID, the ID your own system uses for the customer. Use this first to get the Orb customer ID the other Orb tools need. Orb cannot search customers by email address.
+    http_method: GET
+    endpoint_url: 'https://api.withorb.com/v1/customers/external_customer_id/{{ external_customer_id | strip | url_encode | replace: "+", "%20" }}'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: external_customer_id
+        type: string
+        description: The customer's ID in your own system, stored in Orb as the external customer ID.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.name | default: "No name" }} <{{ response.email | default: "no email" }}>
+      Orb customer ID: {{ response.id }}{% if response.external_customer_id %}
+      External customer ID: {{ response.external_customer_id }}{% endif %}
+      Account balance: {{ response.balance }} {{ response.currency | default: "" }}
+      Auto-collection: {% if response.auto_collection %}on{% else %}off{% endif %}{% if response.payment_provider %} · payment provider {{ response.payment_provider | replace: "_", " " }}{% endif %}{% if response.default_payment_method %}
+      Default payment method on file: yes{% endif %}
+      Timezone: {{ response.timezone }}
+      Customer since: {{ response.created_at | slice: 0, 10 }}{% if response.additional_emails.size > 0 %}
+      Additional emails: {{ response.additional_emails | join: ", " | truncate: 200 }}{% endif %}{% else %}Orb returned an unexpected response.{% endif %}
+
+  - id: get_customer
+    title: Get Customer
+    description: Get an Orb customer's details and account balance using the Orb customer ID. Use this when you already have an Orb customer ID, for example from an invoice or subscription.
+    http_method: GET
+    endpoint_url: https://api.withorb.com/v1/customers/{{ customer_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Orb customer ID from Get Customer by External ID. This is not the external customer ID.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.name | default: "No name" }} <{{ response.email | default: "no email" }}>
+      Orb customer ID: {{ response.id }}{% if response.external_customer_id %}
+      External customer ID: {{ response.external_customer_id }}{% endif %}
+      Account balance: {{ response.balance }} {{ response.currency | default: "" }}
+      Auto-collection: {% if response.auto_collection %}on{% else %}off{% endif %}{% if response.payment_provider %} · payment provider {{ response.payment_provider | replace: "_", " " }}{% endif %}{% if response.default_payment_method %}
+      Default payment method on file: yes{% endif %}
+      Timezone: {{ response.timezone }}
+      Customer since: {{ response.created_at | slice: 0, 10 }}{% if response.additional_emails.size > 0 %}
+      Additional emails: {{ response.additional_emails | join: ", " | truncate: 200 }}{% endif %}{% else %}Orb returned an unexpected response.{% endif %}
+
+  - id: list_subscriptions
+    title: List Subscriptions
+    description: List an Orb customer's 5 most recently created subscriptions, including upcoming and ended ones, with plan, status, billing period, and trial dates. Returns the subscription ID that Get Upcoming Invoice needs. Use the Orb customer ID from Get Customer by External ID.
+    http_method: GET
+    endpoint_url: https://api.withorb.com/v1/subscriptions?customer_id={{ customer_id | strip | url_encode }}&status%5B%5D=active&status%5B%5D=upcoming&status%5B%5D=ended&limit=5
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Orb customer ID from Get Customer by External ID.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for subscription in response.data %}- {{ subscription.plan.name | default: subscription.name | default: "Subscription" }} · {{ subscription.status }}{% if subscription.plan.currency %} · billed in {{ subscription.plan.invoicing_currency | default: subscription.plan.currency }}{% endif %}
+        Subscription ID: {{ subscription.id }}
+        Started: {{ subscription.start_date | slice: 0, 10 }}{% if subscription.end_date %} · ends {{ subscription.end_date | slice: 0, 10 }}{% endif %}{% if subscription.current_billing_period_end_date %}
+        Current billing period: {{ subscription.current_billing_period_start_date | slice: 0, 10 }} to {{ subscription.current_billing_period_end_date | slice: 0, 10 }}{% endif %}{% if subscription.trial_info.end_date %}
+        Trial ends: {{ subscription.trial_info.end_date | slice: 0, 10 }}{% endif %}{% if subscription.redeemed_coupon %}
+        Coupon applied since {{ subscription.redeemed_coupon.start_date | slice: 0, 10 }}{% if subscription.redeemed_coupon.end_date %} until {{ subscription.redeemed_coupon.end_date | slice: 0, 10 }}{% endif %}{% endif %}{% if subscription.pending_subscription_change %}
+        A plan change is pending{% endif %}
+      {% else %}No subscriptions found for this customer.
+      {% endfor %}{% if response.pagination_metadata.has_more %}Only the 5 most recently created subscriptions are shown.{% endif %}{% else %}Orb returned an unexpected response.{% endif %}
+
+  - id: list_invoices
+    title: List Invoices
+    description: List an Orb customer's 10 most recent issued, paid, or synced invoices with total, amount due, due date, and links to view or download them. Returns the invoice ID that Get Invoice needs. Use the Orb customer ID from Get Customer by External ID.
+    http_method: GET
+    endpoint_url: https://api.withorb.com/v1/invoices/summary?customer_id={{ customer_id | strip | url_encode }}&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Orb customer ID from Get Customer by External ID.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for invoice in response.data %}{% assign code = invoice.currency | upcase %}- Invoice {{ invoice.invoice_number }} · {{ invoice.invoice_date | slice: 0, 10 }} · {{ invoice.status }} · total {{ invoice.total }} {{ code }}
+        Invoice ID: {{ invoice.id }}{% if invoice.status == "paid" %}{% if invoice.paid_at %}
+        Paid on: {{ invoice.paid_at | slice: 0, 10 }}{% endif %}{% elsif invoice.status != "void" %}
+        Amount due: {{ invoice.amount_due }} {{ code }}{% if invoice.due_date %}, due {{ invoice.due_date | slice: 0, 10 }}{% endif %}{% endif %}{% if invoice.payment_failed_at %}
+        Last payment attempt failed: {{ invoice.payment_failed_at | slice: 0, 10 }}{% endif %}{% if invoice.auto_collection.next_attempt_at %}
+        Next payment attempt: {{ invoice.auto_collection.next_attempt_at | slice: 0, 10 }}{% endif %}{% if invoice.hosted_invoice_url %}
+        View: {{ invoice.hosted_invoice_url }}{% endif %}{% if invoice.invoice_pdf %}
+        PDF: {{ invoice.invoice_pdf }}{% endif %}
+      {% else %}No issued invoices found for this customer.
+      {% endfor %}{% else %}Orb returned an unexpected response.{% endif %}
+
+  - id: get_invoice
+    title: Get Invoice
+    description: Get one Orb invoice with its line items, subtotal, total, amount due, and payment attempts. Use this to explain a charge or a failed payment. Use an invoice ID from List Invoices.
+    http_method: GET
+    endpoint_url: https://api.withorb.com/v1/invoices/{{ invoice_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: invoice_id
+        type: string
+        description: The Orb invoice ID from List Invoices. This is not the invoice number.
+        required: true
+    response_template: |-
+      {% if response.id %}{% assign code = response.currency | upcase %}Invoice {{ response.invoice_number }} · {{ response.invoice_date | slice: 0, 10 }} · {{ response.status }}
+      Line items:
+      {% for item in response.line_items limit: 15 %}- {{ item.name | truncate: 80 }} · quantity {{ item.quantity }} · {{ item.amount }} {{ code }} · {{ item.start_date | slice: 0, 10 }} to {{ item.end_date | slice: 0, 10 }}
+      {% else %}- None
+      {% endfor %}{% if response.line_items.size > 15 %}Showing 15 of {{ response.line_items.size }} line items.
+      {% endif %}Subtotal: {{ response.subtotal }} {{ code }}
+      Total: {{ response.total }} {{ code }}
+      Amount due: {{ response.amount_due }} {{ code }}{% if response.due_date %}, due {{ response.due_date | slice: 0, 10 }}{% endif %}{% if response.paid_at %}
+      Paid on: {{ response.paid_at | slice: 0, 10 }}{% endif %}{% if response.voided_at %}
+      Voided on: {{ response.voided_at | slice: 0, 10 }}{% endif %}{% for attempt in response.payment_attempts limit: 5 %}
+      Payment attempt {{ attempt.created_at | slice: 0, 10 }}: {{ attempt.amount }} {{ code }} · {% if attempt.succeeded %}succeeded{% else %}failed{% endif %}{% if attempt.receipt_pdf %} · receipt {{ attempt.receipt_pdf }}{% endif %}{% endfor %}{% if response.auto_collection.next_attempt_at %}
+      Next payment attempt: {{ response.auto_collection.next_attempt_at | slice: 0, 10 }}{% endif %}{% if response.memo %}
+      Memo: {{ response.memo | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}{% if response.hosted_invoice_url %}
+      View: {{ response.hosted_invoice_url }}{% endif %}{% if response.invoice_pdf %}
+      PDF: {{ response.invoice_pdf }}{% endif %}{% else %}Orb returned an unexpected response.{% endif %}
+
+  - id: get_upcoming_invoice
+    title: Get Upcoming Invoice
+    description: Preview the next invoice for an Orb subscription's current billing period, with line items and the amount accrued so far. Use this when a customer asks what their next charge will be. Use a subscription ID from List Subscriptions.
+    http_method: GET
+    endpoint_url: https://api.withorb.com/v1/invoices/upcoming?subscription_id={{ subscription_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: subscription_id
+        type: string
+        description: The Orb subscription ID of an active subscription from List Subscriptions.
+        required: true
+    response_template: |-
+      {% if response.id %}{% assign code = response.currency | upcase %}Upcoming invoice, scheduled for {{ response.target_date | slice: 0, 10 }}
+      Line items so far:
+      {% for item in response.line_items limit: 15 %}- {{ item.name | truncate: 80 }} · quantity {{ item.quantity }} · {{ item.amount }} {{ code }} · {{ item.start_date | slice: 0, 10 }} to {{ item.end_date | slice: 0, 10 }}
+      {% else %}- None
+      {% endfor %}{% if response.line_items.size > 15 %}Showing 15 of {{ response.line_items.size }} line items.
+      {% endif %}Subtotal: {{ response.subtotal }} {{ code }}
+      Total: {{ response.total }} {{ code }}
+      Amount due: {{ response.amount_due }} {{ code }}
+      These amounts can still change before the invoice is issued.{% else %}Orb returned an unexpected response.{% endif %}
+
+  - id: list_credit_balances
+    title: List Credit Balances
+    description: List an Orb customer's unexpired prepaid credit blocks with remaining balance and expiry date. Use this when a customer asks how many credits they have left. Use the Orb customer ID from Get Customer by External ID.
+    http_method: GET
+    endpoint_url: https://api.withorb.com/v1/customers/{{ customer_id | strip | url_encode }}/credits?limit=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Orb customer ID from Get Customer by External ID.
+        required: true
+    response_template: |-
+      {% if response.data %}{% assign total = 0 %}{% for block in response.data %}{% assign total = total | plus: block.balance %}- {{ block.balance }} credits · {{ block.status | replace: "_", " " }}{% if block.effective_date %} · effective {{ block.effective_date | slice: 0, 10 }}{% endif %} · {% if block.expiry_date %}expires {{ block.expiry_date | slice: 0, 10 }}{% else %}no expiry{% endif %}{% if block.per_unit_cost_basis %} · cost basis {{ block.per_unit_cost_basis }} per credit{% endif %}
+      {% else %}No unexpired credit blocks with a balance for this customer.
+      {% endfor %}{% if response.data.size > 0 %}Total across these blocks: {{ total }} credits{% if response.pagination_metadata.has_more %} (more blocks exist than the 20 shown){% endif %}{% endif %}{% else %}Orb returned an unexpected response.{% endif %}
