@@ -1,0 +1,134 @@
+version: 0.0.1
+kind: captain_toolset
+name: Eventbrite
+author: chatwoot
+category: Scheduling
+description: Look up ticket orders, attendees, events, and ticket types in Eventbrite.
+
+inputs:
+  organization_id:
+    label: Eventbrite organization ID
+    placeholder: '123456789012'
+    required: true
+
+secrets:
+  private_token:
+    label: Eventbrite private token
+    type: password
+    required: true
+
+tools:
+  - id: find_orders_by_email
+    title: Find Orders by Email
+    description: Find a customer's Eventbrite ticket orders across all of the organization's events using the email address they ordered with. Use this first when a customer asks about their tickets, registration, or payment. Returns the order IDs that Get Order needs and the event IDs that Get Event needs.
+    http_method: GET
+    endpoint_url: https://www.eventbriteapi.com/v3/organizations/${{ inputs.organization_id }}/orders/?only_emails={{ email | strip | url_encode }}&status=all_not_deleted&expand=event
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.private_token }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address the customer used to place the order.
+        required: true
+    response_template: |-
+      {% if response.orders %}{% for order in response.orders limit: 10 %}- Order {{ order.id }}: {{ order.event.name.text | default: "Unknown event" | truncate: 120 }} (event ID {{ order.event_id }})
+        Order status: {{ order.status }}
+        Buyer: {{ order.name }} <{{ order.email }}>
+        Ordered: {{ order.created }}{% if order.costs.gross.display %}
+        Total: {{ order.costs.gross.display }}{% endif %}{% if order.event.start.local %}
+        Event starts: {{ order.event.start.local }} ({{ order.event.start.timezone }}){% endif %}
+      {% else %}No orders found for this email address.
+      {% endfor %}{% if response.orders.size > 10 %}Showing 10 of {{ response.pagination.object_count | default: response.orders.size }} orders.{% endif %}{% else %}Eventbrite returned an unexpected response.{% endif %}
+
+  - id: get_order
+    title: Get Order
+    description: Get one Eventbrite order with its event, total, and each ticket holder's name, ticket type, check-in, cancellation, and refund status. Use the order ID from Find Orders by Email or from the customer's confirmation email.
+    http_method: GET
+    endpoint_url: 'https://www.eventbriteapi.com/v3/orders/{{ order_id | strip | remove: "#" | url_encode }}/?expand=event,attendees'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.private_token }}
+    param_schema:
+      - name: order_id
+        type: string
+        description: The numeric Eventbrite order ID, from Find Orders by Email or the customer's order confirmation.
+        required: true
+    response_template: |-
+      {% if response.id %}Order {{ response.id }}: {{ response.event.name.text | default: "Unknown event" | truncate: 200 }} (event ID {{ response.event_id }})
+      Order status: {{ response.status }}
+      Buyer: {{ response.name }} <{{ response.email }}>
+      Ordered: {{ response.created }}{% if response.costs.gross.display %}
+      Total: {{ response.costs.gross.display }}{% endif %}{% if response.event.start.local %}
+      Event starts: {{ response.event.start.local }} ({{ response.event.start.timezone }}){% endif %}{% if response.event.url %}
+      Event page: {{ response.event.url }}{% endif %}
+      Tickets:{% for attendee in response.attendees limit: 20 %}
+      - {{ attendee.ticket_class_name }}: {{ attendee.profile.name }} <{{ attendee.profile.email }}> (attendee ID {{ attendee.id }}){% if attendee.costs.gross.display %}, {{ attendee.costs.gross.display }}{% endif %}{% if attendee.cancelled %}, cancelled{% endif %}{% if attendee.refunded %}, refunded{% endif %}{% if attendee.checked_in %}, checked in{% else %}, not checked in{% endif %}{% else %}
+      No tickets are listed on this order.{% endfor %}{% if response.attendees.size > 20 %}
+      Showing 20 of {{ response.attendees.size }} tickets.{% endif %}{% else %}Eventbrite returned an unexpected response.{% endif %}
+
+  - id: list_upcoming_events
+    title: List Upcoming Events
+    description: List the organization's current and upcoming published Eventbrite events, soonest first, with date, venue, and ticket availability. Use this when a customer asks what events are coming up, or to find the event ID that Get Event and List Ticket Types need.
+    http_method: GET
+    endpoint_url: https://www.eventbriteapi.com/v3/organizations/${{ inputs.organization_id }}/events/?status=live,started&time_filter=current_future&order_by=start_asc&page_size=20&expand=venue,ticket_availability
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.private_token }}
+    response_template: |-
+      {% if response.events %}{% for event in response.events limit: 20 %}- {{ event.name.text | truncate: 120 }} (event ID {{ event.id }})
+        Starts: {{ event.start.local }} ({{ event.start.timezone }}){% if event.online_event %}
+        Where: online{% elsif event.venue.name %}
+        Where: {{ event.venue.name }}{% if event.venue.address.localized_address_display %}, {{ event.venue.address.localized_address_display }}{% endif %}{% endif %}{% if event.ticket_availability %}
+        Tickets: {% if event.ticket_availability.is_sold_out %}sold out{% elsif event.ticket_availability.has_available_tickets %}available{% else %}not on sale{% endif %}{% endif %}
+        Page: {{ event.url }}
+      {% else %}No upcoming events found.
+      {% endfor %}{% if response.pagination.has_more_items %}More events exist than the 20 shown.{% endif %}{% else %}Eventbrite returned an unexpected response.{% endif %}
+
+  - id: get_event
+    title: Get Event
+    description: Get the details of one Eventbrite event, including its status, start and end times, venue and address, capacity, price range, and whether tickets are still available. Use the event ID from List Upcoming Events or Find Orders by Email.
+    http_method: GET
+    endpoint_url: https://www.eventbriteapi.com/v3/events/{{ event_id | strip | url_encode }}/?expand=venue,ticket_availability
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.private_token }}
+    param_schema:
+      - name: event_id
+        type: string
+        description: The numeric Eventbrite event ID from List Upcoming Events or Find Orders by Email. It is also the number at the end of the event page URL.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.name.text | truncate: 200 }} (event ID {{ response.id }})
+      Status: {{ response.status }}
+      Starts: {{ response.start.local }} ({{ response.start.timezone }})
+      Ends: {{ response.end.local }} ({{ response.end.timezone }}){% if response.online_event %}
+      Where: online{% elsif response.venue.name %}
+      Where: {{ response.venue.name }}{% if response.venue.address.localized_address_display %}, {{ response.venue.address.localized_address_display }}{% endif %}{% endif %}{% if response.summary and response.summary != "" %}
+      Summary: {{ response.summary | truncate: 300 }}{% endif %}{% if response.capacity %}
+      Capacity: {{ response.capacity }}{% endif %}{% if response.is_free %}
+      Price: free{% elsif response.ticket_availability.minimum_ticket_price.display %}
+      Price: {{ response.ticket_availability.minimum_ticket_price.display }}{% if response.ticket_availability.maximum_ticket_price.display and response.ticket_availability.maximum_ticket_price.display != response.ticket_availability.minimum_ticket_price.display %} to {{ response.ticket_availability.maximum_ticket_price.display }}{% endif %}{% endif %}{% if response.ticket_availability %}
+      Tickets: {% if response.ticket_availability.is_sold_out %}sold out{% elsif response.ticket_availability.has_available_tickets %}available{% else %}not on sale{% endif %}{% if response.ticket_availability.waitlist_available %}, waitlist available{% endif %}{% endif %}
+      Page: {{ response.url }}{% else %}Eventbrite returned an unexpected response.{% endif %}
+
+  - id: list_ticket_types
+    title: List Ticket Types
+    description: List the ticket types for one Eventbrite event, with price, sale status, and sales dates. Use this when a customer asks what tickets exist, what they cost, or whether a ticket type is sold out. Use the event ID from List Upcoming Events or Find Orders by Email.
+    http_method: GET
+    endpoint_url: https://www.eventbriteapi.com/v3/events/{{ event_id | strip | url_encode }}/ticket_classes/
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.private_token }}
+    param_schema:
+      - name: event_id
+        type: string
+        description: The numeric Eventbrite event ID from List Upcoming Events or Find Orders by Email.
+        required: true
+    response_template: |-
+      {% if response.ticket_classes %}{% for ticket in response.ticket_classes limit: 30 %}- {{ ticket.name | truncate: 120 }} (ticket type ID {{ ticket.id }}): {% if ticket.free %}free{% elsif ticket.donation %}donation{% else %}{{ ticket.cost.display | default: "price not shown" }}{% if ticket.fee.display %} plus {{ ticket.fee.display }} fee{% endif %}{% endif %}{% if ticket.on_sale_status %}, {{ ticket.on_sale_status | replace: "_", " " | downcase }}{% endif %}{% if ticket.hidden %}, hidden from the public{% endif %}{% if ticket.sales_start or ticket.sales_end %}
+        Sales: {{ ticket.sales_start | default: "open" }} to {{ ticket.sales_end | default: "no end date" }} (UTC){% endif %}{% if ticket.minimum_quantity or ticket.maximum_quantity %}
+        Per order: {{ ticket.minimum_quantity | default: 1 }} to {{ ticket.maximum_quantity | default: "no limit" }}{% endif %}{% if ticket.description and ticket.description != "" %}
+        {{ ticket.description | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 200 }}{% endif %}
+      {% else %}No ticket types found for this event.
+      {% endfor %}{% else %}Eventbrite returned an unexpected response.{% endif %}
