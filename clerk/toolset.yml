@@ -1,0 +1,178 @@
+version: 0.0.1
+kind: captain_toolset
+name: Clerk
+author: chatwoot
+category: Identity & access
+description: Look up Clerk users, their sign-in status, sessions, organizations, invitations, and SSO connections.
+
+headers:
+  Clerk-API-Version: '2026-05-12'
+
+secrets:
+  secret_key:
+    label: Clerk secret key
+    type: password
+    placeholder: sk_live_...
+    required: true
+
+tools:
+  - id: find_user_by_email
+    title: Find User by Email
+    description: Find a Clerk user by their exact email address. Use this first when a customer has trouble signing in or asks about their account, to get the user ID the other Clerk tools need. Shows whether the email is verified and whether the user is banned or locked.
+    http_method: GET
+    endpoint_url: https://api.clerk.com/v1/users?email_address={{ email | strip | url_encode }}&limit=5
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The user's exact email address.
+        required: true
+    response_template: |-
+      {% if response.first.object == "user" %}{% for user in response limit: 5 %}{% assign primary = user.email_addresses | where: "id", user.primary_email_address_id | first %}{% capture name %}{{ user.first_name }} {{ user.last_name }}{% endcapture %}{% assign name = name | strip %}- {{ name | default: "No name" }} <{{ primary.email_address | default: "no primary email" }}>
+        User ID: {{ user.id }}
+        Email verification: {{ primary.verification.status | default: "unknown" }}
+        Created: {{ user.created_at | divided_by: 1000 | date: "%Y-%m-%d" }}
+        Last sign-in: {% if user.last_sign_in_at %}{{ user.last_sign_in_at | divided_by: 1000 | date: "%Y-%m-%d %H:%M %Z" }}{% else %}never{% endif %}{% if user.banned %}
+        Banned: yes{% endif %}{% if user.locked %}
+        Locked: yes{% if user.lockout_expires_in_seconds %}, unlocks in {{ user.lockout_expires_in_seconds | divided_by: 60 | plus: 1 }} minutes{% endif %}{% endif %}
+        Two-factor authentication: {% if user.two_factor_enabled %}on{% else %}off{% endif %}
+      {% endfor %}{% elsif response.size == 0 %}No Clerk user found with this email address.{% else %}Clerk returned an unexpected response.{% endif %}
+
+  - id: get_user
+    title: Get User
+    description: Get a Clerk user's full account details, including every email address and its verification status, sign-in methods, two-factor settings, ban and lock status, last sign-in, and public metadata. Use the user ID from Find User by Email.
+    http_method: GET
+    endpoint_url: https://api.clerk.com/v1/users/{{ user_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_key }}
+    param_schema:
+      - name: user_id
+        type: string
+        description: The Clerk user ID from Find User by Email, starting with user_.
+        required: true
+    response_template: |-
+      {% if response.object == "user" %}{% assign user = response %}{% capture name %}{{ user.first_name }} {{ user.last_name }}{% endcapture %}{% assign name = name | strip %}{{ name | default: "No name" }} (user ID {{ user.id }}){% if user.username %}
+      Username: {{ user.username }}{% endif %}{% if user.external_id %}
+      External ID: {{ user.external_id }}{% endif %}
+      Created: {{ user.created_at | divided_by: 1000 | date: "%Y-%m-%d" }}
+      Last sign-in: {% if user.last_sign_in_at %}{{ user.last_sign_in_at | divided_by: 1000 | date: "%Y-%m-%d %H:%M %Z" }}{% else %}never{% endif %}
+      Last active: {% if user.last_active_at %}{{ user.last_active_at | divided_by: 1000 | date: "%Y-%m-%d" }}{% else %}never{% endif %}
+      Banned: {% if user.banned %}yes{% else %}no{% endif %}
+      Locked: {% if user.locked %}yes{% if user.lockout_expires_in_seconds %}, unlocks in {{ user.lockout_expires_in_seconds | divided_by: 60 | plus: 1 }} minutes{% endif %}{% else %}no{% endif %}{% if user.deprovisioned %}
+      Deprovisioned by directory sync: yes{% endif %}
+      Emails:{% for email in user.email_addresses limit: 10 %}
+      - {{ email.email_address }} · {{ email.verification.status | default: "no verification" }}{% if email.id == user.primary_email_address_id %} · primary{% endif %}{% else %} none{% endfor %}{% if user.phone_numbers.size > 0 %}
+      Phone numbers:{% for phone in user.phone_numbers limit: 5 %}
+      - {{ phone.phone_number }} · {{ phone.verification.status | default: "no verification" }}{% if phone.reserved_for_second_factor %} · used for two-factor{% endif %}{% endfor %}{% endif %}
+      Password set: {% if user.password_enabled %}yes{% else %}no{% endif %}
+      Two-factor authentication: {% if user.two_factor_enabled %}on{% else %}off{% endif %}{% if user.totp_enabled %} · authenticator app{% endif %}{% if user.backup_code_enabled %} · backup codes{% endif %}{% if user.passkeys.size > 0 %}
+      Passkeys: {{ user.passkeys.size }}{% endif %}{% if user.external_accounts.size > 0 %}
+      Social sign-in: {% for account in user.external_accounts limit: 10 %}{{ account.provider | remove: "oauth_" }}{% if account.email_address %} ({{ account.email_address }}){% endif %}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if user.enterprise_accounts.size > 0 %}
+      Enterprise SSO: {% for account in user.enterprise_accounts limit: 5 %}{{ account.provider }} ({{ account.email_address }}{% unless account.active %}, inactive{% endunless %}){% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% for item in user.public_metadata limit: 10 %}{% if forloop.first %}
+      Public metadata:{% endif %}
+      - {{ item[0] }}: {{ item[1] | truncate: 150 }}{% endfor %}{% else %}Clerk returned an unexpected response.{% endif %}
+
+  - id: list_user_organizations
+    title: List User Organizations
+    description: List the Clerk organizations a user belongs to and their role in each. Use the user ID from Find User by Email. The organization IDs it returns are what Get Organization, List Organization Invitations, and List Organization SSO Connections need.
+    http_method: GET
+    endpoint_url: https://api.clerk.com/v1/users/{{ user_id | strip | url_encode }}/organization_memberships?limit=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_key }}
+    param_schema:
+      - name: user_id
+        type: string
+        description: The Clerk user ID from Find User by Email, starting with user_.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for membership in response.data limit: 20 %}- {{ membership.organization.name }} (organization ID {{ membership.organization.id }})
+        Role: {{ membership.role_name | default: membership.role }}
+        Member since: {{ membership.created_at | divided_by: 1000 | date: "%Y-%m-%d" }}
+      {% else %}This user does not belong to any organization.
+      {% endfor %}{% if response.total_count > 20 %}Showing 20 of {{ response.total_count }} organizations.{% endif %}{% else %}Clerk returned an unexpected response.{% endif %}
+
+  - id: list_user_sessions
+    title: List User Sessions
+    description: List a Clerk user's active sessions with the browser, device, and approximate location of each. Use this when a customer asks where they are signed in or reports unexpected account activity. Use the user ID from Find User by Email.
+    http_method: GET
+    endpoint_url: https://api.clerk.com/v1/sessions?user_id={{ user_id | strip | url_encode }}&status=active&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_key }}
+    param_schema:
+      - name: user_id
+        type: string
+        description: The Clerk user ID from Find User by Email, starting with user_.
+        required: true
+    response_template: |-
+      {% if response.first.object == "session" %}{% for session in response limit: 10 %}{% assign activity = session.latest_activity %}- Session {{ session.id }} · last active {{ session.last_active_at | divided_by: 1000 | date: "%Y-%m-%d %H:%M %Z" }}{% if activity.browser_name or activity.device_type %}
+        Device: {{ activity.browser_name | default: "unknown browser" }}{% if activity.device_type %} on {{ activity.device_type }}{% endif %}{% endif %}{% if activity.country %}
+        Location: {% if activity.city %}{{ activity.city }}, {% endif %}{{ activity.country }}{% endif %}
+        Started: {{ session.created_at | divided_by: 1000 | date: "%Y-%m-%d" }} · expires {{ session.expire_at | divided_by: 1000 | date: "%Y-%m-%d" }}{% if session.actor %}
+        Started by an impersonating team member{% endif %}
+      {% endfor %}{% elsif response.size == 0 %}This user has no active sessions.{% else %}Clerk returned an unexpected response.{% endif %}
+
+  - id: get_organization
+    title: Get Organization
+    description: Get a Clerk organization's details, including member count, pending invitations, and membership limit. Use the organization ID from List User Organizations, or the organization's slug.
+    http_method: GET
+    endpoint_url: https://api.clerk.com/v1/organizations/{{ organization_id | strip | url_encode }}?include_members_count=true
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_key }}
+    param_schema:
+      - name: organization_id
+        type: string
+        description: The Clerk organization ID from List User Organizations, starting with org_, or the organization's slug.
+        required: true
+    response_template: |-
+      {% if response.object == "organization" %}{{ response.name }} (organization ID {{ response.id }}){% if response.slug %}
+      Slug: {{ response.slug }}{% endif %}
+      Created: {{ response.created_at | divided_by: 1000 | date: "%Y-%m-%d" }}{% if response.members_count %}
+      Members: {{ response.members_count }}{% endif %}{% if response.pending_invitations_count %}
+      Pending invitations: {{ response.pending_invitations_count }}{% endif %}{% if response.max_allowed_memberships and response.max_allowed_memberships > 0 %}
+      Membership limit: {{ response.max_allowed_memberships }}{% endif %}{% for item in response.public_metadata limit: 10 %}{% if forloop.first %}
+      Public metadata:{% endif %}
+      - {{ item[0] }}: {{ item[1] | truncate: 150 }}{% endfor %}{% else %}Clerk returned an unexpected response.{% endif %}
+
+  - id: list_organization_invitations
+    title: List Organization Invitations
+    description: List the 20 most recent pending invitations to a Clerk organization. Use this when a customer says they or a teammate did not receive an invite, or asks who has been invited. Use the organization ID from List User Organizations.
+    http_method: GET
+    endpoint_url: https://api.clerk.com/v1/organizations/{{ organization_id | strip | url_encode }}/invitations?status=pending&limit=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_key }}
+    param_schema:
+      - name: organization_id
+        type: string
+        description: The Clerk organization ID from List User Organizations, starting with org_.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for invitation in response.data limit: 20 %}- {{ invitation.email_address }} · {{ invitation.role_name | default: invitation.role }} · invited {{ invitation.created_at | divided_by: 1000 | date: "%Y-%m-%d" }}{% if invitation.expires_at %} · expires {{ invitation.expires_at | divided_by: 1000 | date: "%Y-%m-%d" }}{% endif %}
+      {% else %}This organization has no pending invitations.
+      {% endfor %}{% if response.total_count > 20 %}Showing 20 of {{ response.total_count }} pending invitations.{% endif %}{% else %}Clerk returned an unexpected response.{% endif %}
+
+  - id: list_organization_sso_connections
+    title: List Organization SSO Connections
+    description: List the enterprise SSO connections set up for a Clerk organization, whether each is active, and which email domains it covers. Use this when a customer has trouble signing in with SSO. Use the organization ID from List User Organizations.
+    http_method: GET
+    endpoint_url: https://api.clerk.com/v1/enterprise_connections?organization_id={{ organization_id | strip | url_encode }}&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_key }}
+    param_schema:
+      - name: organization_id
+        type: string
+        description: The Clerk organization ID from List User Organizations, starting with org_.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for connection in response.data limit: 10 %}- {{ connection.name }} (connection ID {{ connection.id }}) · {{ connection.provider }} · {% if connection.active %}active{% else %}inactive{% endif %}{% if connection.domains.size > 0 %}
+        Domains: {{ connection.domains | join: ", " | truncate: 200 }}{% endif %}{% if connection.saml_connection.idp_certificate_expires_at %}
+        Identity provider certificate expires: {{ connection.saml_connection.idp_certificate_expires_at | divided_by: 1000 | date: "%Y-%m-%d" }}{% endif %}
+      {% else %}This organization has no enterprise SSO connections.
+      {% endfor %}{% else %}Clerk returned an unexpected response.{% endif %}
