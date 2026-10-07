@@ -1,0 +1,201 @@
+version: 0.0.1
+kind: captain_toolset
+name: Freshsales
+author: chatwoot
+category: CRM
+description: Look up contacts, accounts, deals, and recent activity in Freshsales, and add notes to contacts.
+
+inputs:
+  bundle_alias:
+    label: Bundle alias
+    placeholder: acme.myfreshworks.com/crm/sales
+    required: true
+
+secrets:
+  api_key:
+    label: Freshsales API key
+    type: password
+    required: true
+
+tools:
+  - id: find_contact_by_email
+    title: Find Contact by Email
+    description: Find Freshsales contacts by their exact email address. Use this first to get the contact ID the other Freshsales tools need.
+    http_method: GET
+    endpoint_url: https://${{ inputs.bundle_alias }}/api/lookup?q={{ email | strip | url_encode }}&f=email&entities=contact
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Token token=${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's full email address. Partial addresses do not match.
+        required: true
+    response_template: |-
+      {% if response.contacts.contacts %}{% for contact in response.contacts.contacts limit: 5 %}- {{ contact.display_name | default: "Unnamed contact" }} <{{ contact.email }}> (contact ID {{ contact.id }}){% if contact.job_title %}
+        Job title: {{ contact.job_title }}{% endif %}{% if contact.company.name %}
+        Company: {{ contact.company.name }}{% endif %}{% if contact.work_number or contact.mobile_number %}
+        Phone: {{ contact.work_number | default: contact.mobile_number }}{% endif %}{% if contact.city or contact.country %}{% capture location %}{{ contact.city }} {{ contact.state }} {{ contact.country }}{% endcapture %}
+        Location: {{ location | split: " " | join: " " }}{% endif %}{% if contact.lead_score %}
+        Lead score: {{ contact.lead_score }}{% endif %}{% if contact.last_contacted %}
+        Last contacted: {{ contact.last_contacted | slice: 0, 10 }}{% endif %}
+      {% else %}No Freshsales contact found with this email address.
+      {% endfor %}{% elsif response.size == 0 %}No Freshsales contact found with this email address.{% else %}Freshsales returned an unexpected response.{% endif %}
+
+  - id: get_contact
+    title: Get Contact
+    description: Get a Freshsales contact's details, including phone numbers, lead score, owner, custom fields, and the accounts they belong to. Use the contact ID from Find Contact by Email. Returns the account IDs that Get Account needs.
+    http_method: GET
+    endpoint_url: https://${{ inputs.bundle_alias }}/api/contacts/{{ contact_id | strip | url_encode }}?include=sales_accounts,owner
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Token token=${{ secrets.api_key }}
+    param_schema:
+      - name: contact_id
+        type: string
+        description: The numeric Freshsales contact ID from Find Contact by Email.
+        required: true
+    response_template: |-
+      {% if response.contact.id %}{% assign contact = response.contact %}{{ contact.display_name | default: "Unnamed contact" }} (contact ID {{ contact.id }}){% if contact.email %}
+      Email: {{ contact.email }}{% endif %}{% if contact.job_title %}
+      Job title: {{ contact.job_title }}{% endif %}{% if contact.work_number %}
+      Work phone: {{ contact.work_number }}{% endif %}{% if contact.mobile_number %}
+      Mobile: {{ contact.mobile_number }}{% endif %}{% if contact.city or contact.country %}{% capture location %}{{ contact.city }} {{ contact.state }} {{ contact.country }}{% endcapture %}
+      Location: {{ location | split: " " | join: " " }}{% endif %}{% if contact.time_zone %}
+      Time zone: {{ contact.time_zone }}{% endif %}{% if contact.lead_score %}
+      Lead score: {{ contact.lead_score }}{% endif %}{% if contact.open_deals_amount %}
+      Open deals amount: {{ contact.open_deals_amount }}{% endif %}{% if contact.last_contacted %}
+      Last contacted: {{ contact.last_contacted | slice: 0, 10 }}{% endif %}{% if contact.last_seen %}
+      Last seen: {{ contact.last_seen | slice: 0, 10 }}{% endif %}{% for user in response.users limit: 1 %}
+      Owner: {{ user.display_name }}{% if user.email %} <{{ user.email }}>{% endif %}{% endfor %}{% for account in contact.sales_accounts limit: 5 %}
+      Account: {{ account.name }} (account ID {{ account.id }}){% if account.is_primary %}, primary{% endif %}{% endfor %}{% for field in contact.custom_field limit: 25 %}{% assign value = field[1] | append: "" %}{% if value != "" %}
+      - {{ field[0] | remove_first: "cf_" | replace: "_", " " }}: {{ value | strip_newlines | truncate: 200 }}{% endif %}{% endfor %}{% else %}Freshsales returned an unexpected response.{% endif %}
+
+  - id: list_contact_deals
+    title: List Contact Deals
+    description: List up to 10 deals linked to a Freshsales contact, with amount, expected close date, and deal ID. Use the contact ID from Find Contact by Email. Use Get Deal for a deal's stage and owner.
+    http_method: GET
+    endpoint_url: https://${{ inputs.bundle_alias }}/api/contacts/{{ contact_id | strip | url_encode }}?include=deals
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Token token=${{ secrets.api_key }}
+    param_schema:
+      - name: contact_id
+        type: string
+        description: The numeric Freshsales contact ID from Find Contact by Email.
+        required: true
+    response_template: |-
+      {% if response.contact.id %}{% for deal in response.deals limit: 10 %}- {{ deal.name | default: "Unnamed deal" }} (deal ID {{ deal.id }}){% if deal.amount %} · amount {{ deal.amount }}{% endif %}{% if deal.closed_date %}
+        Closed: {{ deal.closed_date | slice: 0, 10 }}{% elsif deal.expected_close %}
+        Expected close: {{ deal.expected_close | slice: 0, 10 }}{% endif %}{% if deal.probability %}
+        Probability: {{ deal.probability }}%{% endif %}
+      {% else %}No deals are linked to this contact.
+      {% endfor %}{% else %}Freshsales returned an unexpected response.{% endif %}
+
+  - id: get_deal
+    title: Get Deal
+    description: Get a Freshsales deal's details, including amount, stage, expected close date, owner, and custom fields. Use a deal ID from List Contact Deals.
+    http_method: GET
+    endpoint_url: https://${{ inputs.bundle_alias }}/api/deals/{{ deal_id | strip | url_encode }}?include=owner,deal_stage,sales_account
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Token token=${{ secrets.api_key }}
+    param_schema:
+      - name: deal_id
+        type: string
+        description: The numeric Freshsales deal ID from List Contact Deals.
+        required: true
+    response_template: |-
+      {% if response.deal.id %}{% assign deal = response.deal %}{{ deal.name | default: "Unnamed deal" }} (deal ID {{ deal.id }}){% if deal.amount %}
+      Amount: {{ deal.amount }}{% endif %}{% for stage in response.deal_stages limit: 1 %}
+      Stage: {{ stage.name }}{% endfor %}{% if deal.probability %}
+      Probability: {{ deal.probability }}%{% endif %}{% if deal.closed_date %}
+      Closed: {{ deal.closed_date | slice: 0, 10 }}{% elsif deal.expected_close %}
+      Expected close: {{ deal.expected_close | slice: 0, 10 }}{% endif %}{% for account in response.sales_accounts limit: 1 %}
+      Account: {{ account.name }} (account ID {{ account.id }}){% endfor %}{% for user in response.users limit: 1 %}
+      Owner: {{ user.display_name }}{% if user.email %} <{{ user.email }}>{% endif %}{% endfor %}
+      Created: {{ deal.created_at | slice: 0, 10 }}{% if deal.stage_updated_time %}
+      Stage last changed: {{ deal.stage_updated_time | slice: 0, 10 }}{% endif %}{% for field in deal.custom_field limit: 25 %}{% assign value = field[1] | append: "" %}{% if value != "" %}
+      - {{ field[0] | remove_first: "cf_" | replace: "_", " " }}: {{ value | strip_newlines | truncate: 200 }}{% endif %}{% endfor %}{% else %}Freshsales returned an unexpected response.{% endif %}
+
+  - id: get_account
+    title: Get Account
+    description: Get a Freshsales account (company), including website, phone, size, open deals, owner, and custom fields such as plan or tier. Use an account ID from Get Contact.
+    http_method: GET
+    endpoint_url: https://${{ inputs.bundle_alias }}/api/sales_accounts/{{ account_id | strip | url_encode }}?include=owner
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Token token=${{ secrets.api_key }}
+    param_schema:
+      - name: account_id
+        type: string
+        description: The numeric Freshsales account ID from Get Contact.
+        required: true
+    response_template: |-
+      {% if response.sales_account.id %}{% assign account = response.sales_account %}{{ account.name | default: "Unnamed account" }} (account ID {{ account.id }}){% if account.website %}
+      Website: {{ account.website }}{% endif %}{% if account.phone %}
+      Phone: {{ account.phone }}{% endif %}{% if account.city or account.country %}{% capture location %}{{ account.city }} {{ account.state }} {{ account.country }}{% endcapture %}
+      Location: {{ location | split: " " | join: " " }}{% endif %}{% if account.number_of_employees %}
+      Employees: {{ account.number_of_employees }}{% endif %}{% if account.annual_revenue %}
+      Annual revenue: {{ account.annual_revenue }}{% endif %}
+      Open deals: {{ account.open_deals_count | default: 0 }}{% if account.open_deals_amount %} (amount {{ account.open_deals_amount }}){% endif %}{% if account.last_contacted %}
+      Last contacted: {{ account.last_contacted | slice: 0, 10 }}{% endif %}{% for user in response.users limit: 1 %}
+      Owner: {{ user.display_name }}{% if user.email %} <{{ user.email }}>{% endif %}{% endfor %}{% for field in account.custom_field limit: 25 %}{% assign value = field[1] | append: "" %}{% if value != "" %}
+      - {{ field[0] | remove_first: "cf_" | replace: "_", " " }}: {{ value | strip_newlines | truncate: 200 }}{% endif %}{% endfor %}{% else %}Freshsales returned an unexpected response.{% endif %}
+
+  - id: list_contact_activities
+    title: List Contact Activities
+    description: List the 10 most recent timeline activities for a Freshsales contact, such as deal stage changes, meetings, and product events. Use this to see what happened recently with a customer. Use the contact ID from Find Contact by Email.
+    http_method: GET
+    endpoint_url: https://${{ inputs.bundle_alias }}/api/contacts/{{ contact_id | strip | url_encode }}/activities?include=user&limit=10
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Token token=${{ secrets.api_key }}
+    param_schema:
+      - name: contact_id
+        type: string
+        description: The numeric Freshsales contact ID from Find Contact by Email.
+        required: true
+    response_template: |-
+      {% if response.activities %}{% for activity in response.activities limit: 10 %}{% assign data = activity.action_data %}- {{ activity.created_at | slice: 0, 10 }} · {{ activity.action_type | replace: "_", " " | downcase }}{% if activity.targetable_name %} · {{ activity.targetable_type }}: {{ activity.targetable_name }}{% endif %}{% if data.stage_name %} · stage {{ data.stage_name }}{% endif %}{% if data.title %}
+        {{ data.title | strip_newlines | truncate: 150 }}{% elsif data.name %}
+        {{ data.name | strip_newlines | truncate: 150 }}{% endif %}{% if data.description %}
+        {{ data.description | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}
+      {% else %}No activities found for this contact.
+      {% endfor %}{% elsif response.size == 0 %}No activities found for this contact.{% else %}Freshsales returned an unexpected response.{% endif %}
+
+  - id: add_note
+    title: Add Note
+    description: Add a note to a Freshsales contact, for example a summary of this conversation or a follow-up request for the contact's owner. Only add a note when the conversation needs one. Use the contact ID from Find Contact by Email.
+    http_method: POST
+    endpoint_url: https://${{ inputs.bundle_alias }}/api/notes
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Token token=${{ secrets.api_key }}
+    param_schema:
+      - name: contact_id
+        type: integer
+        description: The numeric Freshsales contact ID from Find Contact by Email.
+        required: true
+      - name: content
+        type: string
+        description: The note text. Plain text only.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% capture escaped_newline %}\\n{% endcapture %}{"note":{"description":"{{ content | strip | replace: bs, escaped_bs | replace: '"', escaped_quote | newline_to_br | strip_newlines | replace: "<br />", escaped_newline }}","targetable_type":"Contact","targetable_id":{{ contact_id | plus: 0 }}}}
+    response_template: |-
+      {% if response.note.id %}Added the note to the contact in Freshsales (note ID {{ response.note.id }}).{% else %}Freshsales returned an unexpected response.{% endif %}
