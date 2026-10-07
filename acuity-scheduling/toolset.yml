@@ -1,0 +1,150 @@
+version: 0.0.1
+kind: captain_toolset
+name: Acuity Scheduling
+author: chatwoot
+category: Scheduling
+description: Find appointments, appointment types, and open times in Acuity Scheduling.
+
+inputs:
+  user_id:
+    label: Acuity user ID
+    placeholder: '12345678'
+    required: true
+
+secrets:
+  api_key:
+    label: Acuity API key
+    type: password
+    required: true
+
+tools:
+  - id: find_appointments_by_email
+    title: Find Appointments by Email
+    description: Find a customer's Acuity appointments using their email address, newest first, including canceled ones. Use this first when a customer asks about an appointment, its time, or how to reschedule or cancel it. Returns the appointment IDs that Get Appointment needs.
+    http_method: GET
+    endpoint_url: https://acuityscheduling.com/api/v1/appointments?email={{ email | strip | url_encode }}&showall=true&excludeForms=true&max=10
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.user_id }}
+      password: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address the customer used to book.
+        required: true
+    response_template: |-
+      {% if response.size == 0 %}No appointments found for this email address.{% elsif response.first.id %}{% for appt in response limit: 10 %}- {{ appt.type }} with {{ appt.calendar }} (appointment ID {{ appt.id }})
+        Status: {% if appt.canceled or appt.noShow != nil %}canceled{% if appt.noShow %}, marked as no-show{% endif %}{% else %}scheduled{% endif %}
+        Time: {{ appt.date }}, {{ appt.time | strip }} to {{ appt.endTime | strip }} ({{ appt.datetime }}, {{ appt.duration }} minutes)
+        Client: {{ appt.firstName }} {{ appt.lastName }}
+        Price: {{ appt.price }}, paid: {{ appt.paid }}{% if appt.location and appt.location != "" %}
+        Location: {{ appt.location | truncate: 200 }}{% endif %}
+      {% endfor %}{% else %}Acuity Scheduling returned an unexpected response.{% endif %}
+
+  - id: get_appointment
+    title: Get Appointment
+    description: Get the full details of one Acuity appointment, including payment, location, intake form answers, and the customer's link to view, reschedule, or cancel it. Use the appointment ID from Find Appointments by Email.
+    http_method: GET
+    endpoint_url: https://acuityscheduling.com/api/v1/appointments/{{ appointment_id | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.user_id }}
+      password: ${{ secrets.api_key }}
+    param_schema:
+      - name: appointment_id
+        type: integer
+        description: The numeric Acuity appointment ID from Find Appointments by Email.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.type }} with {{ response.calendar }} (appointment ID {{ response.id }})
+      Status: {% if response.canceled or response.noShow != nil %}canceled{% if response.noShow %}, marked as no-show{% endif %}{% else %}scheduled{% endif %}
+      Time: {{ response.date }}, {{ response.time | strip }} to {{ response.endTime | strip }} ({{ response.datetime }}, {{ response.duration }} minutes)
+      Booked on: {{ response.dateCreated }}
+      Client: {{ response.firstName }} {{ response.lastName }} <{{ response.email }}>{% if response.phone and response.phone != "" %}, {{ response.phone }}{% endif %}
+      Price: {{ response.price }}, paid: {{ response.paid }}, amount paid: {{ response.amountPaid }}{% if response.certificate %}
+      Coupon or certificate: {{ response.certificate }}{% endif %}{% if response.location and response.location != "" %}
+      Location: {{ response.location | truncate: 300 }}{% endif %}
+      Client can reschedule online: {% if response.canClientReschedule %}yes{% else %}no{% endif %}
+      Client can cancel online: {% if response.canClientCancel %}yes{% else %}no{% endif %}
+      Client's appointment page: {{ response.confirmationPage }}{% if response.notes and response.notes != "" %}
+      Notes: {{ response.notes | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 300 }}{% endif %}{% for form in response.forms limit: 3 %}
+      {{ form.name }}:{% for answer in form.values limit: 10 %}
+      - {{ answer.name | truncate: 100 }}: {{ answer.value | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 200 }}{% endfor %}{% endfor %}{% else %}Acuity Scheduling returned an unexpected response.{% endif %}
+
+  - id: list_appointment_types
+    title: List Appointment Types
+    description: List the services and classes customers can book in Acuity, with duration, price, and the appointment type ID. Use this when a customer asks what can be booked, and before Get Available Dates or Get Available Times, which need the appointment type ID.
+    http_method: GET
+    endpoint_url: https://acuityscheduling.com/api/v1/appointment-types
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.user_id }}
+      password: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.size == 0 %}No appointment types found.{% elsif response.first.id %}{% for type in response limit: 30 %}- {{ type.name }} (appointment type ID {{ type.id }}): {{ type.duration }} minutes, price {{ type.price }}{% if type.category and type.category != "" %}, category {{ type.category }}{% endif %}{% if type.type != "service" %}, {{ type.type }}{% if type.classSize %} of up to {{ type.classSize }}{% endif %}{% endif %}{% if type.private %}, private (not shown on the public scheduling page){% endif %}{% if type.description and type.description != "" %}
+        {{ type.description | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 200 }}{% endif %}
+      {% endfor %}{% if response.size > 30 %}Showing the first 30 of {{ response.size }} appointment types.{% endif %}{% else %}Acuity Scheduling returned an unexpected response.{% endif %}
+
+  - id: get_available_dates
+    title: Get Available Dates
+    description: Find which dates in a month have open times for an Acuity appointment type. Use this when a customer wants to book or reschedule and has not picked a day yet. Get the appointment type ID from List Appointment Types, then use Get Available Times for a chosen date.
+    http_method: GET
+    endpoint_url: https://acuityscheduling.com/api/v1/availability/dates?month={{ month | url_encode }}&appointmentTypeID={{ appointment_type_id | url_encode }}&timezone={{ time_zone | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.user_id }}
+      password: ${{ secrets.api_key }}
+    param_schema:
+      - name: month
+        type: string
+        description: The month to check, in YYYY-MM format, such as 2026-02.
+        required: true
+      - name: appointment_type_id
+        type: integer
+        description: The numeric appointment type ID from List Appointment Types.
+        required: true
+      - name: time_zone
+        type: string
+        description: The customer's IANA time zone, such as America/New_York. Use UTC if it is unknown.
+        required: true
+    response_template: |-
+      {% if response.size == 0 %}No dates with open times in this month.{% elsif response.first.date %}Dates with open times: {% for day in response limit: 31 %}{{ day.date }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% else %}Acuity Scheduling returned an unexpected response.{% endif %}
+
+  - id: get_available_times
+    title: Get Available Times
+    description: Find the open time slots on one date for an Acuity appointment type. Use this after Get Available Dates, or directly when the customer already has a date in mind. Get the appointment type ID from List Appointment Types.
+    http_method: GET
+    endpoint_url: https://acuityscheduling.com/api/v1/availability/times?date={{ date | url_encode }}&appointmentTypeID={{ appointment_type_id | url_encode }}&timezone={{ time_zone | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.user_id }}
+      password: ${{ secrets.api_key }}
+    param_schema:
+      - name: date
+        type: string
+        description: The date to check, in YYYY-MM-DD format.
+        required: true
+      - name: appointment_type_id
+        type: integer
+        description: The numeric appointment type ID from List Appointment Types.
+        required: true
+      - name: time_zone
+        type: string
+        description: The customer's IANA time zone, such as America/New_York. Use UTC if it is unknown.
+        required: true
+    response_template: |-
+      {% if response.size == 0 %}No open times on this date.{% elsif response.first.time %}Open times, in the requested time zone: {% for slot in response limit: 60 %}{{ slot.time | slice: 11, 5 }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% if response.size > 60 %} (first 60 of {{ response.size }}){% endif %}{% else %}Acuity Scheduling returned an unexpected response.{% endif %}
+
+  - id: list_calendars
+    title: List Calendars
+    description: List the Acuity calendars, usually one per staff member or location, with their location and time zone. Use this when a customer asks who or where they can book with, or to explain the calendar name shown on an appointment.
+    http_method: GET
+    endpoint_url: https://acuityscheduling.com/api/v1/calendars
+    auth_type: basic
+    auth_config:
+      username: ${{ inputs.user_id }}
+      password: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.size == 0 %}No calendars found.{% elsif response.first.id %}{% for calendar in response limit: 30 %}- {{ calendar.name }} (calendar ID {{ calendar.id }}){% if calendar.location and calendar.location != "" %}, {{ calendar.location | truncate: 200 }}{% endif %}{% if calendar.timezone and calendar.timezone != "" %}, {{ calendar.timezone }}{% endif %}{% if calendar.description and calendar.description != "" %}
+        {{ calendar.description | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 200 }}{% endif %}
+      {% endfor %}{% else %}Acuity Scheduling returned an unexpected response.{% endif %}
