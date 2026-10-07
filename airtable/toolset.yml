@@ -1,0 +1,131 @@
+version: 0.0.1
+kind: captain_toolset
+name: Airtable
+author: chatwoot
+category: Others
+description: Search and read records in an Airtable table, and read or add record comments.
+
+inputs:
+  base_id:
+    label: Base ID
+    placeholder: appXXXXXXXXXXXXXX
+    required: true
+  table_id:
+    label: Table ID
+    placeholder: tblXXXXXXXXXXXXXX
+    required: true
+  search_field:
+    label: Search field name or ID
+    placeholder: Email
+    required: true
+
+secrets:
+  access_token:
+    label: Airtable personal access token
+    type: password
+    required: true
+
+tools:
+  - id: search_records
+    title: Search Records
+    description: Search the configured Airtable table for records whose search field contains the given text, ignoring case. Use this first to find a customer, order, or article and get the record ID the other Airtable tools need. Returns up to 5 records.
+    http_method: POST
+    endpoint_url: https://api.airtable.com/v0/${{ inputs.base_id }}/${{ inputs.table_id }}/listRecords
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: query
+        type: string
+        description: The text to look for, such as an email address, order number, or name.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% assign query = query | newline_to_br | replace: "<br />", " " | strip_newlines | strip | remove: bs | remove: '"' %}{"filterByFormula":"SEARCH(LOWER(\"{{ query }}\"), LOWER({${{ inputs.search_field }}} & \"\"))","maxRecords":5,"pageSize":5,"cellFormat":"string","timeZone":"utc","userLocale":"en"}
+    response_template: |-
+      {% if response.records %}{% for record in response.records %}Record ID: {{ record.id }}{% for field in record.fields limit: 15 %}
+      - {{ field[0] }}: {{ field[1] | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endfor %}
+      {% unless forloop.last %}
+      {% endunless %}{% else %}No matching records found.{% endfor %}{% else %}Airtable returned an unexpected response.{% endif %}
+
+  - id: find_records_by_field
+    title: Find Records by Field
+    description: Find records in the configured Airtable table where one field exactly equals a value, ignoring case. Use this to look up by a field other than the search field, such as an order number or status. Field names come from Search Records or Get Record results. Returns up to 5 records.
+    http_method: POST
+    endpoint_url: https://api.airtable.com/v0/${{ inputs.base_id }}/${{ inputs.table_id }}/listRecords
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: field_name
+        type: string
+        description: The exact name of the Airtable field to match, as shown in Search Records or Get Record results.
+        required: true
+      - name: value
+        type: string
+        description: The value the field must equal.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% assign open = "{" %}{% assign close = "}" %}{% assign field_name = field_name | strip_newlines | strip | remove: bs | remove: '"' | remove: "{" | remove: "}" %}{% assign value = value | newline_to_br | replace: "<br />", " " | strip_newlines | strip | remove: bs | remove: '"' %}{"filterByFormula":"LOWER({{ open }}{{ field_name }}{{ close }} & \"\") = LOWER(\"{{ value }}\")","maxRecords":5,"pageSize":5,"cellFormat":"string","timeZone":"utc","userLocale":"en"}
+    response_template: |-
+      {% if response.records %}{% for record in response.records %}Record ID: {{ record.id }}{% for field in record.fields limit: 15 %}
+      - {{ field[0] }}: {{ field[1] | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endfor %}
+      {% unless forloop.last %}
+      {% endunless %}{% else %}No matching records found.{% endfor %}{% else %}Airtable returned an unexpected response.{% endif %}
+
+  - id: get_record
+    title: Get Record
+    description: Read every field of one Airtable record by its record ID. Use the record ID from Search Records or Find Records by Field when you need details the search results cut short.
+    http_method: GET
+    endpoint_url: https://api.airtable.com/v0/${{ inputs.base_id }}/${{ inputs.table_id }}/{{ record_id | strip | url_encode }}?cellFormat=string&timeZone=utc&userLocale=en
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: record_id
+        type: string
+        description: The Airtable record ID, starting with rec.
+        required: true
+    response_template: |-
+      {% if response.id %}Record ID: {{ response.id }}
+      Created: {{ response.createdTime | slice: 0, 10 }}{% for field in response.fields limit: 40 %}
+      - {{ field[0] }}: {{ field[1] | truncate: 1000 }}{% endfor %}{% else %}Airtable returned an unexpected response.{% endif %}
+
+  - id: list_record_comments
+    title: List Record Comments
+    description: Read the 10 most recent comments on an Airtable record, such as internal notes from the team. Use the record ID from Search Records or Find Records by Field.
+    http_method: GET
+    endpoint_url: https://api.airtable.com/v0/${{ inputs.base_id }}/${{ inputs.table_id }}/{{ record_id | strip | url_encode }}/comments?pageSize=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: record_id
+        type: string
+        description: The Airtable record ID, starting with rec.
+        required: true
+    response_template: |-
+      {% if response.comments %}{% for comment in response.comments limit: 10 %}- {{ comment.createdTime | slice: 0, 10 }} · {{ comment.author.name | default: comment.author.email }}: {{ comment.text | newline_to_br | replace: "<br />", " " | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 400 }}
+      {% else %}No comments on this record.
+      {% endfor %}{% else %}Airtable returned an unexpected response.{% endif %}
+
+  - id: add_record_comment
+    title: Add Record Comment
+    description: Add a comment to an Airtable record, for example a short summary of this conversation or a follow-up request for the team. Only add a comment when the conversation needs one. Use the record ID from Search Records or Find Records by Field.
+    http_method: POST
+    endpoint_url: https://api.airtable.com/v0/${{ inputs.base_id }}/${{ inputs.table_id }}/{{ record_id | strip | url_encode }}/comments
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: record_id
+        type: string
+        description: The Airtable record ID, starting with rec.
+        required: true
+      - name: text
+        type: string
+        description: The comment text. Plain text only.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% capture escaped_newline %}\\n{% endcapture %}{"text":"{{ text | strip | replace: bs, escaped_bs | replace: '"', escaped_quote | newline_to_br | strip_newlines | replace: "<br />", escaped_newline }}"}
+    response_template: |-
+      {% if response.id %}Added the comment to the record.{% else %}Airtable returned an unexpected response.{% endif %}
