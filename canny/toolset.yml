@@ -1,0 +1,172 @@
+version: 0.0.1
+kind: captain_toolset
+name: Canny
+author: chatwoot
+category: Others
+description: Search feature requests in Canny, check their status and comments, see what a customer asked for, and add their vote.
+
+secrets:
+  api_key:
+    label: Canny secret API key
+    type: password
+    required: true
+
+tools:
+  - id: list_boards
+    title: List Boards
+    description: List the Canny boards, such as Feature Requests or Bug Reports, with their board IDs and post counts. Use this when you need a board ID to narrow Search Posts to one board.
+    http_method: POST
+    endpoint_url: https://canny.io/api/v1/boards/list
+    auth_type: none
+    request_template: '{"apiKey":"${{ secrets.api_key }}"}'
+    response_template: |-
+      {% if response.boards %}{% for board in response.boards limit: 30 %}- {{ board.name }} (board ID {{ board.id }}) · {{ board.postCount }} posts{% if board.isPrivate %} · private{% endif %}
+      {% else %}No boards found in this Canny workspace.{% endfor %}{% else %}Canny returned an unexpected response.{% endif %}
+
+  - id: search_posts
+    title: Search Posts
+    description: Search Canny feature requests and bug reports by keywords and get the 10 best matches with status, votes, and post IDs. Use this first when a customer asks whether something is planned, already requested, or shipped.
+    http_method: POST
+    endpoint_url: https://canny.io/api/v1/posts/list
+    auth_type: none
+    param_schema:
+      - name: query
+        type: string
+        description: Keywords describing the feature or problem, such as "dark mode" or "export to CSV".
+        required: true
+      - name: board_id
+        type: string
+        description: Optional board ID from List Boards to search only that board.
+        required: false
+      - name: status
+        type: string
+        description: 'Optional comma-separated statuses to keep, such as "planned,in progress". Canny defaults are open, under review, planned, in progress, complete, and closed.'
+        required: false
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% assign query = query | newline_to_br | replace: "<br />", " " | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign board_id = board_id | strip | remove: bs | remove: '"' %}{% assign status = status | strip_newlines | strip | remove: bs | remove: '"' %}{"apiKey":"${{ secrets.api_key }}","search":"{{ query }}","sort":"relevance","limit":10{% if board_id != "" %},"boardID":"{{ board_id }}"{% endif %}{% if status != "" %},"status":"{{ status }}"{% endif %}}
+    response_template: |-
+      {% if response.posts %}{% for post in response.posts limit: 10 %}- {{ post.title }} (post ID {{ post.id }})
+        Status: {{ post.status }} · {{ post.score }} votes · {{ post.commentCount }} comments · board: {{ post.board.name }}{% if post.eta %} · ETA {{ post.eta }}{% endif %}
+        Created: {{ post.created | slice: 0, 10 }}{% if post.details and post.details != "" %}
+        Details: {{ post.details | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% else %}No Canny posts match this search.{% endfor %}{% if response.hasMore %}More posts match. Use more specific keywords to narrow the search.{% endif %}{% else %}Canny returned an unexpected response.{% endif %}
+
+  - id: get_post
+    title: Get Post
+    description: Get the full details of one Canny post, including status, votes, ETA, category, tags, owner, and the latest status update. Use the post ID from Search Posts, List User Posts, or List User Votes.
+    http_method: POST
+    endpoint_url: https://canny.io/api/v1/posts/retrieve
+    auth_type: none
+    param_schema:
+      - name: post_id
+        type: string
+        description: The Canny post ID from Search Posts, List User Posts, or List User Votes.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{"apiKey":"${{ secrets.api_key }}","id":"{{ post_id | strip | remove: bs | remove: '"' }}"}
+    response_template: |-
+      {% if response.id %}{{ response.title }} (post ID {{ response.id }})
+      Status: {{ response.status }}{% if response.statusChangedAt %} since {{ response.statusChangedAt | slice: 0, 10 }}{% endif %}
+      Votes: {{ response.score }} · Comments: {{ response.commentCount }}
+      Board: {{ response.board.name }}{% if response.category.name %} · Category: {{ response.category.name }}{% endif %}{% if response.eta %}
+      ETA: {{ response.eta }}{% endif %}{% if response.tags.size > 0 %}
+      Tags: {{ response.tags | map: "name" | join: ", " }}{% endif %}
+      Created: {{ response.created | slice: 0, 10 }}{% if response.author.name %} by {{ response.author.name }}{% endif %}{% if response.owner.name %}
+      Owner: {{ response.owner.name }}{% endif %}{% if response.details and response.details != "" %}
+      Details: {{ response.details | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 800 }}{% endif %}{% if response.changeComment.value and response.changeComment.value != "" %}
+      Latest status update: {{ response.changeComment.value | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}{% endif %}
+      Admin link: {{ response.url }}{% else %}Canny returned an unexpected response.{% endif %}
+
+  - id: list_post_comments
+    title: List Post Comments
+    description: Read the most recent public comments on a Canny post, newest first, including updates from the team. Use this after Get Post when a customer wants the latest news on a request. Internal comments are left out.
+    http_method: POST
+    endpoint_url: https://canny.io/api/v2/comments/list
+    auth_type: none
+    param_schema:
+      - name: post_id
+        type: string
+        description: The Canny post ID from Search Posts, List User Posts, or List User Votes.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{"apiKey":"${{ secrets.api_key }}","postID":"{{ post_id | strip | remove: bs | remove: '"' }}","limit":20}
+    response_template: |-
+      {% if response.items %}{% assign shown = 0 %}{% for comment in response.items %}{% if shown >= 10 %}{% break %}{% endif %}{% unless comment.internal %}{% assign shown = shown | plus: 1 %}- {{ comment.created | slice: 0, 10 }} · {{ comment.author.name | default: "Unknown author" }}{% if comment.author.isAdmin %} (team){% endif %}{% if comment.status %} · status set to {{ comment.status }}{% endif %}: {{ comment.value | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 400 }}
+      {% endunless %}{% endfor %}{% if shown == 0 %}No public comments on this post.{% endif %}{% else %}Canny returned an unexpected response.{% endif %}
+
+  - id: find_user
+    title: Find User
+    description: Find a Canny user by email address. Use this first to get the Canny user ID that List User Posts, List User Votes, and Add Vote need.
+    http_method: POST
+    endpoint_url: https://canny.io/api/v1/users/retrieve
+    auth_type: none
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{"apiKey":"${{ secrets.api_key }}","email":"{{ email | strip_newlines | strip | remove: bs | remove: '"' }}"}
+    response_template: |-
+      {% if response.id %}{{ response.name | default: "Unnamed user" }}{% if response.email %} <{{ response.email }}>{% endif %} (Canny user ID {{ response.id }})
+      Joined: {{ response.created | slice: 0, 10 }}{% if response.lastActivity %} · Last active: {{ response.lastActivity | slice: 0, 10 }}{% endif %}{% if response.isAdmin %}
+      This user is a Canny admin.{% endif %}{% if response.companies.size > 0 %}
+      Companies: {{ response.companies | map: "name" | join: ", " }}{% endif %}{% else %}Canny returned an unexpected response.{% endif %}
+
+  - id: list_user_posts
+    title: List User Posts
+    description: List the 10 most recent Canny posts a user created, with status and votes. Use this when a customer asks about requests they submitted. Get the Canny user ID from Find User first.
+    http_method: POST
+    endpoint_url: https://canny.io/api/v1/posts/list
+    auth_type: none
+    param_schema:
+      - name: user_id
+        type: string
+        description: The Canny user ID from Find User.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{"apiKey":"${{ secrets.api_key }}","authorID":"{{ user_id | strip | remove: bs | remove: '"' }}","sort":"newest","limit":10}
+    response_template: |-
+      {% if response.posts %}{% for post in response.posts limit: 10 %}- {{ post.title }} (post ID {{ post.id }})
+        Status: {{ post.status }} · {{ post.score }} votes · {{ post.commentCount }} comments · board: {{ post.board.name }}{% if post.eta %} · ETA {{ post.eta }}{% endif %}
+        Created: {{ post.created | slice: 0, 10 }}
+      {% else %}This user has not created any Canny posts.{% endfor %}{% if response.hasMore %}Only the 10 most recent posts are shown.{% endif %}{% else %}Canny returned an unexpected response.{% endif %}
+
+  - id: list_user_votes
+    title: List User Votes
+    description: List the 20 most recent Canny posts a user voted for, with each post's current status. Use this when a customer asks about requests they upvoted. Get the Canny user ID from Find User first.
+    http_method: POST
+    endpoint_url: https://canny.io/api/v2/votes/list
+    auth_type: none
+    param_schema:
+      - name: user_id
+        type: string
+        description: The Canny user ID from Find User.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{"apiKey":"${{ secrets.api_key }}","userID":"{{ user_id | strip | remove: bs | remove: '"' }}","limit":20}
+    response_template: |-
+      {% if response.items %}{% for vote in response.items limit: 20 %}- {{ vote.post.title }} (post ID {{ vote.post.id }})
+        Status: {{ vote.post.status }} · {{ vote.post.score }} votes · board: {{ vote.board.name }}{% if vote.post.eta %} · ETA {{ vote.post.eta }}{% endif %}
+        Voted: {{ vote.created | slice: 0, 10 }}{% if vote.by.name %} (added by {{ vote.by.name }}){% endif %}
+      {% else %}This user has not voted on any Canny posts.{% endfor %}{% if response.hasNextPage %}Only the 20 most recent votes are shown.{% endif %}{% else %}Canny returned an unexpected response.{% endif %}
+
+  - id: add_vote
+    title: Add Vote
+    description: Add a customer's vote to an existing Canny post. Only use this when the customer has clearly asked for a feature that an existing post covers. Get the post ID from Search Posts and the Canny user ID from Find User. Voting twice has no extra effect.
+    http_method: POST
+    endpoint_url: https://canny.io/api/v1/votes/create
+    auth_type: none
+    param_schema:
+      - name: post_id
+        type: string
+        description: The Canny post ID from Search Posts.
+        required: true
+      - name: user_id
+        type: string
+        description: The Canny user ID of the customer, from Find User.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{"apiKey":"${{ secrets.api_key }}","postID":"{{ post_id | strip | remove: bs | remove: '"' }}","voterID":"{{ user_id | strip | remove: bs | remove: '"' }}"}
+    response_template: |-
+      {% assign result = response | strip | remove: '"' %}{% if result == "success" %}The customer's vote is recorded on this post.{% else %}Canny returned an unexpected response.{% endif %}
