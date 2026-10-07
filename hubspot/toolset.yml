@@ -1,0 +1,127 @@
+version: 0.0.1
+kind: captain_toolset
+name: HubSpot
+author: chatwoot
+category: CRM
+description: Look up contacts, companies, tickets, and deals in HubSpot.
+
+secrets:
+  access_token:
+    label: HubSpot access token
+    type: password
+    required: true
+
+tools:
+  - id: find_contact_by_email
+    title: Find Contact by Email
+    description: Find a HubSpot contact by their primary email address. Use this first to get the contact ID the other HubSpot tools need.
+    http_method: POST
+    endpoint_url: https://api.hubapi.com/crm/objects/2026-09/contacts/search
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{"filterGroups":[{"filters":[{"propertyName":"email","operator":"EQ","value":"{{ email | strip_newlines | strip | remove: '"' | remove: bs }}"}]}],"properties":["firstname","lastname","email","phone","company","lifecyclestage","createdate"],"limit":5}
+    response_template: |-
+      {% if response.results %}{% for contact in response.results %}{% capture name %}{{ contact.properties.firstname }} {{ contact.properties.lastname }}{% endcapture %}{% assign name = name | strip %}- {{ name | default: "No name" }} <{{ contact.properties.email }}>
+        Contact ID: {{ contact.id }}{% if contact.properties.company and contact.properties.company != "" %}
+        Company: {{ contact.properties.company }}{% endif %}{% if contact.properties.phone and contact.properties.phone != "" %}
+        Phone: {{ contact.properties.phone }}{% endif %}{% if contact.properties.lifecyclestage and contact.properties.lifecyclestage != "" %}
+        Lifecycle stage: {{ contact.properties.lifecyclestage }}{% endif %}
+        Created: {{ contact.properties.createdate | slice: 0, 10 }}
+      {% else %}No HubSpot contact found with this email address.
+      {% endfor %}{% else %}HubSpot returned an unexpected response.{% endif %}
+
+  - id: list_contact_companies
+    title: List Contact Companies
+    description: List up to 5 companies associated with a HubSpot contact, with name, domain, and phone. Use the contact ID from Find Contact by Email.
+    http_method: POST
+    endpoint_url: https://api.hubapi.com/crm/objects/2026-09/companies/search
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: contact_id
+        type: string
+        description: The numeric HubSpot contact ID from Find Contact by Email.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{"filterGroups":[{"filters":[{"propertyName":"associations.contact","operator":"EQ","value":"{{ contact_id | strip_newlines | strip | remove: '"' | remove: bs }}"}]}],"properties":["name","domain","phone","website","createdate"],"limit":5}
+    response_template: |-
+      {% if response.results %}{% for company in response.results %}- {{ company.properties.name | default: "Unnamed company" }} (company ID {{ company.id }}){% if company.properties.domain and company.properties.domain != "" %}
+        Domain: {{ company.properties.domain }}{% endif %}{% if company.properties.website and company.properties.website != "" %}
+        Website: {{ company.properties.website }}{% endif %}{% if company.properties.phone and company.properties.phone != "" %}
+        Phone: {{ company.properties.phone }}{% endif %}
+      {% else %}No companies are associated with this contact.
+      {% endfor %}{% else %}HubSpot returned an unexpected response.{% endif %}
+
+  - id: list_contact_tickets
+    title: List Contact Tickets
+    description: List a contact's 10 most recent HubSpot tickets with subject, priority, and pipeline stage ID. Use the contact ID from Find Contact by Email. Stages are returned as IDs; call List Pipeline Stages with tickets to get their names.
+    http_method: POST
+    endpoint_url: https://api.hubapi.com/crm/objects/2026-09/tickets/search
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: contact_id
+        type: string
+        description: The numeric HubSpot contact ID from Find Contact by Email.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{"filterGroups":[{"filters":[{"propertyName":"associations.contact","operator":"EQ","value":"{{ contact_id | strip_newlines | strip | remove: '"' | remove: bs }}"}]}],"properties":["subject","content","hs_pipeline","hs_pipeline_stage","hs_ticket_priority","hs_ticket_category","createdate","hs_lastmodifieddate"],"sorts":[{"propertyName":"createdate","direction":"DESCENDING"}],"limit":10}
+    response_template: |-
+      {% if response.results %}{% for ticket in response.results %}- {{ ticket.properties.subject | default: "No subject" }} (ticket ID {{ ticket.id }})
+        Created: {{ ticket.properties.createdate | slice: 0, 10 }} · Updated: {{ ticket.properties.hs_lastmodifieddate | slice: 0, 10 }}
+        Pipeline ID: {{ ticket.properties.hs_pipeline }} · Stage ID: {{ ticket.properties.hs_pipeline_stage }}{% if ticket.properties.hs_ticket_priority and ticket.properties.hs_ticket_priority != "" %}
+        Priority: {{ ticket.properties.hs_ticket_priority | downcase }}{% endif %}{% if ticket.properties.hs_ticket_category and ticket.properties.hs_ticket_category != "" %}
+        Category: {{ ticket.properties.hs_ticket_category | replace: "_", " " | downcase }}{% endif %}{% if ticket.properties.content and ticket.properties.content != "" %}
+        Description: {{ ticket.properties.content | newline_to_br | replace: "<br />", " " | strip_html | strip_newlines | truncate: 300 }}{% endif %}
+      {% else %}No tickets are associated with this contact.
+      {% endfor %}{% else %}HubSpot returned an unexpected response.{% endif %}
+
+  - id: list_contact_deals
+    title: List Contact Deals
+    description: List a contact's 10 most recent HubSpot deals with amount, close date, and deal stage ID. Use the contact ID from Find Contact by Email. Stages are returned as IDs; call List Pipeline Stages with deals to get their names.
+    http_method: POST
+    endpoint_url: https://api.hubapi.com/crm/objects/2026-09/deals/search
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: contact_id
+        type: string
+        description: The numeric HubSpot contact ID from Find Contact by Email.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{"filterGroups":[{"filters":[{"propertyName":"associations.contact","operator":"EQ","value":"{{ contact_id | strip_newlines | strip | remove: '"' | remove: bs }}"}]}],"properties":["dealname","amount","closedate","pipeline","dealstage","createdate"],"sorts":[{"propertyName":"createdate","direction":"DESCENDING"}],"limit":10}
+    response_template: |-
+      {% if response.results %}{% for deal in response.results %}- {{ deal.properties.dealname | default: "Unnamed deal" }} (deal ID {{ deal.id }})
+        Created: {{ deal.properties.createdate | slice: 0, 10 }}{% if deal.properties.amount and deal.properties.amount != "" %} · Amount: {{ deal.properties.amount }}{% endif %}{% if deal.properties.closedate and deal.properties.closedate != "" %} · Close date: {{ deal.properties.closedate | slice: 0, 10 }}{% endif %}
+        Pipeline ID: {{ deal.properties.pipeline }} · Stage ID: {{ deal.properties.dealstage }}
+      {% else %}No deals are associated with this contact.
+      {% endfor %}{% else %}HubSpot returned an unexpected response.{% endif %}
+
+  - id: list_pipeline_stages
+    title: List Pipeline Stages
+    description: List HubSpot ticket or deal pipelines and the name of each stage ID. Use this to turn the pipeline and stage IDs from List Contact Tickets or List Contact Deals into names.
+    http_method: GET
+    endpoint_url: https://api.hubapi.com/crm/pipelines/2026-09/{{ object_type | strip | downcase | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: object_type
+        type: string
+        description: 'The kind of pipeline to list: tickets or deals.'
+        required: true
+    response_template: |-
+      {% if response.results %}{% for pipeline in response.results limit: 20 %}{{ pipeline.label }} (pipeline ID {{ pipeline.id }})
+      {% assign stages = pipeline.stages | sort: "displayOrder" %}{% for stage in stages limit: 30 %}- Stage ID {{ stage.id }}: {{ stage.label }}
+      {% endfor %}{% else %}No pipelines found for this object type.
+      {% endfor %}{% else %}HubSpot returned an unexpected response.{% endif %}
