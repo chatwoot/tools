@@ -1,0 +1,149 @@
+version: 0.0.1
+kind: captain_toolset
+name: Klaviyo
+author: chatwoot
+category: Marketing
+description: Look up Klaviyo profiles, marketing consent, recent activity, and list and segment membership.
+
+headers:
+  revision: '2026-07-15'
+  Accept: application/vnd.api+json
+
+secrets:
+  api_key:
+    label: Klaviyo private API key
+    type: password
+    required: true
+
+tools:
+  - id: find_profile_by_email
+    title: Find Profile by Email
+    description: Find a Klaviyo profile by email address, with email and SMS marketing consent. Use this first to get the profile ID the other Klaviyo tools need, or when a customer asks why they do or do not receive emails.
+    http_method: GET
+    endpoint_url: 'https://a.klaviyo.com/api/profiles?filter=equals%28email%2C%22{{ email | strip | url_encode | remove: "%22" | remove: "%5C" }}%22%29&additional-fields%5Bprofile%5D=subscriptions&fields%5Bprofile%5D=email,phone_number,first_name,last_name,organization,created,last_event_date,location.city,location.country,subscriptions&page%5Bsize%5D=5'
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Klaviyo-API-Key ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for profile in response.data %}{% assign a = profile.attributes %}{% capture name %}{{ a.first_name }} {{ a.last_name }}{% endcapture %}{% assign name = name | strip %}- {{ name | default: "No name" }}{% if a.email %} <{{ a.email }}>{% endif %}
+        Profile ID: {{ profile.id }}{% if a.phone_number %}
+        Phone: {{ a.phone_number }}{% endif %}{% if a.organization %}
+        Organization: {{ a.organization }}{% endif %}{% if a.location.city or a.location.country %}
+        Location: {{ a.location.city }}{% if a.location.city and a.location.country %}, {% endif %}{{ a.location.country }}{% endif %}
+        Created: {{ a.created | slice: 0, 10 }}{% if a.last_event_date %} · last activity {{ a.last_event_date | slice: 0, 10 }}{% endif %}{% assign em = a.subscriptions.email.marketing %}{% if em %}
+        Email marketing: {{ em.consent | downcase | replace: "_", " " }}{% if em.can_receive_email_marketing == false %}, cannot receive marketing email{% endif %}{% for s in em.suppression limit: 3 %}
+        Suppressed: {{ s.reason | downcase | replace: "_", " " }}{% if s.timestamp %} on {{ s.timestamp | slice: 0, 10 }}{% endif %}{% endfor %}{% endif %}{% assign sms = a.subscriptions.sms.marketing %}{% if sms %}
+        SMS marketing: {{ sms.consent | downcase | replace: "_", " " }}{% if sms.can_receive_sms_marketing == false %}, cannot receive marketing SMS{% endif %}{% endif %}
+      {% else %}No Klaviyo profile found with this email address.
+      {% endfor %}{% else %}Klaviyo returned an unexpected response.{% endif %}
+
+  - id: find_profile_by_phone
+    title: Find Profile by Phone
+    description: Find a Klaviyo profile by phone number, with email and SMS marketing consent. Use this instead of Find Profile by Email when only a phone number is known, such as in an SMS or WhatsApp conversation.
+    http_method: GET
+    endpoint_url: 'https://a.klaviyo.com/api/profiles?filter=equals%28phone_number%2C%22{{ phone | strip | remove: " " | remove: "-" | remove: "(" | remove: ")" | url_encode | remove: "%22" | remove: "%5C" }}%22%29&additional-fields%5Bprofile%5D=subscriptions&fields%5Bprofile%5D=email,phone_number,first_name,last_name,organization,created,last_event_date,location.city,location.country,subscriptions&page%5Bsize%5D=5'
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Klaviyo-API-Key ${{ secrets.api_key }}
+    param_schema:
+      - name: phone
+        type: string
+        description: The customer's phone number in international E.164 format, such as +15558675309.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for profile in response.data %}{% assign a = profile.attributes %}{% capture name %}{{ a.first_name }} {{ a.last_name }}{% endcapture %}{% assign name = name | strip %}- {{ name | default: "No name" }}{% if a.email %} <{{ a.email }}>{% endif %}
+        Profile ID: {{ profile.id }}{% if a.phone_number %}
+        Phone: {{ a.phone_number }}{% endif %}{% if a.organization %}
+        Organization: {{ a.organization }}{% endif %}{% if a.location.city or a.location.country %}
+        Location: {{ a.location.city }}{% if a.location.city and a.location.country %}, {% endif %}{{ a.location.country }}{% endif %}
+        Created: {{ a.created | slice: 0, 10 }}{% if a.last_event_date %} · last activity {{ a.last_event_date | slice: 0, 10 }}{% endif %}{% assign em = a.subscriptions.email.marketing %}{% if em %}
+        Email marketing: {{ em.consent | downcase | replace: "_", " " }}{% if em.can_receive_email_marketing == false %}, cannot receive marketing email{% endif %}{% for s in em.suppression limit: 3 %}
+        Suppressed: {{ s.reason | downcase | replace: "_", " " }}{% if s.timestamp %} on {{ s.timestamp | slice: 0, 10 }}{% endif %}{% endfor %}{% endif %}{% assign sms = a.subscriptions.sms.marketing %}{% if sms %}
+        SMS marketing: {{ sms.consent | downcase | replace: "_", " " }}{% if sms.can_receive_sms_marketing == false %}, cannot receive marketing SMS{% endif %}{% endif %}
+      {% else %}No Klaviyo profile found with this phone number.
+      {% endfor %}{% else %}Klaviyo returned an unexpected response.{% endif %}
+
+  - id: get_profile
+    title: Get Profile
+    description: Get a Klaviyo profile's details by profile ID, including custom properties and order statistics such as number of orders, lifetime value, and average order value. Use the profile ID from Find Profile by Email or Find Profile by Phone.
+    http_method: GET
+    endpoint_url: https://a.klaviyo.com/api/profiles/{{ profile_id | strip | url_encode }}?additional-fields%5Bprofile%5D=predictive_analytics
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Klaviyo-API-Key ${{ secrets.api_key }}
+    param_schema:
+      - name: profile_id
+        type: string
+        description: The Klaviyo profile ID from Find Profile by Email or Find Profile by Phone.
+        required: true
+    response_template: |-
+      {% if response.data.id %}{% assign a = response.data.attributes %}{% capture name %}{{ a.first_name }} {{ a.last_name }}{% endcapture %}{% assign name = name | strip %}{{ name | default: "No name" }}{% if a.email %} <{{ a.email }}>{% endif %} (profile ID {{ response.data.id }}){% if a.phone_number %}
+      Phone: {{ a.phone_number }}{% endif %}{% if a.title %}
+      Title: {{ a.title }}{% endif %}{% if a.organization %}
+      Organization: {{ a.organization }}{% endif %}{% if a.external_id %}
+      External ID: {{ a.external_id }}{% endif %}{% if a.locale %}
+      Locale: {{ a.locale }}{% endif %}{% capture place %}{{ a.location.city }} {{ a.location.region }} {{ a.location.zip }} {{ a.location.country }}{% endcapture %}{% assign place = place | split: " " | join: " " %}{% if place != "" %}
+      Location: {{ place }}{% endif %}{% if a.location.timezone %}
+      Time zone: {{ a.location.timezone }}{% endif %}
+      Created: {{ a.created | slice: 0, 10 }}{% if a.last_event_date %} · last activity {{ a.last_event_date | slice: 0, 10 }}{% endif %}{% assign p = a.predictive_analytics %}{% if p %}{% if p.historic_number_of_orders %}
+      Orders placed: {{ p.historic_number_of_orders }}{% endif %}{% if p.historic_clv %}
+      Lifetime value so far: {{ p.historic_clv }}{% endif %}{% if p.average_order_value %}
+      Average order value: {{ p.average_order_value }}{% endif %}{% if p.average_days_between_orders %}
+      Average days between orders: {{ p.average_days_between_orders }}{% endif %}{% if p.expected_date_of_next_order %}
+      Expected next order: {{ p.expected_date_of_next_order | slice: 0, 10 }}{% endif %}{% endif %}{% assign shown = 0 %}{% for property in a.properties %}{% if shown >= 20 %}{% break %}{% endif %}{% assign value = property[1] %}{% unless value.first %}{% capture text %}{{ value }}{% endcapture %}{% if text != "" %}{% if shown == 0 %}
+      Custom properties:{% endif %}{% assign shown = shown | plus: 1 %}
+      - {{ property[0] }}: {{ text | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 150 }}{% endif %}{% endunless %}{% endfor %}{% else %}Klaviyo returned an unexpected response.{% endif %}
+
+  - id: list_profile_events
+    title: List Profile Events
+    description: List a profile's 20 most recent Klaviyo events, such as emails received or opened, orders placed, and checkouts started. Use this when a customer asks whether an email was sent or to see their recent activity. Use the profile ID from Find Profile by Email or Find Profile by Phone.
+    http_method: GET
+    endpoint_url: 'https://a.klaviyo.com/api/events?filter=equals%28profile_id%2C%22{{ profile_id | strip | url_encode | remove: "%22" | remove: "%5C" }}%22%29&sort=-datetime&page%5Bsize%5D=20&include=metric&fields%5Bmetric%5D=name&fields%5Bevent%5D=datetime,event_properties'
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Klaviyo-API-Key ${{ secrets.api_key }}
+    param_schema:
+      - name: profile_id
+        type: string
+        description: The Klaviyo profile ID from Find Profile by Email or Find Profile by Phone.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for event in response.data limit: 20 %}{% assign metric_id = event.relationships.metric.data.id %}{% assign metric_name = "Unknown event" %}{% for item in response.included %}{% if item.type == "metric" and item.id == metric_id %}{% assign metric_name = item.attributes.name %}{% break %}{% endif %}{% endfor %}{% assign props = event.attributes.event_properties %}- {{ event.attributes.datetime | slice: 0, 16 | replace: "T", " " }} UTC · {{ metric_name }}{% if props["Subject"] %} · "{{ props["Subject"] | truncate: 120 }}"{% endif %}{% if props["Campaign Name"] %} · campaign {{ props["Campaign Name"] | truncate: 80 }}{% endif %}{% if props["$value"] %} · value {{ props["$value"] }}{% endif %}
+      {% else %}No events found for this profile.
+      {% endfor %}{% else %}Klaviyo returned an unexpected response.{% endif %}
+
+  - id: list_profile_memberships
+    title: List Profile Lists and Segments
+    description: List the Klaviyo lists and segments a profile belongs to. Use this when a customer asks which newsletters or audiences they are part of. Use the profile ID from Find Profile by Email or Find Profile by Phone.
+    http_method: GET
+    endpoint_url: https://a.klaviyo.com/api/profiles/{{ profile_id | strip | url_encode }}?include=lists,segments&fields%5Bprofile%5D=email&fields%5Blist%5D=name&fields%5Bsegment%5D=name
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Klaviyo-API-Key ${{ secrets.api_key }}
+    param_schema:
+      - name: profile_id
+        type: string
+        description: The Klaviyo profile ID from Find Profile by Email or Find Profile by Phone.
+        required: true
+    response_template: |-
+      {% if response.data.id %}{% assign lists = response.included | where: "type", "list" %}{% assign segments = response.included | where: "type", "segment" %}Lists ({{ lists.size }}):{% for item in lists limit: 25 %}
+      - {{ item.attributes.name }} (ID {{ item.id }}){% else %}
+      - Not on any list.{% endfor %}
+      Segments ({{ segments.size }}):{% for item in segments limit: 25 %}
+      - {{ item.attributes.name }} (ID {{ item.id }}){% else %}
+      - Not in any segment.{% endfor %}{% else %}Klaviyo returned an unexpected response.{% endif %}
