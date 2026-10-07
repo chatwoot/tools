@@ -1,0 +1,139 @@
+version: 0.0.1
+kind: captain_toolset
+name: GitLab
+author: chatwoot
+category: Engineering & status
+description: Look up issues, incidents, linked merge requests, and releases in a GitLab project.
+
+inputs:
+  host:
+    label: GitLab host, without https://
+    placeholder: gitlab.com
+    required: true
+  project_id:
+    label: Project ID
+    type: number
+    placeholder: '12345678'
+    required: true
+
+secrets:
+  access_token:
+    label: GitLab access token
+    type: password
+    required: true
+
+tools:
+  - id: list_open_incidents
+    title: List Open Incidents
+    description: List the 10 most recently created open incidents in the configured GitLab project. Use this first when a customer reports an outage or a problem that may be a known incident. Returns the issue number that Get Issue needs.
+    http_method: GET
+    endpoint_url: https://${{ inputs.host }}/api/v4/projects/${{ inputs.project_id }}/issues?issue_type=incident&state=opened&confidential=false&scope=all&order_by=created_at&sort=desc&per_page=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    response_template: |-
+      {% if response.first.iid %}{% for issue in response limit: 10 %}- #{{ issue.iid }} {{ issue.title | truncate: 140 }}
+        Severity: {{ issue.severity | default: "UNKNOWN" | downcase }} · opened {{ issue.created_at }} · updated {{ issue.updated_at }}{% if issue.labels.size > 0 %}
+        Labels: {{ issue.labels | join: ", " | truncate: 160 }}{% endif %}
+        {{ issue.web_url }}
+      {% endfor %}{% elsif response.size == 0 %}No open incidents in this project.{% else %}GitLab returned an unexpected response.{% endif %}
+
+  - id: search_issues
+    title: Search Issues
+    description: Search open and closed issues in the configured GitLab project by words in the title or description, most recently updated first. Use this to check whether a bug or request the customer describes is already known. Returns the issue number that Get Issue needs.
+    http_method: GET
+    endpoint_url: https://${{ inputs.host }}/api/v4/projects/${{ inputs.project_id }}/issues?search={{ query | strip | url_encode }}&confidential=false&scope=all&order_by=updated_at&sort=desc&per_page=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: query
+        type: string
+        description: Words to look for in issue titles and descriptions, such as an error message or feature name. Keep it short.
+        required: true
+    response_template: |-
+      {% if response.first.iid %}{% for issue in response limit: 10 %}- #{{ issue.iid }} {{ issue.title | truncate: 140 }}
+        {{ issue.state }}{% if issue.issue_type and issue.issue_type != "issue" %} · {{ issue.issue_type | replace: "_", " " }}{% endif %} · updated {{ issue.updated_at }}{% if issue.labels.size > 0 %} · labels: {{ issue.labels | join: ", " | truncate: 160 }}{% endif %}
+        {{ issue.web_url }}
+      {% endfor %}{% elsif response.size == 0 %}No issues match this search.{% else %}GitLab returned an unexpected response.{% endif %}
+
+  - id: get_issue
+    title: Get Issue
+    description: Get one GitLab issue or incident with its state, labels, milestone, assignees, and description. Use the issue number from Search Issues or List Open Incidents, or one the customer gives.
+    http_method: GET
+    endpoint_url: https://${{ inputs.host }}/api/v4/projects/${{ inputs.project_id }}/issues/{{ issue_iid | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: issue_iid
+        type: integer
+        description: The issue number within the project, shown after the # sign, such as 42.
+        required: true
+    response_template: |-
+      {% if response.iid %}{% if response.confidential %}This issue is confidential. Do not share its details with the customer.
+      {% endif %}#{{ response.iid }} {{ response.title | truncate: 200 }}
+      State: {{ response.state }}{% if response.issue_type %}
+      Type: {{ response.issue_type | replace: "_", " " }}{% endif %}{% if response.issue_type == "incident" and response.severity %}
+      Severity: {{ response.severity | downcase }}{% endif %}
+      Opened: {{ response.created_at }}
+      Updated: {{ response.updated_at }}{% if response.closed_at %}
+      Closed: {{ response.closed_at }}{% endif %}{% if response.labels.size > 0 %}
+      Labels: {{ response.labels | join: ", " | truncate: 200 }}{% endif %}{% if response.milestone.title %}
+      Milestone: {{ response.milestone.title }}{% endif %}{% if response.due_date %}
+      Due: {{ response.due_date }}{% endif %}{% if response.assignees.size > 0 %}
+      Assignees: {% for assignee in response.assignees limit: 5 %}{{ assignee.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}
+      Comments: {{ response.user_notes_count | default: 0 }}
+      Link: {{ response.web_url }}{% if response.description and response.description != "" %}
+      Description: {{ response.description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 800 }}{% endif %}{% else %}GitLab returned an unexpected response.{% endif %}
+
+  - id: list_issue_comments
+    title: List Issue Comments
+    description: Read the 10 most recent comments on a GitLab issue or incident to see the latest progress. Internal notes are left out. Use the issue number from Search Issues, List Open Incidents, or Get Issue.
+    http_method: GET
+    endpoint_url: https://${{ inputs.host }}/api/v4/projects/${{ inputs.project_id }}/issues/{{ issue_iid | url_encode }}/notes?activity_filter=only_comments&order_by=created_at&sort=desc&per_page=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: issue_iid
+        type: integer
+        description: The issue number within the project, shown after the # sign, such as 42.
+        required: true
+    response_template: |-
+      {% if response.first.id %}{% assign shown = 0 %}{% for note in response %}{% unless note.system or note.internal or note.confidential %}{% if shown < 10 %}{% assign shown = shown | plus: 1 %}- {{ note.created_at }} · {{ note.author.name | default: "Unknown author" }}: {{ note.body | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 400 }}
+      {% endif %}{% endunless %}{% endfor %}{% if shown == 0 %}No public comments on this issue.{% endif %}{% elsif response.size == 0 %}No comments on this issue.{% else %}GitLab returned an unexpected response.{% endif %}
+
+  - id: list_issue_merge_requests
+    title: List Issue Merge Requests
+    description: List merge requests related to a GitLab issue and whether each is opened, merged, or closed. Use this when a customer asks if a fix for a known issue is in progress or done.
+    http_method: GET
+    endpoint_url: https://${{ inputs.host }}/api/v4/projects/${{ inputs.project_id }}/issues/{{ issue_iid | url_encode }}/related_merge_requests?per_page=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: issue_iid
+        type: integer
+        description: The issue number within the project, shown after the # sign, such as 42.
+        required: true
+    response_template: |-
+      {% if response.first.iid %}{% for merge_request in response limit: 10 %}- !{{ merge_request.iid }} {{ merge_request.title | truncate: 140 }}
+        {{ merge_request.state }}{% if merge_request.draft %} · draft{% endif %} · target branch {{ merge_request.target_branch }} · updated {{ merge_request.updated_at }}
+        {{ merge_request.web_url }}
+      {% endfor %}{% elsif response.size == 0 %}No merge requests are related to this issue.{% else %}GitLab returned an unexpected response.{% endif %}
+
+  - id: list_releases
+    title: List Releases
+    description: List the 5 latest releases of the configured GitLab project with their release notes. Use this when a customer asks what changed recently or whether a fix has shipped.
+    http_method: GET
+    endpoint_url: https://${{ inputs.host }}/api/v4/projects/${{ inputs.project_id }}/releases?order_by=released_at&sort=desc&per_page=5
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    response_template: |-
+      {% if response.first.tag_name %}{% for release in response limit: 5 %}- {{ release.name | default: release.tag_name | truncate: 120 }} (tag {{ release.tag_name }}){% if release.upcoming_release %} · upcoming{% endif %}
+        Released: {{ release.released_at }}{% if release._links.self %}
+        Link: {{ release._links.self }}{% endif %}{% if release.description and release.description != "" %}
+        Notes: {{ release.description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}{% endif %}
+      {% endfor %}{% elsif response.size == 0 %}No releases found in this project.{% else %}GitLab returned an unexpected response.{% endif %}
