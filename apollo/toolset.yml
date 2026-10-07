@@ -1,0 +1,203 @@
+version: 0.0.1
+kind: captain_toolset
+name: Apollo.io
+author: chatwoot
+category: CRM
+description: Look up saved contacts, accounts, deals, and notes in Apollo.io.
+
+secrets:
+  api_key:
+    label: Apollo API key
+    type: password
+    required: true
+
+tools:
+  - id: find_contacts
+    title: Find Contacts
+    description: Search the contacts saved in your Apollo account by email address, name, job title, or company. Use this first to get the contact ID and account ID the other Apollo tools need.
+    http_method: POST
+    endpoint_url: https://api.apollo.io/api/v1/contacts/search
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: query
+        type: string
+        description: The customer's email address. A name, job title, or company name also works.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"q_keywords":"{{ query | newline_to_br | replace: "<br />", " " | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}","per_page":5,"page":1}
+    response_template: |-
+      {% if response.contacts %}{% for contact in response.contacts limit: 5 %}- {{ contact.name | default: "Unnamed contact" }}{% if contact.email %} <{{ contact.email }}>{% endif %} (contact ID {{ contact.id }}){% if contact.title %}
+        Title: {{ contact.title }}{% endif %}{% if contact.organization_name %}
+        Company: {{ contact.organization_name }}{% if contact.account_id %} (account ID {{ contact.account_id }}){% endif %}{% elsif contact.account_id %}
+        Account ID: {{ contact.account_id }}{% endif %}{% if contact.email_status %}
+        Email status: {{ contact.email_status }}{% endif %}{% if contact.last_activity_date %}
+        Last activity: {{ contact.last_activity_date | slice: 0, 10 }}{% endif %}
+      {% else %}No Apollo contact found for this search.
+      {% endfor %}{% if response.pagination.total_entries > 5 %}Showing 5 of {{ response.pagination.total_entries }} matches. Search with the full email address to narrow the results.{% endif %}{% else %}Apollo returned an unexpected response.{% endif %}
+
+  - id: get_contact
+    title: Get Contact
+    description: Get a saved Apollo contact's details, including title, company, location, phone numbers, lists, and last activity. Use the contact ID from Find Contacts.
+    http_method: GET
+    endpoint_url: https://api.apollo.io/api/v1/contacts/{{ contact_id | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: contact_id
+        type: string
+        description: The Apollo contact ID from Find Contacts.
+        required: true
+    response_template: |-
+      {% if response.contact.id %}{% assign contact = response.contact %}{{ contact.name | default: "Unnamed contact" }} (contact ID {{ contact.id }}){% if contact.email %}
+      Email: {{ contact.email }}{% if contact.email_status %} ({{ contact.email_status }}){% endif %}{% endif %}{% if contact.title %}
+      Title: {{ contact.title }}{% endif %}{% if contact.organization_name %}
+      Company: {{ contact.organization_name }}{% endif %}{% if contact.account_id %}
+      Account ID: {{ contact.account_id }}{% endif %}{% capture location %}{% if contact.city %}, {{ contact.city }}{% endif %}{% if contact.state %}, {{ contact.state }}{% endif %}{% if contact.country %}, {{ contact.country }}{% endif %}{% endcapture %}{% if location != "" %}
+      Location: {{ location | remove_first: ", " }}{% endif %}{% if contact.time_zone %}
+      Time zone: {{ contact.time_zone }}{% endif %}{% if contact.phone_numbers.size > 0 %}
+      Phone: {% for phone in contact.phone_numbers limit: 3 %}{{ phone.sanitized_number | default: phone.raw_number }}{% if phone.type %} ({{ phone.type | replace: "_", " " }}){% endif %}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if contact.linkedin_url %}
+      LinkedIn: {{ contact.linkedin_url }}{% endif %}{% if response.labels.size > 0 %}
+      Lists: {% for label in response.labels limit: 10 %}{{ label.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if contact.source_display_name %}
+      Source: {{ contact.source_display_name }}{% endif %}
+      Created: {{ contact.created_at | slice: 0, 10 }}{% if contact.last_activity_date %}
+      Last activity: {{ contact.last_activity_date | slice: 0, 10 }}{% endif %}{% if contact.email_unsubscribed %}
+      Unsubscribed from email{% endif %}{% else %}Apollo returned an unexpected response.{% endif %}
+
+  - id: find_accounts
+    title: Find Accounts
+    description: Search the accounts (companies) saved in your Apollo account by company name. Use this when you know the company but not the contact. Returns the account ID that Get Account needs.
+    http_method: POST
+    endpoint_url: https://api.apollo.io/api/v1/accounts/search
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: company_name
+        type: string
+        description: All or part of the company name, such as Acme.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"q_organization_name":"{{ company_name | newline_to_br | replace: "<br />", " " | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}","per_page":5,"page":1}
+    response_template: |-
+      {% if response.accounts %}{% for account in response.accounts limit: 5 %}- {{ account.name | default: "Unnamed account" }} (account ID {{ account.id }}){% if account.domain %}
+        Domain: {{ account.domain }}{% endif %}{% if account.phone %}
+        Phone: {{ account.phone }}{% endif %}{% if account.num_contacts %}
+        Saved contacts: {{ account.num_contacts }}{% endif %}{% if account.last_activity_date %}
+        Last activity: {{ account.last_activity_date | slice: 0, 10 }}{% endif %}
+      {% else %}No Apollo account found with this name.
+      {% endfor %}{% else %}Apollo returned an unexpected response.{% endif %}
+
+  - id: get_account
+    title: Get Account
+    description: Get a saved Apollo account's details, including domain, industry, size, location, and last activity. Use the account ID from Find Contacts or Find Accounts.
+    http_method: GET
+    endpoint_url: https://api.apollo.io/api/v1/accounts/{{ account_id | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: account_id
+        type: string
+        description: The Apollo account ID from Find Contacts or Find Accounts.
+        required: true
+    response_template: |-
+      {% if response.account.id %}{% assign account = response.account %}{{ account.name | default: "Unnamed account" }} (account ID {{ account.id }}){% if account.domain %}
+      Domain: {{ account.domain }}{% endif %}{% if account.website_url %}
+      Website: {{ account.website_url }}{% endif %}{% if account.industry %}
+      Industry: {{ account.industry }}{% endif %}{% if account.estimated_num_employees %}
+      Employees: about {{ account.estimated_num_employees }}{% endif %}{% if account.annual_revenue_printed %}
+      Annual revenue: {{ account.annual_revenue_printed }}{% endif %}{% capture location %}{% if account.city %}, {{ account.city }}{% endif %}{% if account.state %}, {{ account.state }}{% endif %}{% if account.country %}, {{ account.country }}{% endif %}{% endcapture %}{% if location != "" %}
+      Location: {{ location | remove_first: ", " }}{% endif %}{% if account.phone %}
+      Phone: {{ account.phone }}{% endif %}{% if account.short_description %}
+      About: {{ account.short_description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}{% if account.num_contacts %}
+      Saved contacts: {{ account.num_contacts }}{% endif %}
+      Created: {{ account.created_at | slice: 0, 10 }}{% if account.last_activity_date %}
+      Last activity: {{ account.last_activity_date | slice: 0, 10 }}{% endif %}{% else %}Apollo returned an unexpected response.{% endif %}
+
+  - id: list_contact_deals
+    title: List Contact Deals
+    description: List up to 10 deals associated with a saved Apollo contact, with amount, status, and close date. Use the contact ID from Find Contacts.
+    http_method: POST
+    endpoint_url: https://api.apollo.io/api/v1/contacts/{{ contact_id | strip | url_encode }}/opportunities
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: contact_id
+        type: string
+        description: The Apollo contact ID from Find Contacts.
+        required: true
+    request_template: '{}'
+    response_template: |-
+      {% if response.opportunities %}{% for deal in response.opportunities limit: 10 %}- {{ deal.name | default: "Unnamed deal" }} (deal ID {{ deal.id }}) · {% if deal.is_won %}won{% elsif deal.is_closed %}closed{% else %}open{% endif %}{% if deal.stage_name %} · {{ deal.stage_name }}{% endif %}{% if deal.amount %}
+        Amount: {{ deal.amount }} {{ deal.currency.iso_code | default: deal.exchange_rate_code }}{% endif %}{% if deal.actual_close_date %}
+        Closed: {{ deal.actual_close_date | slice: 0, 10 }}{% elsif deal.closed_date %}
+        Expected close: {{ deal.closed_date | slice: 0, 10 }}{% endif %}{% if deal.account.name %}
+        Account: {{ deal.account.name }}{% endif %}{% if deal.next_step %}
+        Next step: {{ deal.next_step | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% else %}No deals are associated with this contact.
+      {% endfor %}{% else %}Apollo returned an unexpected response.{% endif %}
+
+  - id: get_deal
+    title: Get Deal
+    description: Get an Apollo deal's details, including amount, status, close date, next step, and the contacts involved. Use a deal ID from List Contact Deals.
+    http_method: GET
+    endpoint_url: https://api.apollo.io/api/v1/opportunities/{{ deal_id | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: deal_id
+        type: string
+        description: The Apollo deal ID from List Contact Deals.
+        required: true
+    response_template: |-
+      {% if response.opportunity.id %}{% assign deal = response.opportunity %}{{ deal.name | default: "Unnamed deal" }} (deal ID {{ deal.id }})
+      Status: {% if deal.is_won %}won{% elsif deal.is_closed %}closed{% else %}open{% endif %}{% if deal.stage_name %}
+      Stage: {{ deal.stage_name }}{% endif %}{% if deal.amount %}
+      Amount: {{ deal.amount }} {{ deal.currency.iso_code | default: deal.exchange_rate_code }}{% endif %}{% if deal.actual_close_date %}
+      Closed: {{ deal.actual_close_date | slice: 0, 10 }}{% elsif deal.closed_date %}
+      Expected close: {{ deal.closed_date | slice: 0, 10 }}{% endif %}{% if deal.forecast_category %}
+      Forecast category: {{ deal.forecast_category }}{% endif %}{% if deal.account.name %}
+      Account: {{ deal.account.name }}{% if deal.account_id %} (account ID {{ deal.account_id }}){% endif %}{% endif %}{% if deal.opportunity_contact_roles.size > 0 %}
+      Contacts: {% for role in deal.opportunity_contact_roles limit: 5 %}{{ role.contact.name }}{% if role.role %} ({{ role.role }}){% endif %}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if deal.description %}
+      Description: {{ deal.description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}{% if deal.next_step %}
+      Next step: {{ deal.next_step | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% if deal.next_step_date %} (by {{ deal.next_step_date | slice: 0, 10 }}){% endif %}{% endif %}{% if deal.closed_lost_reason %}
+      Lost reason: {{ deal.closed_lost_reason | truncate: 200 }}{% endif %}
+      Created: {{ deal.created_at | slice: 0, 10 }}{% if deal.last_activity_date %}
+      Last activity: {{ deal.last_activity_date | slice: 0, 10 }}{% endif %}{% else %}Apollo returned an unexpected response.{% endif %}
+
+  - id: list_contact_notes
+    title: List Contact Notes
+    description: Read the 5 most recent notes the team has written on a saved Apollo contact, such as call summaries or promises made. Use the contact ID from Find Contacts.
+    http_method: GET
+    endpoint_url: https://api.apollo.io/api/v1/notes?contact_id={{ contact_id | strip | url_encode }}&sort_by_field=created_at&sort_direction=desc&limit=5
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-api-key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: contact_id
+        type: string
+        description: The Apollo contact ID from Find Contacts.
+        required: true
+    response_template: |-
+      {% if response.notes %}{% for note in response.notes limit: 5 %}- {{ note.created_at | slice: 0, 10 }}{% if note.pinned_to_top %} · pinned{% endif %}: {{ note.content | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}
+      {% else %}No notes on this contact.
+      {% endfor %}{% else %}Apollo returned an unexpected response.{% endif %}
