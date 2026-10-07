@@ -1,0 +1,162 @@
+version: 0.0.1
+kind: captain_toolset
+name: Ecwid
+author: chatwoot
+category: Commerce
+description: Look up Ecwid orders, shipment tracking, customers, and product stock.
+
+inputs:
+  store_id:
+    label: Ecwid store ID
+    type: number
+    placeholder: '1003'
+    required: true
+
+secrets:
+  secret_token:
+    label: Ecwid secret access token
+    type: password
+    required: true
+
+tools:
+  - id: find_orders_by_email
+    title: Find Orders by Email
+    description: Find a customer's Ecwid orders by the email address used at checkout. Use this first when a customer asks about an order and has not given an order ID; it returns the order ID that Get Order needs.
+    http_method: GET
+    endpoint_url: https://app.ecwid.com/api/v3/${{ inputs.store_id }}/orders?email={{ email | strip | url_encode }}&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_token }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address the customer used at checkout.
+        required: true
+    response_template: |-
+      {% if response.items %}{% for order in response.items limit: 10 %}- Order {{ order.id }} · {{ order.createDate | slice: 0, 10 }} · total {{ order.total }}{% if order.refundedAmount and order.refundedAmount > 0 %} (refunded {{ order.refundedAmount }}){% endif %}
+        Payment: {{ order.paymentStatus | replace: "_", " " | downcase }} · Fulfillment: {{ order.fulfillmentStatus | replace: "_", " " | downcase }}{% if order.shippingOption.shippingMethodName %}
+        Shipping method: {{ order.shippingOption.shippingMethodName }}{% endif %}{% if order.trackingNumber and order.trackingNumber != "" %}
+        Tracking number: {{ order.trackingNumber }}{% endif %}
+        Items: {% for item in order.items limit: 5 %}{{ item.quantity }} × {{ item.name }}{% unless forloop.last %}; {% endunless %}{% endfor %}{% if order.items.size > 5 %}; and {{ order.items.size | minus: 5 }} more{% endif %}
+      {% else %}No orders found for this email address.
+      {% endfor %}{% if response.total > 10 %}Showing 10 of {{ response.total }} orders.{% endif %}{% else %}Ecwid returned an unexpected response.{% endif %}
+
+  - id: search_orders
+    title: Search Orders
+    description: Search Ecwid orders by keyword when the customer's email finds nothing or is unknown. The keyword is matched against order IDs, customer names and addresses, emails, tracking numbers, SKUs, and item names.
+    http_method: GET
+    endpoint_url: https://app.ecwid.com/api/v3/${{ inputs.store_id }}/orders?keywords={{ keywords | strip | url_encode }}&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_token }}
+    param_schema:
+      - name: keywords
+        type: string
+        description: What to search for, such as a customer name, order ID, tracking number, or SKU.
+        required: true
+    response_template: |-
+      {% if response.items %}{% for order in response.items limit: 10 %}- Order {{ order.id }} · {{ order.createDate | slice: 0, 10 }} · total {{ order.total }}{% if order.refundedAmount and order.refundedAmount > 0 %} (refunded {{ order.refundedAmount }}){% endif %}
+        Customer: {{ order.shippingPerson.name | default: order.billingPerson.name | default: "No name" }} <{{ order.email }}>
+        Payment: {{ order.paymentStatus | replace: "_", " " | downcase }} · Fulfillment: {{ order.fulfillmentStatus | replace: "_", " " | downcase }}{% if order.trackingNumber and order.trackingNumber != "" %}
+        Tracking number: {{ order.trackingNumber }}{% endif %}
+        Items: {% for item in order.items limit: 5 %}{{ item.quantity }} × {{ item.name }}{% unless forloop.last %}; {% endunless %}{% endfor %}{% if order.items.size > 5 %}; and {{ order.items.size | minus: 5 }} more{% endif %}
+      {% else %}No orders match this search.
+      {% endfor %}{% if response.total > 10 %}Showing 10 of {{ response.total }} matching orders.{% endif %}{% else %}Ecwid returned an unexpected response.{% endif %}
+
+  - id: get_order
+    title: Get Order
+    description: Get one Ecwid order's full details, including payment and fulfillment status, items, totals, refunds, shipping address, shipping method, and tracking. Use the order ID the customer gave, or one from Find Orders by Email or Search Orders.
+    http_method: GET
+    endpoint_url: 'https://app.ecwid.com/api/v3/${{ inputs.store_id }}/orders/{{ order_id | strip | remove: "#" | url_encode }}'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_token }}
+    param_schema:
+      - name: order_id
+        type: string
+        description: The Ecwid order ID as shown to the customer, such as K8XTQ or SALE-G01ZG, including any prefix or suffix.
+        required: true
+    response_template: |-
+      {% if response.id %}Order {{ response.id }} · placed {{ response.createDate | slice: 0, 10 }}
+      Customer: {{ response.shippingPerson.name | default: response.billingPerson.name | default: "No name" }} <{{ response.email }}>{% if response.customerId %} (customer ID {{ response.customerId }}){% endif %}
+      Payment: {{ response.paymentStatus | replace: "_", " " | downcase }}{% if response.paymentMethod %} via {{ response.paymentMethod }}{% endif %}
+      Fulfillment: {{ response.fulfillmentStatus | replace: "_", " " | downcase }}
+      Total: {{ response.total }} (subtotal {{ response.subtotal }}{% if response.shippingOption.shippingRate %}, shipping {{ response.shippingOption.shippingRate }}{% endif %}{% if response.tax %}, tax {{ response.tax }}{% endif %}{% if response.discount and response.discount > 0 %}, discount {{ response.discount }}{% endif %}){% if response.discountCoupon.code %}
+      Coupon: {{ response.discountCoupon.code }}{% endif %}{% if response.refundedAmount and response.refundedAmount > 0 %}
+      Refunded: {{ response.refundedAmount }}{% for refund in response.refunds limit: 5 %}
+      - {{ refund.date | slice: 0, 10 }}: {{ refund.amount }}{% if refund.reason and refund.reason != "" %} ({{ refund.reason | truncate: 150 }}){% endif %}{% endfor %}{% endif %}
+      Items:{% for item in response.items limit: 15 %}
+      - {{ item.quantity }} × {{ item.name }}{% if item.sku and item.sku != "" %} (SKU {{ item.sku }}){% endif %}{% for option in item.selectedOptions limit: 5 %}, {{ option.name }}: {{ option.value | truncate: 60 }}{% endfor %} · {{ item.price }} each{% endfor %}{% if response.items.size > 15 %}
+      - and {{ response.items.size | minus: 15 }} more items{% endif %}{% if response.shippingOption %}
+      Shipping method: {{ response.shippingOption.shippingMethodName | default: "Not set" }}{% if response.shippingOption.isPickup %} (store pickup){% endif %}{% if response.shippingOption.estimatedTransitTime %} · estimated transit time {{ response.shippingOption.estimatedTransitTime }}{% endif %}{% endif %}{% if response.pickupTime %}
+      Pickup time: {{ response.pickupTime }}{% endif %}{% if response.shippingPerson %}{% capture address %}{{ response.shippingPerson.street | newline_to_br | replace: "<br />", " " | strip_newlines }}, {{ response.shippingPerson.city }}, {{ response.shippingPerson.stateOrProvinceCode }} {{ response.shippingPerson.postalCode }}, {{ response.shippingPerson.countryName | default: response.shippingPerson.countryCode }}{% endcapture %}
+      Ship to: {{ address | split: " " | join: " " }}{% endif %}{% if response.trackingNumber and response.trackingNumber != "" %}
+      Tracking number: {{ response.trackingNumber }}{% endif %}{% for shipment in response.shipments limit: 5 %}{% if shipment.tracking.tracking_number or shipment.tracking.tracking_url %}
+      Shipment: {{ shipment.shippingService.carrierName | default: shipment.shippingService.carrier }} {{ shipment.tracking.tracking_number }}{% if shipment.tracking.tracking_url %} · {{ shipment.tracking.tracking_url }}{% endif %}{% endif %}{% endfor %}{% if response.orderComments and response.orderComments != "" %}
+      Customer comment: {{ response.orderComments | strip_newlines | truncate: 300 }}{% endif %}{% else %}Ecwid returned an unexpected response.{% endif %}
+
+  - id: find_customers
+    title: Find Customers
+    description: Find Ecwid customers by email address or name, with their order count, total spend, customer group, and saved addresses. Use this to confirm who a customer is or to see how long they have been buying from the store.
+    http_method: GET
+    endpoint_url: https://app.ecwid.com/api/v3/${{ inputs.store_id }}/customers?keyword={{ keyword | strip | url_encode }}&limit=5
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_token }}
+    param_schema:
+      - name: keyword
+        type: string
+        description: The customer's email address or name.
+        required: true
+    response_template: |-
+      {% if response.items %}{% for customer in response.items limit: 5 %}- {{ customer.billingPerson.name | default: "No name" }} <{{ customer.email }}> (customer ID {{ customer.id }})
+        Customer since: {{ customer.registered | slice: 0, 10 }} · Orders: {{ customer.totalOrderCount | default: 0 }}{% if customer.stats.salesValue %} · Total spent: {{ customer.stats.salesValue }}{% endif %}{% if customer.stats.lastOrderDate %} · Last order: {{ customer.stats.lastOrderDate | slice: 0, 10 }}{% endif %}{% if customer.customerGroupName and customer.customerGroupName != "" %}
+        Group: {{ customer.customerGroupName }}{% endif %}{% for address in customer.shippingAddresses limit: 2 %}{% if address.addressFormatted %}
+        Address: {{ address.addressFormatted | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}{% endfor %}
+      {% else %}No customers found for this email address or name.
+      {% endfor %}{% if response.total > 5 %}Showing 5 of {{ response.total }} matching customers.{% endif %}{% else %}Ecwid returned an unexpected response.{% endif %}
+
+  - id: search_products
+    title: Search Products
+    description: Search the Ecwid catalog by keyword to check a product's price and whether it is in stock. Returns the product ID that Get Product needs for per-variation stock and options.
+    http_method: GET
+    endpoint_url: https://app.ecwid.com/api/v3/${{ inputs.store_id }}/products?keyword={{ keyword | strip | url_encode }}&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_token }}
+    param_schema:
+      - name: keyword
+        type: string
+        description: A product name or SKU to search for. Add * at the end to also match partial words, such as shirt*.
+        required: true
+    response_template: |-
+      {% if response.items %}{% for product in response.items limit: 10 %}- {{ product.name }} (product ID {{ product.id }}){% if product.sku and product.sku != "" %} · SKU {{ product.sku }}{% endif %}
+        Price: {{ product.defaultDisplayedPriceFormatted | default: product.price }} · {% if product.unlimited %}in stock (unlimited){% elsif product.inStock %}in stock{% if product.quantity %} ({{ product.quantity }} left){% endif %}{% else %}out of stock{% endif %}{% if product.enabled == false %} · hidden from the storefront{% endif %}{% if product.combinations.size > 0 %} · {{ product.combinations.size }} variations{% endif %}{% if product.url %}
+        Link: {{ product.url }}{% endif %}
+      {% else %}No products match this search.
+      {% endfor %}{% if response.total > 10 %}Showing 10 of {{ response.total }} matching products.{% endif %}{% else %}Ecwid returned an unexpected response.{% endif %}
+
+  - id: get_product
+    title: Get Product
+    description: Get one Ecwid product's price, stock, options, description, and the stock and price of each variation, such as a size or color. Use the product ID from Search Products or from an order's items.
+    http_method: GET
+    endpoint_url: https://app.ecwid.com/api/v3/${{ inputs.store_id }}/products/{{ product_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_token }}
+    param_schema:
+      - name: product_id
+        type: integer
+        description: The numeric Ecwid product ID from Search Products.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.name }} (product ID {{ response.id }}){% if response.sku and response.sku != "" %} · SKU {{ response.sku }}{% endif %}
+      Price: {{ response.defaultDisplayedPriceFormatted | default: response.price }}{% if response.compareToPrice %} (was {{ response.compareToPrice }}){% endif %}
+      Stock: {% if response.unlimited %}in stock (unlimited){% elsif response.inStock %}in stock{% if response.quantity %} ({{ response.quantity }} left){% endif %}{% else %}out of stock{% endif %}{% if response.enabled == false %}
+      Hidden from the storefront{% endif %}{% if response.url %}
+      Link: {{ response.url }}{% endif %}{% for option in response.options limit: 8 %}
+      Option {{ option.name }}: {% for choice in option.choices limit: 15 %}{{ choice.text }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endfor %}{% if response.combinations.size > 0 %}
+      Variations:{% for variation in response.combinations limit: 25 %}
+      - {% for option in variation.options %}{{ option.name }}: {{ option.value }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% if variation.sku and variation.sku != "" %} · SKU {{ variation.sku }}{% endif %} · {{ variation.defaultDisplayedPriceFormatted | default: variation.price }} · {% if variation.unlimited %}in stock (unlimited){% elsif variation.quantity and variation.quantity > 0 %}{{ variation.quantity }} in stock{% else %}out of stock{% endif %}{% endfor %}{% if response.combinations.size > 25 %}
+      - and {{ response.combinations.size | minus: 25 }} more variations{% endif %}{% endif %}{% if response.description and response.description != "" %}
+      Description: {{ response.description | replace: "<", " <" | strip_html | split: " " | join: " " | truncate: 600 }}{% endif %}{% else %}Ecwid returned an unexpected response.{% endif %}
