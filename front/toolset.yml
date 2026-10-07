@@ -1,0 +1,164 @@
+version: 0.0.1
+kind: captain_toolset
+name: Front
+author: chatwoot
+category: Others
+description: Look up contacts, conversations, messages, and internal comments in Front, and add comments to conversations.
+
+secrets:
+  api_token:
+    label: Front API token
+    type: password
+    required: true
+
+tools:
+  - id: find_contact_by_email
+    title: Find Contact by Email
+    description: Find a Front contact by email address. Use this first to get the contact ID that List Contact Conversations needs. If this fails, no contact has that email address; try Search Conversations instead.
+    http_method: GET
+    endpoint_url: https://api2.frontapp.com/contacts/alt:email:{{ email | strip | downcase | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.name | default: "No name" }} (contact ID {{ response.id }}){% if response.handles.size > 0 %}
+      Handles: {% for handle in response.handles limit: 10 %}{{ handle.handle }} ({{ handle.source }}){% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if response.description and response.description != "" %}
+      Description: {{ response.description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}{% if response.lists.size > 0 %}
+      Contact lists: {{ response.lists | map: "name" | join: ", " | truncate: 200 }}{% endif %}{% for field in response.custom_fields %}{% if field[1] != nil and field[1] != "" %}
+      {{ field[0] }}: {{ field[1] | truncate: 150 }}{% endif %}{% endfor %}{% else %}Front returned an unexpected response.{% endif %}
+
+  - id: list_contact_conversations
+    title: List Contact Conversations
+    description: List a contact's 10 most recent Front conversations, newest first, with status, assignee, and tags. Use the contact ID from Find Contact by Email.
+    http_method: GET
+    endpoint_url: https://api2.frontapp.com/contacts/{{ contact_id | strip | url_encode }}/conversations?limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: contact_id
+        type: string
+        description: The Front contact ID from Find Contact by Email, starting with crd_.
+        required: true
+    response_template: |-
+      {% if response._results %}{% for conversation in response._results limit: 10 %}- {{ conversation.subject | default: "No subject" | truncate: 120 }} (conversation ID {{ conversation.id }})
+        Status: {{ conversation.status }}{% if conversation.status_category %} ({{ conversation.status_category }}){% endif %} · Assigned to: {% if conversation.assignee %}{{ conversation.assignee.first_name }} {{ conversation.assignee.last_name }}{% else %}nobody{% endif %}{% if conversation.created_at %}
+        Created: {{ conversation.created_at | floor | date: "%Y-%m-%d" }}{% endif %}{% if conversation.waiting_since %} · Waiting for a reply since: {{ conversation.waiting_since | floor | date: "%Y-%m-%d" }}{% endif %}{% if conversation.tags.size > 0 %}
+        Tags: {{ conversation.tags | map: "name" | join: ", " | truncate: 150 }}{% endif %}
+      {% else %}No conversations found for this contact.
+      {% endfor %}{% else %}Front returned an unexpected response.{% endif %}
+
+  - id: search_conversations
+    title: Search Conversations
+    description: Search Front conversations by keyword or Front search filters, most recently active first. Use this to find a conversation by topic, or by customer when Find Contact by Email fails, for example "from:jane@example.com" or "refund is:open". Returns up to 10 conversations.
+    http_method: GET
+    endpoint_url: 'https://api2.frontapp.com/conversations/search/{{ query | strip | url_encode | replace: "+", "%20" }}?limit=10'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: query
+        type: string
+        description: 'Search text, optionally with Front filters such as from:, to:, recipient: (each followed by an email address), is:open, is:archived, or tag: followed by a tag ID.'
+        required: true
+    response_template: |-
+      {% if response._results %}{% if response._total and response._total > 10 %}Showing 10 of {{ response._total }} matching conversations.
+      {% endif %}{% for conversation in response._results limit: 10 %}- {{ conversation.subject | default: "No subject" | truncate: 120 }} (conversation ID {{ conversation.id }})
+        Status: {{ conversation.status }}{% if conversation.status_category %} ({{ conversation.status_category }}){% endif %} · Assigned to: {% if conversation.assignee %}{{ conversation.assignee.first_name }} {{ conversation.assignee.last_name }}{% else %}nobody{% endif %}{% if conversation.recipient.handle %}
+        Contact: {{ conversation.recipient.name | default: conversation.recipient.handle }} <{{ conversation.recipient.handle }}>{% endif %}{% if conversation.created_at %}
+        Created: {{ conversation.created_at | floor | date: "%Y-%m-%d" }}{% endif %}{% if conversation.tags.size > 0 %}
+        Tags: {{ conversation.tags | map: "name" | join: ", " | truncate: 150 }}{% endif %}
+      {% else %}No conversations match this search.
+      {% endfor %}{% else %}Front returned an unexpected response.{% endif %}
+
+  - id: get_conversation
+    title: Get Conversation
+    description: Get a Front conversation's details, including status, assignee, main contact, tags, and custom fields. Use a conversation ID from List Contact Conversations or Search Conversations. Call List Conversation Messages to read what was said.
+    http_method: GET
+    endpoint_url: https://api2.frontapp.com/conversations/{{ conversation_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: conversation_id
+        type: string
+        description: The Front conversation ID, starting with cnv_.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.subject | default: "No subject" | truncate: 200 }} (conversation ID {{ response.id }})
+      Type: {{ response.type | default: "conversation" }} · Status: {{ response.status }}{% if response.status_category %} ({{ response.status_category }}){% endif %}
+      Assigned to: {% if response.assignee %}{{ response.assignee.first_name }} {{ response.assignee.last_name }} <{{ response.assignee.email }}>{% else %}nobody{% endif %}{% if response.recipient.handle %}
+      Contact: {{ response.recipient.name | default: response.recipient.handle }} <{{ response.recipient.handle }}>{% endif %}{% if response.created_at %}
+      Created: {{ response.created_at | floor | date: "%Y-%m-%d" }}{% endif %}{% if response.updated_at %}
+      Updated: {{ response.updated_at | floor | date: "%Y-%m-%d" }}{% endif %}{% if response.waiting_since %}
+      Waiting for a reply since: {{ response.waiting_since | floor | date: "%Y-%m-%d" }}{% endif %}{% if response.tags.size > 0 %}
+      Tags: {{ response.tags | map: "name" | join: ", " | truncate: 200 }}{% endif %}{% if response.ticket_ids.size > 0 %}
+      Ticket IDs: {{ response.ticket_ids | join: ", " | truncate: 100 }}{% endif %}{% for link in response.links limit: 5 %}
+      Linked: {{ link.name | default: link.type }} {{ link.external_url }}{% endfor %}{% for field in response.custom_fields %}{% if field[1] != nil and field[1] != "" %}
+      {{ field[0] }}: {{ field[1] | truncate: 150 }}{% endif %}{% endfor %}{% else %}Front returned an unexpected response.{% endif %}
+
+  - id: list_conversation_messages
+    title: List Conversation Messages
+    description: Read the 10 most recent messages in a Front conversation, newest first, to see what the customer and the team already said. Use a conversation ID from List Contact Conversations or Search Conversations.
+    http_method: GET
+    endpoint_url: https://api2.frontapp.com/conversations/{{ conversation_id | strip | url_encode }}/messages?limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: conversation_id
+        type: string
+        description: The Front conversation ID, starting with cnv_.
+        required: true
+    response_template: |-
+      {% if response._results %}{% for message in response._results limit: 10 %}{% assign sender = "" %}{% for recipient in message.recipients %}{% if recipient.role == "from" %}{% assign sender = recipient.name | default: recipient.handle %}{% endif %}{% endfor %}{% assign text = message.text | default: message.body | default: message.blurb | default: "" | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}- {{ message.created_at | floor | date: "%Y-%m-%d" }} · {% if message.is_inbound %}received{% else %}sent{% endif %} · {{ message.type }}{% if message.draft_mode %} · unsent draft{% endif %}{% if message.author %} · by {{ message.author.first_name }} {{ message.author.last_name }}{% elsif sender != "" %} · from {{ sender }}{% endif %}{% if message.subject and message.subject != "" %}
+        Subject: {{ message.subject | truncate: 120 }}{% endif %}
+        {{ text | default: "(No text)" | truncate: 600 }}
+      {% else %}This conversation has no messages.
+      {% endfor %}{% else %}Front returned an unexpected response.{% endif %}
+
+  - id: list_conversation_comments
+    title: List Conversation Comments
+    description: Read the 10 most recent internal comments teammates left on a Front conversation, newest first. Comments are internal and must not be shared with the customer. Use a conversation ID from List Contact Conversations or Search Conversations.
+    http_method: GET
+    endpoint_url: https://api2.frontapp.com/conversations/{{ conversation_id | strip | url_encode }}/comments
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: conversation_id
+        type: string
+        description: The Front conversation ID, starting with cnv_.
+        required: true
+    response_template: |-
+      {% if response._results %}{% for comment in response._results limit: 10 %}- {% if comment.posted_at %}{{ comment.posted_at | floor | date: "%Y-%m-%d" }} · {% endif %}{% if comment.author %}{{ comment.author.first_name }} {{ comment.author.last_name }}{% else %}Unknown author{% endif %}{% if comment.is_pinned %} · pinned{% endif %}
+        {{ comment.body | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}
+      {% else %}This conversation has no comments.
+      {% endfor %}{% else %}Front returned an unexpected response.{% endif %}
+
+  - id: add_comment
+    title: Add Comment
+    description: Add an internal comment to a Front conversation, for example a summary of this chat or a follow-up request for the assignee. Comments are visible to teammates only and are never sent to the customer. Only add a comment when the conversation needs one.
+    http_method: POST
+    endpoint_url: https://api2.frontapp.com/conversations/{{ conversation_id | strip | url_encode }}/comments
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: conversation_id
+        type: string
+        description: The Front conversation ID, starting with cnv_.
+        required: true
+      - name: content
+        type: string
+        description: The comment text. Plain text or Markdown.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% capture escaped_newline %}\\n{% endcapture %}{"body":"{{ content | strip | replace: bs, escaped_bs | replace: '"', escaped_quote | newline_to_br | strip_newlines | replace: "<br />", escaped_newline }}"}
+    response_template: |-
+      {% if response.id %}Added the comment to the conversation.{% else %}Front returned an unexpected response.{% endif %}
