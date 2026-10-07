@@ -1,0 +1,141 @@
+version: 0.0.1
+kind: captain_toolset
+name: FireHydrant
+author: chatwoot
+category: Engineering & status
+description: Check active and recent FireHydrant incidents, their milestones and updates, and impacted services.
+
+secrets:
+  api_key:
+    label: FireHydrant API key
+    type: password
+    required: true
+
+tools:
+  - id: list_active_incidents
+    title: List Active Incidents
+    description: Find FireHydrant incidents that are still active among the 20 most recent. Use this first when a customer reports that something is down or broken. Returns incident IDs for the other FireHydrant tools.
+    http_method: GET
+    endpoint_url: https://api.firehydrant.io/v1/incidents?per_page=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.data %}{% assign shown = 0 %}{% for incident in response.data %}{% if incident.active %}{% assign shown = shown | plus: 1 %}- {% if incident.number %}#{{ incident.number }} {% endif %}{{ incident.name | truncate: 100 }} (incident ID {{ incident.id }}): {{ incident.current_milestone | default: "unknown" | replace: "_", " " }}{% if incident.severity %} · severity {{ incident.severity }}{% endif %} · started {{ incident.started_at | default: incident.created_at }}{% if incident.services.size > 0 %}
+        Services: {% for service in incident.services limit: 5 %}{{ service.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if incident.customer_impact_summary and incident.customer_impact_summary != "" %}
+        Customer impact: {{ incident.customer_impact_summary | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% endif %}{% endfor %}{% if shown == 0 %}No active incidents among the {{ response.data.size }} most recent incidents.{% endif %}{% else %}FireHydrant returned an unexpected response.{% endif %}
+
+  - id: list_recent_incidents
+    title: List Recent Incidents
+    description: List 10 recent FireHydrant incidents, including resolved ones. Use this when a customer asks about a past outage or whether a recent problem was a known incident.
+    http_method: GET
+    endpoint_url: https://api.firehydrant.io/v1/incidents?per_page=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.data %}{% for incident in response.data %}- {% if incident.number %}#{{ incident.number }} {% endif %}{{ incident.name | truncate: 100 }} (incident ID {{ incident.id }}): {{ incident.current_milestone | default: "unknown" | replace: "_", " " }}{% if incident.active %}, active{% endif %}{% if incident.severity %} · severity {{ incident.severity }}{% endif %} · started {{ incident.started_at | default: incident.created_at }}
+      {% else %}No incidents found.
+      {% endfor %}{% else %}FireHydrant returned an unexpected response.{% endif %}
+
+  - id: search_incidents
+    title: Search Incidents
+    description: Search FireHydrant incidents by keyword in their name, summary, and description, and get up to 10 matches. Use this when a customer describes a problem and you need to find the matching incident.
+    http_method: GET
+    endpoint_url: https://api.firehydrant.io/v1/incidents?query={{ query | strip | url_encode }}&per_page=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: query
+        type: string
+        description: Keywords to search for, such as checkout or login errors.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for incident in response.data %}- {% if incident.number %}#{{ incident.number }} {% endif %}{{ incident.name | truncate: 100 }} (incident ID {{ incident.id }}): {{ incident.current_milestone | default: "unknown" | replace: "_", " " }}{% if incident.active %}, active{% endif %}{% if incident.severity %} · severity {{ incident.severity }}{% endif %} · started {{ incident.started_at | default: incident.created_at }}
+      {% else %}No incidents matched this search.
+      {% endfor %}{% else %}FireHydrant returned an unexpected response.{% endif %}
+
+  - id: get_incident
+    title: Get Incident
+    description: Read one FireHydrant incident, including its current milestone, severity, summary, customer impact, impacted services, and latest update. Use an incident ID from the FireHydrant list or search tools.
+    http_method: GET
+    endpoint_url: https://api.firehydrant.io/v1/incidents/{{ incident_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: incident_id
+        type: string
+        description: The FireHydrant incident ID, a UUID from the list or search tools.
+        required: true
+    response_template: |-
+      {% if response.id and response.name %}{% if response.number %}#{{ response.number }} {% endif %}{{ response.name | truncate: 150 }} (incident ID {{ response.id }})
+      Current milestone: {{ response.current_milestone | default: "unknown" | replace: "_", " " }}{% if response.active %} (active){% elsif response.active == false %} (not active){% endif %}{% if response.severity %}
+      Severity: {{ response.severity }}{% endif %}{% if response.priority %}
+      Priority: {{ response.priority }}{% endif %}
+      Started: {{ response.started_at | default: response.created_at }}{% if response.summary and response.summary != "" %}
+      Summary: {{ response.summary | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}{% endif %}{% if response.customer_impact_summary and response.customer_impact_summary != "" %}
+      Customer impact: {{ response.customer_impact_summary | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}{% endif %}{% if response.description and response.description != "" %}
+      Description: {{ response.description | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}{% endif %}{% if response.services.size > 0 %}
+      Services: {% for service in response.services limit: 10 %}{{ service.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if response.functionalities.size > 0 %}
+      Functionalities: {% for functionality in response.functionalities limit: 10 %}{{ functionality.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if response.environments.size > 0 %}
+      Environments: {% for environment in response.environments limit: 10 %}{{ environment.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if response.last_note.body and response.last_note.body != "" %}
+      Latest update ({{ response.last_note.created_at }}): {{ response.last_note.body | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}{% endif %}{% if response.incident_url %}
+      Open in FireHydrant: {{ response.incident_url }}{% endif %}{% else %}FireHydrant returned an unexpected response.{% endif %}
+
+  - id: list_incident_milestones
+    title: List Incident Milestones
+    description: Read when a FireHydrant incident reached each milestone, such as started, acknowledged, mitigated, and resolved. Use this for the timeline of an incident. Use an incident ID from the list or search tools.
+    http_method: GET
+    endpoint_url: https://api.firehydrant.io/v1/incidents/{{ incident_id | strip | url_encode }}/milestones
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: incident_id
+        type: string
+        description: The FireHydrant incident ID, a UUID from the list or search tools.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for milestone in response.data limit: 25 %}- {{ milestone.type | replace: "_", " " }}: {{ milestone.occurred_at }}{% if milestone.duration %} (time in this milestone: {{ milestone.duration }}, ISO 8601 duration){% else %} (current milestone){% endif %}
+      {% else %}No milestones recorded for this incident.
+      {% endfor %}{% else %}FireHydrant returned an unexpected response.{% endif %}
+
+  - id: list_incident_notes
+    title: List Incident Notes
+    description: Read up to 20 notes posted on a FireHydrant incident's timeline. Notes marked open to public were published for customers; treat the others as internal. Use an incident ID from the list or search tools.
+    http_method: GET
+    endpoint_url: https://api.firehydrant.io/v1/incidents/{{ incident_id | strip | url_encode }}/events?types=note&per_page=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: incident_id
+        type: string
+        description: The FireHydrant incident ID, a UUID from the list or search tools.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for event in response.data %}- {{ event.occurred_at }}{% if event.visibility %} ({{ event.visibility | replace: "_", " " }}){% endif %}{% if event.author.name %} · {{ event.author.name }}{% endif %}: {% if event.data.body and event.data.body != "" %}{{ event.data.body | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 400 }}{% else %}{{ event.type | default: "event" | replace: "_", " " }} with no text{% endif %}
+      {% else %}No notes found for this incident.
+      {% endfor %}{% if response.pagination.count > 20 %}Showing 20 of {{ response.pagination.count }} notes.{% endif %}{% else %}FireHydrant returned an unexpected response.{% endif %}
+
+  - id: find_services
+    title: Find Services
+    description: Search the FireHydrant service catalog by name or description and see whether each service has active incidents. Use this when a customer asks whether a specific product or service is affected right now.
+    http_method: GET
+    endpoint_url: https://api.firehydrant.io/v1/services?query={{ query | strip | url_encode }}&per_page=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: query
+        type: string
+        description: The service name or keywords to search for, such as payments or API.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for service in response.data %}- {{ service.name | truncate: 100 }} (service ID {{ service.id }}): {% if service.active_incidents.size > 0 %}{{ service.active_incidents.size }} active incident{% if service.active_incidents.size > 1 %}s{% endif %} (incident IDs: {{ service.active_incidents | join: ", " | truncate: 200 }}){% else %}no active incidents{% endif %}{% if service.description and service.description != "" %}
+        {{ service.description | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% else %}No services matched this search.
+      {% endfor %}{% else %}FireHydrant returned an unexpected response.{% endif %}
