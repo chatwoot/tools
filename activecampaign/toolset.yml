@@ -1,0 +1,188 @@
+version: 0.0.1
+kind: captain_toolset
+name: ActiveCampaign
+author: chatwoot
+category: Marketing
+description: Look up ActiveCampaign contacts, their list subscriptions, activity, bounces, and notes, add notes, and unsubscribe contacts on request.
+
+inputs:
+  api_host:
+    label: API URL host (from Settings > Developer, without https://)
+    type: string
+    placeholder: youraccountname.api-us1.com
+    required: true
+
+secrets:
+  api_key:
+    label: ActiveCampaign API key
+    type: password
+    required: true
+
+tools:
+  - id: find_contact
+    title: Find Contact
+    description: Find an ActiveCampaign contact by exact email address. Use this first to get the contact ID the other ActiveCampaign tools need, and to see whether emails to the contact have bounced.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/api/3/contacts?email={{ email | strip | url_encode }}&limit=5
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Api-Token
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The contact's email address.
+        required: true
+    response_template: |-
+      {% if response.contacts %}{% for contact in response.contacts limit: 5 %}{% capture name %}{{ contact.firstName }} {{ contact.lastName }}{% endcapture %}{% assign name = name | strip %}{{ name | default: "No name" }} <{{ contact.email }}>
+      Contact ID: {{ contact.id }}{% if contact.phone and contact.phone != "" %}
+      Phone: {{ contact.phone }}{% endif %}
+      Created: {{ contact.cdate | slice: 0, 10 }}{% if contact.udate %} · Last updated: {{ contact.udate | slice: 0, 10 }}{% endif %}
+      Hard bounces: {{ contact.bounced_hard | default: "0" }} · Soft bounces: {{ contact.bounced_soft | default: "0" }}{% assign bounced_on = contact.bounced_date | default: "" | slice: 0, 10 %}{% if bounced_on != "" and bounced_on != "0000-00-00" %} · Last bounce: {{ bounced_on }}{% endif %}
+      {% unless forloop.last %}
+      {% endunless %}{% else %}No ActiveCampaign contact found with this email address.{% endfor %}{% else %}ActiveCampaign returned an unexpected response.{% endif %}
+
+  - id: list_contact_lists
+    title: List Contact Lists
+    description: Check which ActiveCampaign lists a contact is on and their status on each one, including when and why they unsubscribed or bounced. Use the contact ID from Find Contact. Use List Lists to turn list IDs into names.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/api/3/contacts/{{ contact_id | strip | url_encode }}/contactLists
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Api-Token
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: contact_id
+        type: string
+        description: The numeric ActiveCampaign contact ID from Find Contact.
+        required: true
+    response_template: |-
+      {% if response.contactLists %}{% for membership in response.contactLists limit: 30 %}{% assign status = membership.status | append: "" %}- List ID {{ membership.list }}: {% case status %}{% when "0" %}unconfirmed{% when "1" %}active{% when "2" %}unsubscribed{% when "3" %}bounced{% else %}status {{ status }}{% endcase %}{% if membership.sdate %} · subscribed {{ membership.sdate | slice: 0, 10 }}{% endif %}{% if status == "2" or status == "3" %}{% if membership.udate %} · {% if status == "2" %}unsubscribed{% else %}bounced{% endif %} {{ membership.udate | slice: 0, 10 }}{% endif %}{% endif %}{% if membership.unsubreason and membership.unsubreason != "" %}
+        Unsubscribe reason: {{ membership.unsubreason | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% else %}This contact is not on any list.
+      {% endfor %}{% else %}ActiveCampaign returned an unexpected response.{% endif %}
+
+  - id: list_lists
+    title: List Lists
+    description: List the email lists in the ActiveCampaign account with their IDs, names, and active subscriber counts, up to 100. Use this to turn the list IDs from List Contact Lists into names.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/api/3/lists?limit=100&offset=0
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Api-Token
+      key: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.lists %}{% for list in response.lists limit: 100 %}- {{ list.name }} (list ID {{ list.id }}): {{ list.active_subscribers | default: "0" }} active subscribers
+      {% else %}No lists found.
+      {% endfor %}{% assign total = response.meta.total | plus: 0 %}{% if total > 100 %}Showing 100 of {{ total }}.{% endif %}{% else %}ActiveCampaign returned an unexpected response.{% endif %}
+
+  - id: list_contact_activity
+    title: List Contact Activity
+    description: Check a contact's 20 most recent ActiveCampaign events, newest first, such as campaign emails sent to them, link clicks, replies, list subscribes and unsubscribes, and automations entered. Email opens are not included. Use the contact ID from Find Contact.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/api/3/activities?contact={{ contact_id | strip | url_encode }}&orders%5Btstamp%5D=desc&limit=20
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Api-Token
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: contact_id
+        type: string
+        description: The numeric ActiveCampaign contact ID from Find Contact.
+        required: true
+    response_template: |-
+      {% if response.activities %}{% for activity in response.activities limit: 20 %}- {{ activity.tstamp | slice: 0, 16 | replace: "T", " " }} · {% case activity.reference_type %}{% when "Log" %}Campaign email sent{% when "LinkData" %}Clicked a link in a campaign email{% when "MppLinkData" %}Campaign link fetched by a mail privacy proxy{% when "Forward" %}Forwarded a campaign{% when "Reply" %}Replied to a campaign{% when "Update" %}Updated their details{% when "SubscriberEmail" %}One-to-one email sent{% when "SubscriberList" %}List {{ activity.reference_action | default: "change" }}{% when "SubscriberSeries" %}Automation {{ activity.reference_action | default: "event" }}{% when "SeriesBlock" %}Reached an automation goal{% when "Note" %}Note added{% when "TrackingLog" %}{% if activity.reference_action == "__pagevisit" %}Visited a tracked page{% else %}Tracked event {{ activity.reference_action }}{% endif %}{% when "SmsLog" %}SMS sent{% when "SmsReply" %}SMS reply{% when "SmsUnsub" %}SMS opt-out{% else %}{{ activity.reference_type }}{% if activity.reference_action and activity.reference_action != "" %} {{ activity.reference_action }}{% endif %}{% endcase %} ({{ activity.reference.type | default: activity.referenceModelName }} ID {{ activity.reference_id }})
+      {% else %}No activity found for this contact.
+      {% endfor %}{% assign total = response.meta.total | plus: 0 %}{% if total > 20 %}Showing the 20 most recent of {{ total }}.{% endif %}{% else %}ActiveCampaign returned an unexpected response.{% endif %}
+
+  - id: list_contact_bounces
+    title: List Contact Bounces
+    description: Check the bounces ActiveCampaign recorded for a contact, with the date, campaign, and error. Use this when a customer says they are not receiving emails or Find Contact shows bounces. Use the contact ID from Find Contact.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/api/3/contacts/{{ contact_id | strip | url_encode }}/bounceLogs
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Api-Token
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: contact_id
+        type: string
+        description: The numeric ActiveCampaign contact ID from Find Contact.
+        required: true
+    response_template: |-
+      {% if response.bounceLogs %}{% assign bounces = response.bounceLogs | sort: "tstamp" | reverse %}{% for bounce in bounces limit: 10 %}- {{ bounce.tstamp | slice: 0, 16 | replace: "T", " " }} · {{ bounce.email }} · campaign ID {{ bounce.campaignid }} · bounce code ID {{ bounce.codeid }}{% if bounce.error and bounce.error != "" %}
+        Error: {{ bounce.error | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% else %}No bounces recorded for this contact.
+      {% endfor %}{% if response.bounceLogs.size > 10 %}Showing the 10 most recent of {{ response.bounceLogs.size }}.{% endif %}{% else %}ActiveCampaign returned an unexpected response.{% endif %}
+
+  - id: list_contact_notes
+    title: List Contact Notes
+    description: Read the 5 most recent notes the team left on an ActiveCampaign contact, such as call summaries or promises made. Use the contact ID from Find Contact.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/api/3/contacts/{{ contact_id | strip | url_encode }}/notes
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Api-Token
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: contact_id
+        type: string
+        description: The numeric ActiveCampaign contact ID from Find Contact.
+        required: true
+    response_template: |-
+      {% if response.notes %}{% assign notes = response.notes | sort: "cdate" | reverse %}{% for note in notes limit: 5 %}- {{ note.cdate | slice: 0, 10 }}{% if note.is_draft == "1" %} (draft){% endif %}: {{ note.note | newline_to_br | replace: "<br />", " " | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 400 }}
+      {% else %}No notes on this contact.
+      {% endfor %}{% else %}ActiveCampaign returned an unexpected response.{% endif %}
+
+  - id: add_note
+    title: Add Note
+    description: Add a note to an ActiveCampaign contact, for example a summary of this conversation or a follow-up request for the account owner. Only add a note when the conversation needs one. Use the contact ID from Find Contact.
+    http_method: POST
+    endpoint_url: https://${{ inputs.api_host }}/api/3/notes
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Api-Token
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: contact_id
+        type: integer
+        description: The numeric ActiveCampaign contact ID from Find Contact.
+        required: true
+      - name: note
+        type: string
+        description: The note text. Plain text only.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% capture escaped_newline %}\\n{% endcapture %}{"note":{"note":"{{ note | strip | truncate: 5000 | replace: bs, escaped_bs | replace: '"', escaped_quote | replace: "	", " " | newline_to_br | strip_newlines | replace: "<br />", escaped_newline }}","relid":{{ contact_id | plus: 0 }},"reltype":"Subscriber"}}
+    response_template: |-
+      {% if response.note.id %}Added the note to the ActiveCampaign contact.{% else %}ActiveCampaign returned an unexpected response.{% endif %}
+
+  - id: unsubscribe_from_list
+    title: Unsubscribe from List
+    description: Unsubscribe a contact from one ActiveCampaign list. Only use this when the customer clearly asks to stop receiving that list's emails. Use the contact ID from Find Contact and a list ID from List Contact Lists, and repeat for each list the customer wants to leave.
+    http_method: POST
+    endpoint_url: https://${{ inputs.api_host }}/api/3/contactLists
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Api-Token
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: contact_id
+        type: integer
+        description: The numeric ActiveCampaign contact ID from Find Contact.
+        required: true
+      - name: list_id
+        type: integer
+        description: The numeric ActiveCampaign list ID from List Contact Lists.
+        required: true
+    request_template: '{"contactList":{"list":{{ list_id | plus: 0 }},"contact":{{ contact_id | plus: 0 }},"status":2}}'
+    response_template: |-
+      {% assign status = response.contactList.status | append: "" %}{% if status == "2" %}The contact was unsubscribed from list {{ response.contactList.list }}.{% elsif response.contactList %}The list status is now {{ status }}, not unsubscribed.{% else %}ActiveCampaign returned an unexpected response.{% endif %}
