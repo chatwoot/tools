@@ -1,0 +1,143 @@
+version: 0.0.1
+kind: captain_toolset
+name: UptimeRobot
+author: chatwoot
+category: Engineering & status
+description: Check UptimeRobot monitors and downtime incidents.
+
+secrets:
+  api_key:
+    label: UptimeRobot API key
+    type: password
+    required: true
+
+tools:
+  - id: list_down_monitors
+    title: List Down Monitors
+    description: List UptimeRobot monitors that are down or look down right now. Use this first when a customer reports that a site or service is unreachable.
+    http_method: GET
+    endpoint_url: https://api.uptimerobot.com/v3/monitors?status=DOWN,LOOKS_DOWN&limit=50
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.data %}{% for monitor in response.data limit: 50 %}- {{ monitor.friendlyName | truncate: 120 }} (monitor ID {{ monitor.id }}): {{ monitor.status | replace: "_", " " | downcase }}{% if monitor.url and monitor.url != "" %} · {{ monitor.url | truncate: 120 }}{% endif %}{% if monitor.lastIncident %}
+        Last incident {{ monitor.lastIncident.id }}: {{ monitor.lastIncident.reason | default: "no reason given" | truncate: 160 }}, started {{ monitor.lastIncident.startedAt }}{% endif %}
+      {% else %}No monitors are down right now.
+      {% endfor %}{% if response.nextLink %}More monitors are down than the 50 shown.{% endif %}{% else %}UptimeRobot returned an unexpected response.{% endif %}
+
+  - id: search_monitors
+    title: Search Monitors
+    description: Find UptimeRobot monitors by name and see their current status. Use this to check a specific site or service the customer mentions, and to get the monitor ID for Get Monitor and List Monitor Incidents.
+    http_method: GET
+    endpoint_url: https://api.uptimerobot.com/v3/monitors?name={{ name | strip | url_encode }}&limit=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: name
+        type: string
+        description: Part of the monitor's name, such as API or checkout. Matching ignores case.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for monitor in response.data limit: 20 %}- {{ monitor.friendlyName | truncate: 120 }} (monitor ID {{ monitor.id }}): {{ monitor.status | replace: "_", " " | downcase }}{% if monitor.url and monitor.url != "" %} · {{ monitor.url | truncate: 120 }}{% endif %}
+      {% else %}No monitors match this name.
+      {% endfor %}{% if response.nextLink %}More monitors match than the 20 shown. Use a more specific name.{% endif %}{% else %}UptimeRobot returned an unexpected response.{% endif %}
+
+  - id: get_monitor
+    title: Get Monitor
+    description: Get one UptimeRobot monitor's current status, check type, tags, and last incident. Use the monitor ID from List Down Monitors or Search Monitors.
+    http_method: GET
+    endpoint_url: https://api.uptimerobot.com/v3/monitors/{{ monitor_id | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: monitor_id
+        type: integer
+        description: The numeric UptimeRobot monitor ID from List Down Monitors or Search Monitors.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.friendlyName | truncate: 200 }} (monitor ID {{ response.id }})
+      Status: {{ response.status | replace: "_", " " | downcase }}
+      Type: {{ response.type | replace: "_", " " | downcase }}{% if response.url and response.url != "" %}
+      Target: {{ response.url | truncate: 200 }}{% endif %}
+      Check interval: every {{ response.interval }} seconds{% if response.tags.size > 0 %}
+      Tags: {% for tag in response.tags limit: 15 %}{{ tag.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if response.lastIncident %}
+      Last incident {{ response.lastIncident.id }}: {{ response.lastIncident.status | replace: "_", " " | downcase }}, {{ response.lastIncident.reason | default: "no reason given" | truncate: 200 }}, started {{ response.lastIncident.startedAt }}{% else %}
+      No incidents recorded for this monitor.{% endif %}{% else %}UptimeRobot returned an unexpected response.{% endif %}
+
+  - id: list_open_incidents
+    title: List Open Incidents
+    description: List UptimeRobot incidents that are ongoing right now, with the affected monitor and the reason. Use this when a customer reports a problem that may be a known outage. Returns the incident ID that Get Incident needs.
+    http_method: GET
+    endpoint_url: https://api.uptimerobot.com/v3/incidents?status=open
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.data %}{% for incident in response.data limit: 20 %}- {{ incident.monitor.friendlyName | default: "Unnamed monitor" | truncate: 120 }} (monitor ID {{ incident.monitor.id }}): {{ incident.reason | default: "no reason given" | truncate: 160 }}
+        Incident ID: {{ incident.id }} · {{ incident.status | replace: "_", " " | downcase }} · started {{ incident.startedAt }}
+      {% else %}No incidents are open right now.
+      {% endfor %}{% if response.data.size > 20 %}Showing 20 of the open incidents.{% endif %}{% else %}UptimeRobot returned an unexpected response.{% endif %}
+
+  - id: list_recent_incidents
+    title: List Recent Incidents
+    description: List UptimeRobot incidents across all monitors that started on or after a date, including resolved ones. Use this when a customer asks about a past outage. Returns the incident ID that Get Incident needs.
+    http_method: GET
+    endpoint_url: https://api.uptimerobot.com/v3/incidents?started_after={{ started_after | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: started_after
+        type: string
+        description: Only incidents that started after this ISO 8601 time are returned, such as 2026-01-01T00:00:00Z. Use a date a few days before the time the customer mentions.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for incident in response.data limit: 20 %}- {{ incident.monitor.friendlyName | default: "Unnamed monitor" | truncate: 120 }} (monitor ID {{ incident.monitor.id }}): {{ incident.reason | default: "no reason given" | truncate: 160 }}
+        Incident ID: {{ incident.id }} · {{ incident.status | replace: "_", " " | downcase }} · started {{ incident.startedAt }}{% if incident.resolvedAt %} · resolved {{ incident.resolvedAt }}{% endif %}
+      {% else %}No incidents found after this date.
+      {% endfor %}{% if response.data.size > 20 %}Showing 20 incidents. Use a later date to narrow the list.{% endif %}{% else %}UptimeRobot returned an unexpected response.{% endif %}
+
+  - id: list_monitor_incidents
+    title: List Monitor Incidents
+    description: List the incident history of one UptimeRobot monitor, including resolved incidents. Use the monitor ID from List Down Monitors or Search Monitors.
+    http_method: GET
+    endpoint_url: https://api.uptimerobot.com/v3/incidents?monitor_id={{ monitor_id | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: monitor_id
+        type: integer
+        description: The numeric UptimeRobot monitor ID from List Down Monitors or Search Monitors.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for incident in response.data limit: 20 %}- Incident ID {{ incident.id }}: {{ incident.status | replace: "_", " " | downcase }} · {{ incident.reason | default: "no reason given" | truncate: 160 }}
+        Started {{ incident.startedAt }}{% if incident.resolvedAt %} · resolved {{ incident.resolvedAt }}{% endif %}
+      {% else %}No incidents found for this monitor.
+      {% endfor %}{% if response.data.size > 20 %}Showing 20 incidents for this monitor.{% endif %}{% else %}UptimeRobot returned an unexpected response.{% endif %}
+
+  - id: get_incident
+    title: Get Incident
+    description: Get one UptimeRobot incident's status, reason, timing, and root cause details such as the HTTP response code. Use the incident ID from List Open Incidents, List Recent Incidents, or List Monitor Incidents.
+    http_method: GET
+    endpoint_url: https://api.uptimerobot.com/v3/incidents/{{ incident_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: incident_id
+        type: string
+        description: The UptimeRobot incident ID from List Open Incidents, List Recent Incidents, or List Monitor Incidents.
+        required: true
+    response_template: |-
+      {% if response.id %}Incident {{ response.id }}
+      Status: {{ response.status | replace: "_", " " | downcase }}
+      Reason: {{ response.reason | default: "no reason given" | truncate: 300 }}
+      Started: {{ response.startedAt }}{% if response.resolvedAt %}
+      Resolved: {{ response.resolvedAt }}{% else %}
+      Not resolved yet.{% endif %}{% if response.rootCause.url %}
+      Checked URL: {{ response.rootCause.url | truncate: 200 }}{% endif %}{% if response.rootCause.httpResponseCode %}
+      HTTP response code: {{ response.rootCause.httpResponseCode }}{% endif %}{% else %}UptimeRobot returned an unexpected response.{% endif %}
