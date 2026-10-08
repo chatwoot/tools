@@ -1,0 +1,141 @@
+version: 0.0.1
+kind: captain_toolset
+name: Pingdom
+author: chatwoot
+category: Engineering & status
+description: Check Pingdom uptime checks, outages, and maintenance windows.
+
+secrets:
+  api_token:
+    label: Pingdom API token
+    type: password
+    required: true
+
+tools:
+  - id: list_down_checks
+    title: List Down Checks
+    description: Find Pingdom uptime checks that are down right now. Use this first when a customer reports that a site or service is unreachable or slow. Returns check IDs for the other Pingdom tools.
+    http_method: GET
+    endpoint_url: https://api.pingdom.com/api/3.1/checks?limit=500
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    response_template: |-
+      {% if response.checks %}{% assign down = 0 %}{% assign paused = 0 %}{% for check in response.checks %}{% if check.status == "paused" %}{% assign paused = paused | plus: 1 %}{% endif %}{% if check.status == "down" or check.status == "unconfirmed_down" %}{% assign down = down | plus: 1 %}{% if down <= 20 %}- {{ check.name | truncate: 80 }} (check ID {{ check.id }}): {{ check.status | replace: "_", " " }} · {{ check.type }} {{ check.hostname }}{% if check.lastdownstart %} · down since {{ check.lastdownstart | date: "%Y-%m-%d %H:%M %Z" }}{% endif %}
+      {% endif %}{% endif %}{% endfor %}{% if down == 0 %}No checks are down right now.
+      {% elsif down > 20 %}Showing 20 of {{ down }} checks that are down.
+      {% endif %}Checks examined: {{ response.checks.size }} of {{ response.counts.total | default: response.checks.size }}{% if paused > 0 %} ({{ paused }} paused){% endif %}.{% else %}Pingdom returned an unexpected response.{% endif %}
+
+  - id: list_checks
+    title: List Checks
+    description: List Pingdom uptime checks with their current status, 50 at a time. Use this to find the check ID for a site or service by name or hostname. Start with offset 0.
+    http_method: GET
+    endpoint_url: https://api.pingdom.com/api/3.1/checks?limit=50&offset={{ offset | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: offset
+        type: integer
+        description: Number of checks to skip, starting at 0. Add 50 to read the next group.
+        required: true
+    response_template: |-
+      {% if response.checks %}{% for check in response.checks %}- {{ check.name | truncate: 80 }} (check ID {{ check.id }}): {{ check.status | replace: "_", " " }} · {{ check.type }} {{ check.hostname }}{% if check.lastresponsetime %} · last response {{ check.lastresponsetime }} ms{% endif %}
+      {% else %}No checks found.
+      {% endfor %}{% if response.counts.total %}Total checks: {{ response.counts.total }}{% endif %}{% else %}Pingdom returned an unexpected response.{% endif %}
+
+  - id: get_check
+    title: Get Check
+    description: Check the current status of one Pingdom uptime check, including when it was last tested and when it was last down. Use a check ID from List Checks or List Down Checks.
+    http_method: GET
+    endpoint_url: https://api.pingdom.com/api/3.1/checks/{{ check_id | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: check_id
+        type: integer
+        description: The numeric Pingdom check ID from List Checks or List Down Checks.
+        required: true
+    response_template: |-
+      {% if response.check.id %}{% assign check = response.check %}{{ check.name | truncate: 120 }} (check ID {{ check.id }})
+      Status: {{ check.status | replace: "_", " " }}
+      Target: {{ check.hostname }}
+      Tested every: {{ check.resolution }} minutes{% if check.lasttesttime %}
+      Last tested: {{ check.lasttesttime | date: "%Y-%m-%d %H:%M %Z" }}{% endif %}{% if check.lastresponsetime %}
+      Last response time: {{ check.lastresponsetime }} ms{% endif %}{% if check.lastdownstart %}
+      Last downtime: {{ check.lastdownstart | date: "%Y-%m-%d %H:%M %Z" }} to {{ check.lastdownend | date: "%Y-%m-%d %H:%M %Z" }}{% if check.status == "down" %} (still down){% endif %}{% endif %}{% if check.lasterrortime %}
+      Last error: {{ check.lasterrortime | date: "%Y-%m-%d %H:%M %Z" }}{% endif %}{% else %}Pingdom returned an unexpected response.{% endif %}
+
+  - id: list_check_outages
+    title: List Check Outages
+    description: List the downtime periods of a Pingdom check over the last 7 days, newest first. Use this when a customer asks whether a service was down recently or how long an outage lasted.
+    http_method: GET
+    endpoint_url: https://api.pingdom.com/api/3.1/summary.outage/{{ check_id | url_encode }}?order=desc
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: check_id
+        type: integer
+        description: The numeric Pingdom check ID from List Checks or List Down Checks.
+        required: true
+    response_template: |-
+      {% if response.summary.states %}{% assign outages = 0 %}{% for state in response.summary.states %}{% if state.status == "down" %}{% assign outages = outages | plus: 1 %}{% if outages <= 15 %}{% assign minutes = state.timeto | minus: state.timefrom | divided_by: 60 %}- Down from {{ state.timefrom | date: "%Y-%m-%d %H:%M %Z" }} to {{ state.timeto | date: "%Y-%m-%d %H:%M %Z" }} (about {{ minutes }} minutes)
+      {% endif %}{% endif %}{% endfor %}{% if outages == 0 %}No downtime recorded for this check in the last 7 days.{% elsif outages > 15 %}Showing the 15 most recent of {{ outages }} downtime periods.{% endif %}{% else %}Pingdom returned an unexpected response.{% endif %}
+
+  - id: get_check_uptime
+    title: Get Check Uptime
+    description: Get the total uptime, downtime, and average response time of a Pingdom check since a start date. Use this when a customer asks about uptime over a period such as the last 30 days.
+    http_method: GET
+    endpoint_url: 'https://api.pingdom.com/api/3.1/summary.average/{{ check_id | url_encode }}?includeuptime=true&from={{ from_date | date: "%s" | url_encode }}'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: check_id
+        type: integer
+        description: The numeric Pingdom check ID from List Checks or List Down Checks.
+        required: true
+      - name: from_date
+        type: string
+        description: Start of the period in UTC as an ISO 8601 date and time, such as 2026-05-01T00:00:00Z. The period ends now.
+        required: true
+    response_template: |-
+      {% if response.summary.status %}{% assign status = response.summary.status %}{% assign monitored = status.totalup | plus: status.totaldown %}{% if monitored > 0 %}Uptime: {{ status.totalup | times: 100.0 | divided_by: monitored | round: 3 }}%
+      {% endif %}Total up: {{ status.totalup | divided_by: 60 }} minutes
+      Total down: {{ status.totaldown | divided_by: 60 }} minutes
+      Unmonitored or paused: {{ status.totalunknown | divided_by: 60 }} minutes{% if response.summary.responsetime.avgresponse %}
+      Average response time: {{ response.summary.responsetime.avgresponse }} ms{% endif %}
+      Period: {{ response.summary.responsetime.from | date: "%Y-%m-%d %H:%M %Z" }} to {{ response.summary.responsetime.to | date: "%Y-%m-%d %H:%M %Z" }}{% else %}Pingdom returned an unexpected response.{% endif %}
+
+  - id: list_check_results
+    title: List Check Results
+    description: Read the 10 most recent test results of a Pingdom check from the last 24 hours, with the error reported by each failed test. Use this to explain why a check is down.
+    http_method: GET
+    endpoint_url: https://api.pingdom.com/api/3.1/results/{{ check_id | url_encode }}?limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: check_id
+        type: integer
+        description: The numeric Pingdom check ID from List Checks or List Down Checks.
+        required: true
+    response_template: |-
+      {% if response.results %}{% for result in response.results %}- {{ result.time | date: "%Y-%m-%d %H:%M %Z" }}: {{ result.status }}{% if result.responsetime and result.responsetime > 0 %} · {{ result.responsetime }} ms{% endif %}{% if result.statusdesclong and result.statusdesclong != "" %} · {{ result.statusdesclong | truncate: 200 }}{% elsif result.statusdesc %} · {{ result.statusdesc | truncate: 200 }}{% endif %}
+      {% else %}No test results found for this check in the last 24 hours.
+      {% endfor %}{% else %}Pingdom returned an unexpected response.{% endif %}
+
+  - id: list_maintenance_windows
+    title: List Maintenance Windows
+    description: List the 10 most recently scheduled Pingdom maintenance windows. Use this when a customer asks about planned maintenance or when downtime may be expected.
+    http_method: GET
+    endpoint_url: https://api.pingdom.com/api/3.1/maintenance?orderby=from&order=desc&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    response_template: |-
+      {% if response.maintenance %}{% for window in response.maintenance %}- {{ window.description | truncate: 120 }} (ID {{ window.id }}): {{ window.from | date: "%Y-%m-%d %H:%M %Z" }} to {{ window.to | date: "%Y-%m-%d %H:%M %Z" }}{% if window.recurrencetype and window.recurrencetype != "none" %} · repeats every {{ window.repeatevery }} {{ window.recurrencetype }}{% if window.effectiveto %} until {{ window.effectiveto | date: "%Y-%m-%d" }}{% endif %}{% endif %}{% if window.checks.uptime.size > 0 %} · uptime check IDs: {{ window.checks.uptime | join: ", " | truncate: 120 }}{% endif %}
+      {% else %}No maintenance windows found.
+      {% endfor %}{% else %}Pingdom returned an unexpected response.{% endif %}
