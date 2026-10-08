@@ -1,0 +1,142 @@
+version: 0.0.1
+kind: captain_toolset
+name: Rollbar
+author: chatwoot
+category: Engineering & status
+description: Look up errors, their recent occurrences, and deploys in a Rollbar project.
+
+secrets:
+  access_token:
+    label: Rollbar project access token
+    type: password
+    required: true
+
+tools:
+  - id: list_top_active_items
+    title: List Top Active Items
+    description: List the 10 most severe and frequent Rollbar errors from the last 24 hours. Use this first when a customer reports that something is broken, to see what is failing right now. Returns the item ID that Get Item and List Item Occurrences need.
+    http_method: GET
+    endpoint_url: https://api.rollbar.com/api/1/reports/top_active_items?hours=24
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Rollbar-Access-Token
+      key: ${{ secrets.access_token }}
+    response_template: |-
+      {% if response.err == 0 and response.result %}{% for entry in response.result limit: 10 %}{% assign item = entry.item %}{% case item.level %}{% when 50 %}{% assign level = "critical" %}{% when 40 %}{% assign level = "error" %}{% when 30 %}{% assign level = "warning" %}{% when 20 %}{% assign level = "info" %}{% when 10 %}{% assign level = "debug" %}{% else %}{% assign level = "unknown level" %}{% endcase %}- #{{ item.counter }} {{ item.title | truncate: 160 }}
+        Item ID: {{ item.id }} · {{ level }} · {{ item.environment }} · {{ item.occurrences }} occurrences in the last 24 hours · last seen {{ item.last_occurrence_timestamp | date: "%Y-%m-%d %H:%M %Z" }}
+      {% else %}No active errors in the last 24 hours.
+      {% endfor %}{% else %}Rollbar returned an unexpected response.{% endif %}
+
+  - id: list_active_items
+    title: List Active Items
+    description: List unresolved Rollbar items with error or critical level in one environment. Use this to see the known open errors for an environment such as production. Returns the item ID that Get Item and List Item Occurrences need.
+    http_method: GET
+    endpoint_url: https://api.rollbar.com/api/1/items?status=active&level=error&level=critical&environment={{ environment | strip | url_encode }}&page=1
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Rollbar-Access-Token
+      key: ${{ secrets.access_token }}
+    param_schema:
+      - name: environment
+        type: string
+        description: The Rollbar environment name, such as production. Use production unless the customer or team says otherwise.
+        required: true
+    response_template: |-
+      {% if response.err == 0 and response.result.items %}{% for item in response.result.items limit: 15 %}- #{{ item.counter }} {{ item.title | truncate: 160 }}
+        Item ID: {{ item.id }} · {{ item.level }} · {{ item.total_occurrences }} occurrences · first seen {{ item.first_occurrence_timestamp | date: "%Y-%m-%d" }} · last seen {{ item.last_occurrence_timestamp | date: "%Y-%m-%d %H:%M %Z" }}
+      {% else %}No active error or critical items in this environment.
+      {% endfor %}{% if response.result.items.size > 15 %}Showing 15 of {{ response.result.total_count | default: "many" }} active items.{% endif %}{% else %}Rollbar returned an unexpected response.{% endif %}
+
+  - id: search_items
+    title: Search Items
+    description: Search Rollbar items by words in the error title, across all statuses and environments. Use this to check whether an error message the customer shares is a known issue. Returns the item ID that Get Item and List Item Occurrences need.
+    http_method: GET
+    endpoint_url: https://api.rollbar.com/api/1/items?query={{ query | strip | url_encode }}&page=1
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Rollbar-Access-Token
+      key: ${{ secrets.access_token }}
+    param_schema:
+      - name: query
+        type: string
+        description: Search text in the same format as the search box on the Rollbar Items page, such as part of an error message or exception class.
+        required: true
+    response_template: |-
+      {% if response.err == 0 and response.result.items %}{% for item in response.result.items limit: 15 %}- #{{ item.counter }} {{ item.title | truncate: 160 }}
+        Item ID: {{ item.id }} · {{ item.status }} · {{ item.level }} · {{ item.environment }} · {{ item.total_occurrences }} occurrences · last seen {{ item.last_occurrence_timestamp | date: "%Y-%m-%d %H:%M %Z" }}
+      {% else %}No items match this search.
+      {% endfor %}{% if response.result.items.size > 15 %}Showing 15 of {{ response.result.total_count | default: "many" }} matching items. Use a more specific search.{% endif %}{% else %}Rollbar returned an unexpected response.{% endif %}
+
+  - id: get_item
+    title: Get Item
+    description: Get one Rollbar item's status, level, environment, occurrence count, and first and last seen times. Use the item ID from List Top Active Items, List Active Items, or Search Items, not the # number shown in Rollbar.
+    http_method: GET
+    endpoint_url: https://api.rollbar.com/api/1/item/{{ item_id | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Rollbar-Access-Token
+      key: ${{ secrets.access_token }}
+    param_schema:
+      - name: item_id
+        type: integer
+        description: The numeric Rollbar item ID from List Top Active Items, List Active Items, or Search Items. This is not the # counter shown in Rollbar URLs.
+        required: true
+    response_template: |-
+      {% if response.err == 0 and response.result.id %}{% assign item = response.result %}#{{ item.counter }} {{ item.title | truncate: 300 }}
+      Item ID: {{ item.id }}
+      Status: {{ item.status }}
+      Level: {{ item.level }}
+      Environment: {{ item.environment }}{% if item.framework and item.framework != "" %}
+      Framework: {{ item.framework }}{% endif %}
+      Total occurrences: {{ item.total_occurrences }}
+      First seen: {{ item.first_occurrence_timestamp | date: "%Y-%m-%d %H:%M %Z" }}
+      Last seen: {{ item.last_occurrence_timestamp | date: "%Y-%m-%d %H:%M %Z" }}{% if item.last_activated_timestamp %}
+      Last activated: {{ item.last_activated_timestamp | date: "%Y-%m-%d %H:%M %Z" }}{% endif %}{% if item.status == "resolved" and item.last_resolved_timestamp %}
+      Resolved: {{ item.last_resolved_timestamp | date: "%Y-%m-%d %H:%M %Z" }}{% endif %}{% if item.assigned_user_id %}
+      Assigned: yes{% else %}
+      Assigned: no{% endif %}{% else %}Rollbar returned an unexpected response.{% endif %}
+
+  - id: list_item_occurrences
+    title: List Item Occurrences
+    description: See the 5 most recent occurrences of a Rollbar item with the error message, environment, code version, and request URL. Use this to confirm when an error last happened and what triggered it. Use the item ID from List Top Active Items, List Active Items, or Search Items.
+    http_method: GET
+    endpoint_url: https://api.rollbar.com/api/1/item/{{ item_id | url_encode }}/instances?limit=5&page=1
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Rollbar-Access-Token
+      key: ${{ secrets.access_token }}
+    param_schema:
+      - name: item_id
+        type: integer
+        description: The numeric Rollbar item ID from List Top Active Items, List Active Items, or Search Items. This is not the # counter shown in Rollbar URLs.
+        required: true
+    response_template: |-
+      {% if response.err == 0 and response.result.instances %}{% for instance in response.result.instances limit: 5 %}{% assign data = instance.data %}{% assign seen = instance.timestamp %}{% if seen > 99999999999 %}{% assign seen = seen | divided_by: 1000 %}{% endif %}{% assign exception = data.body.trace.exception %}{% unless exception %}{% assign exception = data.body.trace_chain.first.exception %}{% endunless %}- {{ seen | date: "%Y-%m-%d %H:%M:%S %Z" }} · occurrence ID {{ instance.id }}{% if data.level %} · {{ data.level }}{% endif %}{% if data.environment %} · {{ data.environment }}{% endif %}{% if exception %}
+        Error: {{ exception.class }}{% if exception.message %}: {{ exception.message | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}{% elsif data.body.message.body %}
+        Message: {{ data.body.message.body | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}{% if data.code_version %}
+        Code version: {{ data.code_version }}{% endif %}{% if data.request.url %}
+        Request: {{ data.request.method }} {{ data.request.url | truncate: 200 }}{% endif %}{% if data.server.host %}
+        Host: {{ data.server.host }}{% endif %}
+      {% else %}No occurrences found for this item.
+      {% endfor %}{% else %}Rollbar returned an unexpected response.{% endif %}
+
+  - id: list_deploys
+    title: List Deploys
+    description: List the 10 most recent deploys recorded in Rollbar with environment, revision, status, and time. Use this to check whether a release went out around the time a problem started.
+    http_method: GET
+    endpoint_url: https://api.rollbar.com/api/1/deploys?limit=10&page=1
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Rollbar-Access-Token
+      key: ${{ secrets.access_token }}
+    response_template: |-
+      {% if response.err == 0 and response.result.deploys %}{% for deploy in response.result.deploys limit: 10 %}- {{ deploy.start_time | date: "%Y-%m-%d %H:%M %Z" }} · {{ deploy.environment }} · {{ deploy.status | default: "succeeded" | replace: "_", " " }} · revision {{ deploy.revision | truncate: 14, "" }}{% if deploy.comment and deploy.comment != "" %}
+        Comment: {{ deploy.comment | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% else %}No deploys recorded in this project.
+      {% endfor %}{% else %}Rollbar returned an unexpected response.{% endif %}
