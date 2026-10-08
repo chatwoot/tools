@@ -1,0 +1,157 @@
+version: 0.0.1
+kind: captain_toolset
+name: PostHog
+author: chatwoot
+category: Others
+description: Look up PostHog persons, their recent events and session recordings, and feature flags.
+
+inputs:
+  host:
+    label: PostHog region
+    type: select
+    options:
+      - us.posthog.com
+      - eu.posthog.com
+    required: true
+  project_id:
+    label: Project ID
+    placeholder: '12345'
+    required: true
+
+secrets:
+  personal_api_key:
+    label: PostHog personal API key
+    type: password
+    placeholder: phx_...
+    required: true
+
+tools:
+  - id: find_person_by_email
+    title: Find Person by Email
+    description: Find a PostHog person by their exact email address. Use this first to get the person ID the other PostHog person tools need. Shows when the person was first and last seen and a summary of their properties, such as location, browser, and plan.
+    http_method: GET
+    endpoint_url: https://${{ inputs.host }}/api/projects/${{ inputs.project_id }}/persons/?email={{ email | strip | url_encode }}&limit=3
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.personal_api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The person's exact email address.
+        required: true
+    response_template: |-
+      {% if response.results %}{% for person in response.results limit: 3 %}- {{ person.name | default: "Unnamed person" }}
+        Person ID: {{ person.uuid }}
+        First seen: {{ person.created_at | slice: 0, 10 }}{% if person.last_seen_at %} · Last seen: {{ person.last_seen_at | slice: 0, 10 }}{% endif %}
+        Distinct IDs: {{ person.distinct_ids | slice: 0, 3 | join: ", " | truncate: 200 }}{% if person.distinct_ids.size > 3 %} and {{ person.distinct_ids.size | minus: 3 }} more{% endif %}{% assign shown = 0 %}{% for property in person.properties %}{% if shown >= 20 %}{% break %}{% endif %}{% assign prefix = property[0] | slice: 0, 9 %}{% capture value %}{{ property[1] }}{% endcapture %}{% if prefix != "$initial_" and value != "" %}{% assign shown = shown | plus: 1 %}
+        {{ property[0] }}: {{ value | truncate: 120 }}{% endif %}{% endfor %}
+      {% else %}No PostHog person found with this email address.
+      {% endfor %}{% else %}PostHog returned an unexpected response.{% endif %}
+
+  - id: get_person
+    title: Get Person
+    description: Get every property PostHog stores for a person, including the initial referrer and campaign properties that Find Person by Email leaves out. Use the person ID from Find Person by Email.
+    http_method: GET
+    endpoint_url: https://${{ inputs.host }}/api/projects/${{ inputs.project_id }}/persons/{{ person_id | strip | url_encode }}/
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.personal_api_key }}
+    param_schema:
+      - name: person_id
+        type: string
+        description: The PostHog person ID, a UUID from Find Person by Email.
+        required: true
+    response_template: |-
+      {% if response.uuid %}{{ response.name | default: "Unnamed person" }} (person ID {{ response.uuid }})
+      First seen: {{ response.created_at | slice: 0, 10 }}{% if response.last_seen_at %} · Last seen: {{ response.last_seen_at | slice: 0, 10 }}{% endif %}
+      Distinct IDs: {{ response.distinct_ids | slice: 0, 5 | join: ", " | truncate: 300 }}{% if response.distinct_ids.size > 5 %} and {{ response.distinct_ids.size | minus: 5 }} more{% endif %}
+      Properties:{% assign shown = 0 %}{% for property in response.properties %}{% if shown >= 80 %}{% break %}{% endif %}{% capture value %}{{ property[1] }}{% endcapture %}{% if value != "" %}{% assign shown = shown | plus: 1 %}
+      - {{ property[0] }}: {{ value | truncate: 150 }}{% endif %}{% endfor %}{% if shown == 0 %} none{% endif %}{% if response.properties.size > 80 %}
+      Only the first 80 properties are shown.{% endif %}{% else %}PostHog returned an unexpected response.{% endif %}
+
+  - id: list_person_events
+    title: List Person Events
+    description: List the 20 most recent events a person triggered in the last 30 days, with the time and page URL of each. Use this to see what a customer did before they hit a problem. Use the person ID from Find Person by Email. Pass an event name to see only that event.
+    http_method: POST
+    endpoint_url: https://${{ inputs.host }}/api/projects/${{ inputs.project_id }}/query/
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.personal_api_key }}
+    param_schema:
+      - name: person_id
+        type: string
+        description: The PostHog person ID, a UUID from Find Person by Email.
+        required: true
+      - name: event_name
+        type: string
+        description: An exact event name to filter by, such as $pageview or user signed up. Leave empty for all events.
+        required: false
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% assign person_id = person_id | strip_newlines | strip | remove: bs | remove: '"' %}{% assign event_name = event_name | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{"query":{"kind":"EventsQuery","select":["event","timestamp","properties.$current_url"],"personId":"{{ person_id }}"{% if event_name != "" %},"event":"{{ event_name }}"{% endif %},"after":"{{ "now" | date: "%s" | minus: 2592000 | date: "%Y-%m-%d" }}","orderBy":["timestamp DESC"],"limit":20}}
+    response_template: |-
+      {% if response.results %}{% for row in response.results limit: 20 %}- {{ row[1] | slice: 0, 19 | replace: "T", " " }} · {{ row[0] }}{% if row[2] and row[2] != "" %} · {{ row[2] | truncate: 150 }}{% endif %}
+      {% else %}No events found for this person in the last 30 days.
+      {% endfor %}{% if response.hasMore %}Older events exist; only the 20 most recent are shown.{% endif %}{% else %}PostHog returned an unexpected response.{% endif %}
+
+  - id: list_person_recordings
+    title: List Person Recordings
+    description: List a person's 10 most recent session recordings from the last 30 days, with duration, start page, and click and console error counts. Use this to point a teammate to the recording of a session where the customer hit a problem. Use the person ID from Find Person by Email.
+    http_method: POST
+    endpoint_url: https://${{ inputs.host }}/api/projects/${{ inputs.project_id }}/query/
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.personal_api_key }}
+    param_schema:
+      - name: person_id
+        type: string
+        description: The PostHog person ID, a UUID from Find Person by Email.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% assign person_id = person_id | strip_newlines | strip | remove: bs | remove: '"' %}{"query":{"kind":"RecordingsQuery","person_uuid":"{{ person_id }}","date_from":"-30d","order":"start_time","order_direction":"DESC","limit":10}}
+    response_template: |-
+      {% if response.results %}{% for recording in response.results limit: 10 %}- Recording {{ recording.id }} · {{ recording.start_time | slice: 0, 16 | replace: "T", " " }} · {{ recording.recording_duration | divided_by: 60 | floor }} min {{ recording.recording_duration | modulo: 60 | floor }} sec{% if recording.ongoing %} · still in progress{% endif %}{% if recording.start_url %}
+        Started on: {{ recording.start_url | truncate: 150 }}{% endif %}
+        Clicks: {{ recording.click_count | default: 0 }} · Console errors: {{ recording.console_error_count | default: 0 }}
+      {% else %}No session recordings found for this person in the last 30 days.
+      {% endfor %}{% if response.has_next %}More recordings exist; only the 10 most recent are shown.{% endif %}{% else %}PostHog returned an unexpected response.{% endif %}
+
+  - id: list_feature_flags
+    title: List Feature Flags
+    description: List up to 20 feature flags in the PostHog project, with whether each is enabled. Pass a search term to find a flag by its key or description. Use this to get the flag ID that Get Feature Flag needs.
+    http_method: GET
+    endpoint_url: https://${{ inputs.host }}/api/projects/${{ inputs.project_id }}/feature_flags/?search={{ search | strip | url_encode }}&limit=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.personal_api_key }}
+    param_schema:
+      - name: search
+        type: string
+        description: Part of a feature flag key or description to search for. Leave empty to list all flags.
+        required: false
+    response_template: |-
+      {% if response.results %}{% for flag in response.results limit: 20 %}- {{ flag.key }} (flag ID {{ flag.id }}) · {% if flag.active %}enabled{% else %}disabled{% endif %}{% if flag.name and flag.name != "" %} · {{ flag.name | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 120 }}{% endif %}
+      {% else %}No feature flags found.
+      {% endfor %}{% if response.count > 20 %}Showing 20 of {{ response.count }} flags. Use a search term to narrow the list.{% endif %}{% else %}PostHog returned an unexpected response.{% endif %}
+
+  - id: get_feature_flag
+    title: Get Feature Flag
+    description: Get a PostHog feature flag's status, release conditions, rollout percentages, and variants. Use this to explain whether a feature is rolled out and to whom. Use the flag ID from List Feature Flags.
+    http_method: GET
+    endpoint_url: https://${{ inputs.host }}/api/projects/${{ inputs.project_id }}/feature_flags/{{ flag_id | url_encode }}/
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.personal_api_key }}
+    param_schema:
+      - name: flag_id
+        type: integer
+        description: The numeric PostHog feature flag ID from List Feature Flags.
+        required: true
+    response_template: |-
+      {% if response.key %}{{ response.key }} (flag ID {{ response.id }})
+      Status: {% if response.active %}enabled{% else %}disabled{% endif %}{% if response.archived %}, archived{% endif %}{% if response.name and response.name != "" %}
+      Description: {{ response.name | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}
+      Created: {{ response.created_at | slice: 0, 10 }}{% if response.tags.size > 0 %}
+      Tags: {{ response.tags | join: ", " | truncate: 200 }}{% endif %}{% if response.filters.multivariate.variants.size > 0 %}
+      Variants: {% for variant in response.filters.multivariate.variants limit: 10 %}{{ variant.key }} {{ variant.rollout_percentage }}%{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}
+      Release conditions:{% for group in response.filters.groups limit: 10 %}
+      - {{ group.rollout_percentage | default: 100 }}% of {% if group.properties.size > 0 %}users where {% for property in group.properties limit: 5 %}{% if property.type == "cohort" %}cohort is {{ property.cohort_name | default: property.value }}{% else %}{{ property.key }} {{ property.operator | default: "exact" | replace: "_", " " }} {{ property.value | join: ", " | truncate: 80 }}{% endif %}{% unless forloop.last %} and {% endunless %}{% endfor %}{% if group.properties.size > 5 %} and {{ group.properties.size | minus: 5 }} more conditions{% endif %}{% else %}all users{% endif %}{% if group.variant %} · serves variant {{ group.variant }}{% endif %}{% else %} none{% endfor %}{% else %}PostHog returned an unexpected response.{% endif %}
