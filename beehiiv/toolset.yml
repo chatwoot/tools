@@ -1,0 +1,117 @@
+version: 0.0.1
+kind: captain_toolset
+name: beehiiv
+author: chatwoot
+category: Marketing
+description: Look up newsletter subscribers, their subscription status and tier, recent posts, and paid tiers in beehiiv, and tag subscribers.
+
+inputs:
+  publication_id:
+    label: Publication ID
+    placeholder: pub_00000000-0000-0000-0000-000000000000
+    required: true
+
+secrets:
+  api_key:
+    label: beehiiv API key
+    type: password
+    required: true
+
+tools:
+  - id: find_subscriber_by_email
+    title: Find Subscriber by Email
+    description: Find a newsletter subscriber in the beehiiv publication by email address. Use this first when a customer asks about their subscription, missing emails, or paid access. Returns the subscription ID the other beehiiv tools need.
+    http_method: GET
+    endpoint_url: https://api.beehiiv.com/v2/publications/${{ inputs.publication_id }}/subscriptions?email={{ email | strip | url_encode }}&limit=5&expand%5B%5D=stats&expand%5B%5D=custom_fields
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The subscriber's email address. Must match exactly; case is ignored.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for sub in response.data limit: 5 %}- {{ sub.email }} · subscription ID {{ sub.id }}
+        Status: {{ sub.status | replace: "_", " " }} · tier: {{ sub.subscription_tier | default: "unknown" }}{% if sub.subscription_premium_tier_names.size > 0 %} ({{ sub.subscription_premium_tier_names | join: ", " }}){% endif %}
+        Subscribed: {{ sub.created | date: "%Y-%m-%d" }}{% if sub.utm_channel and sub.utm_channel != "" %} via {{ sub.utm_channel | replace: "_", " " }}{% endif %}{% if sub.utm_source and sub.utm_source != "" %} (source: {{ sub.utm_source | truncate: 60 }}){% endif %}{% if sub.stats %}
+        Emails received: {{ sub.stats.emails_received | default: 0 }} · open rate: {{ sub.stats.open_rate | default: 0 }}% · click rate: {{ sub.stats.click_through_rate | default: 0 }}%{% endif %}{% for field in sub.custom_fields limit: 15 %}{% if field.value != nil and field.value != "" %}
+        {{ field.name }}: {{ field.value | truncate: 120 }}{% endif %}{% endfor %}
+      {% else %}No subscriber found with this email address.{% endfor %}{% else %}beehiiv returned an unexpected response.{% endif %}
+
+  - id: get_subscription
+    title: Get Subscription
+    description: Get full details for one beehiiv subscription, including status, tier, premium tiers, tags, custom fields, engagement stats, and referral count. Use the subscription ID from Find Subscriber by Email.
+    http_method: GET
+    endpoint_url: https://api.beehiiv.com/v2/publications/${{ inputs.publication_id }}/subscriptions/{{ subscription_id | strip | url_encode }}?expand%5B%5D=stats&expand%5B%5D=custom_fields&expand%5B%5D=tags&expand%5B%5D=referrals&expand%5B%5D=subscription_premium_tiers
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: subscription_id
+        type: string
+        description: The beehiiv subscription ID from Find Subscriber by Email, starting with sub_.
+        required: true
+    response_template: |-
+      {% if response.data.id %}{% assign sub = response.data %}{{ sub.email }} · subscription ID {{ sub.id }}
+      Status: {{ sub.status | replace: "_", " " }}
+      Tier: {{ sub.subscription_tier | default: "unknown" }}{% if sub.subscription_premium_tiers.size > 0 %}
+      Premium tiers: {% for tier in sub.subscription_premium_tiers limit: 10 %}{{ tier.name }} ({{ tier.status }}, tier ID {{ tier.id }}){% unless forloop.last %}; {% endunless %}{% endfor %}{% elsif sub.subscription_premium_tier_names.size > 0 %}
+      Premium tiers: {{ sub.subscription_premium_tier_names | join: ", " }}{% endif %}
+      Subscribed: {{ sub.created | date: "%Y-%m-%d" }}{% if sub.utm_channel and sub.utm_channel != "" %} via {{ sub.utm_channel | replace: "_", " " }}{% endif %}{% if sub.utm_source and sub.utm_source != "" %}
+      Source: {{ sub.utm_source | truncate: 60 }}{% if sub.utm_medium and sub.utm_medium != "" %} / {{ sub.utm_medium | truncate: 60 }}{% endif %}{% if sub.utm_campaign and sub.utm_campaign != "" %} / {{ sub.utm_campaign | truncate: 60 }}{% endif %}{% endif %}{% if sub.referring_site and sub.referring_site != "" %}
+      Referring site: {{ sub.referring_site | truncate: 120 }}{% endif %}{% if sub.stats %}
+      Emails received: {{ sub.stats.emails_received | default: 0 }} · open rate: {{ sub.stats.open_rate | default: 0 }}% · click rate: {{ sub.stats.click_through_rate | default: 0 }}%{% endif %}{% if sub.tags.size > 0 %}
+      Tags: {{ sub.tags | join: ", " | truncate: 300 }}{% endif %}{% if sub.referral_code and sub.referral_code != "" %}
+      Referral code: {{ sub.referral_code }}{% if sub.referrals %} · people referred: {{ sub.referrals.size }}{% endif %}{% endif %}{% for field in sub.custom_fields limit: 25 %}{% if field.value != nil and field.value != "" %}
+      {{ field.name }}: {{ field.value | truncate: 200 }}{% endif %}{% endfor %}{% else %}beehiiv returned an unexpected response.{% endif %}
+
+  - id: list_recent_posts
+    title: List Recent Posts
+    description: List the 10 most recently published or scheduled posts in the beehiiv publication, with publish date, audience (free or premium), and web link. Use this when a customer says they did not receive an issue or asks where to read one.
+    http_method: GET
+    endpoint_url: https://api.beehiiv.com/v2/publications/${{ inputs.publication_id }}/posts?status=confirmed&order_by=publish_date&direction=desc&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.data %}{% for post in response.data limit: 10 %}- {{ post.title | default: "Untitled post" | truncate: 120 }}{% if post.publish_date %} · {{ post.publish_date | date: "%Y-%m-%d" }}{% endif %}
+        Sent to: {{ post.platform | default: "unknown" }} · web audience: {{ post.audience | default: "unknown" }}{% if post.subject_line and post.subject_line != "" %}
+        Email subject: {{ post.subject_line | truncate: 120 }}{% endif %}{% if post.web_url and post.web_url != "" %}
+        Read online: {{ post.web_url }}{% endif %}
+      {% else %}No published or scheduled posts found.{% endfor %}{% else %}beehiiv returned an unexpected response.{% endif %}
+
+  - id: list_tiers
+    title: List Tiers
+    description: List the paid subscription tiers of the beehiiv publication with their prices and billing intervals. Use this when a customer asks what a paid plan costs or which tier they are on.
+    http_method: GET
+    endpoint_url: https://api.beehiiv.com/v2/publications/${{ inputs.publication_id }}/tiers?expand%5B%5D=prices&limit=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.data %}{% for tier in response.data limit: 20 %}- {{ tier.name }} ({{ tier.status }}, tier ID {{ tier.id }}){% if tier.description and tier.description != "" %}: {{ tier.description | strip_newlines | truncate: 150 }}{% endif %}{% for price in tier.prices limit: 10 %}{% if price.enabled != false %}
+        {{ price.amount_cents | divided_by: 100.0 }} {{ price.currency | upcase }} · {{ price.interval | replace: "_", " " }}{% endif %}{% endfor %}
+      {% else %}This publication has no paid tiers.{% endfor %}{% else %}beehiiv returned an unexpected response.{% endif %}
+
+  - id: add_subscription_tag
+    title: Add Subscription Tag
+    description: Add one tag to a beehiiv subscription, for example to flag a subscriber for follow-up by the newsletter team. Use the subscription ID from Find Subscriber by Email. Only add a tag when the conversation calls for it; the tag is created if it does not exist yet.
+    http_method: POST
+    endpoint_url: https://api.beehiiv.com/v2/publications/${{ inputs.publication_id }}/subscriptions/{{ subscription_id | strip | url_encode }}/tags
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: subscription_id
+        type: string
+        description: The beehiiv subscription ID from Find Subscriber by Email, starting with sub_.
+        required: true
+      - name: tag
+        type: string
+        description: The tag to add, such as needs-follow-up. Keep it short.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"tags":["{{ tag | strip_newlines | strip | truncate: 100, "" | replace: bs, escaped_bs | replace: '"', escaped_quote }}"]}
+    response_template: |-
+      {% if response.data.id %}Tag added to {{ response.data.email }}.{% if response.data.tags.size > 0 %} Tags now: {{ response.data.tags | join: ", " | truncate: 300 }}{% endif %}{% else %}beehiiv returned an unexpected response.{% endif %}
