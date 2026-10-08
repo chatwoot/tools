@@ -1,0 +1,146 @@
+version: 0.0.1
+kind: captain_toolset
+name: Trello
+author: chatwoot
+category: Others
+description: Search Trello cards, check their status and comments, and add comments to cards.
+
+secrets:
+  api_key:
+    label: Trello API key
+    type: password
+    required: true
+  api_token:
+    label: Trello API token
+    type: password
+    required: true
+
+tools:
+  - id: search_cards
+    title: Search Cards
+    description: Search Trello cards by keyword across every board the connected account can see. Use this first when a customer reports a bug or asks about a request, to find a matching card and its card ID. Supports Trello search operators such as board:name, list:name, label:name, and is:open.
+    http_method: GET
+    endpoint_url: https://api.trello.com/1/search?query={{ query | strip | url_encode }}&modelTypes=cards&cards_limit=10&card_fields=name,desc,closed,due,dateLastActivity,shortUrl&card_board=true&card_list=true&partial=true
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: 'OAuth oauth_consumer_key="${{ secrets.api_key }}", oauth_token="${{ secrets.api_token }}"'
+    param_schema:
+      - name: query
+        type: string
+        description: Keywords to search for, such as an error message or feature name. Keep it to a few distinctive words.
+        required: true
+    response_template: |-
+      {% if response.cards %}{% for card in response.cards limit: 10 %}- {{ card.name }} (card ID {{ card.id }}){% if card.closed %} · archived{% endif %}
+        Board: {{ card.board.name | default: "unknown" }} · List: {{ card.list.name | default: "unknown" }}{% if card.due %} · Due {{ card.due | slice: 0, 10 }}{% endif %} · Last activity {{ card.dateLastActivity | slice: 0, 10 }}
+        {{ card.shortUrl }}{% if card.desc and card.desc != "" %}
+        {{ card.desc | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% else %}No cards found matching this search.
+      {% endfor %}{% else %}Trello returned an unexpected response.{% endif %}
+
+  - id: get_card
+    title: Get Card
+    description: Get one Trello card's details, including its board, list, due date, labels, members, checklist progress, and description. Use a card ID from Search Cards or List Board Cards.
+    http_method: GET
+    endpoint_url: https://api.trello.com/1/cards/{{ card_id | strip | url_encode }}?fields=name,desc,closed,due,dateLastActivity,shortUrl,labels,badges&board=true&board_fields=name&list=true&members=true&member_fields=fullName
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: 'OAuth oauth_consumer_key="${{ secrets.api_key }}", oauth_token="${{ secrets.api_token }}"'
+    param_schema:
+      - name: card_id
+        type: string
+        description: The Trello card ID from Search Cards or List Board Cards.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.name }} (card ID {{ response.id }}){% if response.closed %} · archived{% endif %}
+      Board: {{ response.board.name | default: "unknown" }}
+      List: {{ response.list.name | default: "unknown" }}{% if response.due %}
+      Due: {{ response.due | slice: 0, 10 }}{% if response.badges.dueComplete %} (marked complete){% endif %}{% endif %}
+      Last activity: {{ response.dateLastActivity | slice: 0, 10 }}{% if response.labels.size > 0 %}
+      Labels: {% for label in response.labels limit: 10 %}{{ label.name | default: label.color }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if response.members.size > 0 %}
+      Members: {% for member in response.members limit: 10 %}{{ member.fullName }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if response.badges.checkItems > 0 %}
+      Checklist items done: {{ response.badges.checkItemsChecked }} of {{ response.badges.checkItems }}{% endif %}
+      Comments: {{ response.badges.comments | default: 0 }}
+      Link: {{ response.shortUrl }}{% if response.desc and response.desc != "" %}
+      Description: {{ response.desc | truncate: 1500 }}{% endif %}{% else %}Trello returned an unexpected response.{% endif %}
+
+  - id: list_card_comments
+    title: List Card Comments
+    description: Read the 10 most recent comments on a Trello card, such as progress updates from the team. Use a card ID from Search Cards or List Board Cards.
+    http_method: GET
+    endpoint_url: https://api.trello.com/1/cards/{{ card_id | strip | url_encode }}/actions?filter=commentCard
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: 'OAuth oauth_consumer_key="${{ secrets.api_key }}", oauth_token="${{ secrets.api_token }}"'
+    param_schema:
+      - name: card_id
+        type: string
+        description: The Trello card ID from Search Cards or List Board Cards.
+        required: true
+    response_template: |-
+      {% if response.size == 0 %}No comments on this card.{% elsif response[0].id %}{% for action in response limit: 10 %}- {{ action.date | slice: 0, 10 }} · {{ action.memberCreator.fullName | default: "Unknown member" }}: {{ action.data.text | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}
+      {% endfor %}{% else %}Trello returned an unexpected response.{% endif %}
+
+  - id: list_boards
+    title: List Boards
+    description: List the open Trello boards the connected account can see, with their board IDs. Use this to find the board ID that List Board Cards needs.
+    http_method: GET
+    endpoint_url: https://api.trello.com/1/members/me/boards?filter=open&fields=name,desc,shortUrl,dateLastActivity
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: 'OAuth oauth_consumer_key="${{ secrets.api_key }}", oauth_token="${{ secrets.api_token }}"'
+    response_template: |-
+      {% if response.size == 0 %}No open boards found.{% elsif response[0].id %}{% for board in response limit: 50 %}- {{ board.name }} (board ID {{ board.id }}){% if board.dateLastActivity %} · Last activity {{ board.dateLastActivity | slice: 0, 10 }}{% endif %}
+        {{ board.shortUrl }}{% if board.desc and board.desc != "" %}
+        {{ board.desc | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 150 }}{% endif %}
+      {% endfor %}{% if response.size > 50 %}Showing the first 50 of {{ response.size }} boards.{% endif %}{% else %}Trello returned an unexpected response.{% endif %}
+
+  - id: list_board_cards
+    title: List Board Cards
+    description: List the open lists on a Trello board and the open cards in each, to see what is planned, in progress, or done. Use a board ID from List Boards. Shows up to 20 lists and 10 cards per list.
+    http_method: GET
+    endpoint_url: https://api.trello.com/1/boards/{{ board_id | strip | url_encode }}/lists?filter=open&fields=name&cards=open&card_fields=name,due,shortUrl
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: 'OAuth oauth_consumer_key="${{ secrets.api_key }}", oauth_token="${{ secrets.api_token }}"'
+    param_schema:
+      - name: board_id
+        type: string
+        description: The Trello board ID from List Boards.
+        required: true
+    response_template: |-
+      {% if response.size == 0 %}No open lists on this board.{% elsif response[0].id %}{% for list in response limit: 20 %}{{ list.name }} ({{ list.cards.size | default: 0 }} open cards)
+      {% for card in list.cards limit: 10 %}- {{ card.name | truncate: 120 }} (card ID {{ card.id }}){% if card.due %} · Due {{ card.due | slice: 0, 10 }}{% endif %}
+      {% endfor %}{% if list.cards.size > 10 %}- and {{ list.cards.size | minus: 10 }} more cards
+      {% endif %}{% endfor %}{% if response.size > 20 %}Showing the first 20 of {{ response.size }} lists.{% endif %}{% else %}Trello returned an unexpected response.{% endif %}
+
+  - id: add_card_comment
+    title: Add Card Comment
+    description: Add a comment to a Trello card, for example to note that another customer reported the same issue, with a short summary. Use a card ID from Search Cards. Only add a comment when the conversation needs one.
+    http_method: POST
+    endpoint_url: https://api.trello.com/1/cards/{{ card_id | strip | url_encode }}/actions/comments?text={{ text | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: 'OAuth oauth_consumer_key="${{ secrets.api_key }}", oauth_token="${{ secrets.api_token }}"'
+    param_schema:
+      - name: card_id
+        type: string
+        description: The Trello card ID from Search Cards or List Board Cards.
+        required: true
+      - name: text
+        type: string
+        description: The comment text, up to about 1,000 characters. Trello renders Markdown.
+        required: true
+    response_template: |-
+      {% if response.id %}Added the comment to the card{% if response.data.card.name %} "{{ response.data.card.name }}"{% endif %}.{% else %}Trello returned an unexpected response.{% endif %}
