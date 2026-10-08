@@ -1,0 +1,149 @@
+version: 0.0.1
+kind: captain_toolset
+name: Twilio
+author: chatwoot
+category: Others
+description: Check SMS, MMS, and WhatsApp message delivery, call history, and phone number validity in Twilio.
+
+inputs:
+  account_sid:
+    label: Account SID
+    placeholder: ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    required: true
+
+secrets:
+  api_key_sid:
+    label: Twilio API key SID
+    type: password
+    required: true
+  api_key_secret:
+    label: Twilio API key secret
+    type: password
+    required: true
+
+tools:
+  - id: find_messages_to_number
+    title: Find Messages to Number
+    description: Find the 10 most recent SMS, MMS, or WhatsApp messages Twilio sent to a phone number, with delivery status and error codes. Use this first when a customer says a text or verification code did not arrive. Message text is not returned. Returns the message SID that Get Message needs.
+    http_method: GET
+    endpoint_url: 'https://api.twilio.com/2010-04-01/Accounts/${{ inputs.account_sid }}/Messages.json?To={{ phone_number | strip | remove: " " | url_encode }}&PageSize=10'
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key_sid }}
+      password: ${{ secrets.api_key_secret }}
+    param_schema:
+      - name: phone_number
+        type: string
+        description: The recipient's phone number in E.164 format, such as +15558675309. For WhatsApp, prefix it with whatsapp:, such as whatsapp:+15558675309.
+        required: true
+    response_template: |-
+      {% if response.messages %}{% for message in response.messages limit: 10 %}- {{ message.date_sent | default: message.date_created }} · {{ message.status }} · from {{ message.from }} to {{ message.to }}{% if message.error_code %}
+        Error {{ message.error_code }}{% if message.error_message and message.error_message != "" %}: {{ message.error_message | truncate: 200 }}{% endif %}{% endif %}
+        Message SID: {{ message.sid }}
+      {% else %}No messages found to this number.
+      {% endfor %}{% else %}Twilio returned an unexpected response.{% endif %}
+
+  - id: find_messages_from_number
+    title: Find Messages from Number
+    description: Find the 10 most recent messages a phone number sent to your Twilio numbers. Use this when a customer says they texted or replied, for example with STOP or START, and you need to confirm Twilio received it. Includes the start of each message's text.
+    http_method: GET
+    endpoint_url: 'https://api.twilio.com/2010-04-01/Accounts/${{ inputs.account_sid }}/Messages.json?From={{ phone_number | strip | remove: " " | url_encode }}&PageSize=10'
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key_sid }}
+      password: ${{ secrets.api_key_secret }}
+    param_schema:
+      - name: phone_number
+        type: string
+        description: The sender's phone number in E.164 format, such as +15558675309. For WhatsApp, prefix it with whatsapp:, such as whatsapp:+15558675309.
+        required: true
+    response_template: |-
+      {% if response.messages %}{% for message in response.messages limit: 10 %}- {{ message.date_sent | default: message.date_created }} · {{ message.status }} · from {{ message.from }} to {{ message.to }}{% if message.error_code %}
+        Error {{ message.error_code }}{% if message.error_message and message.error_message != "" %}: {{ message.error_message | truncate: 200 }}{% endif %}{% endif %}
+        Text: {{ message.body | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 120 }}
+        Message SID: {{ message.sid }}
+      {% else %}No messages found from this number.
+      {% endfor %}{% else %}Twilio returned an unexpected response.{% endif %}
+
+  - id: get_message
+    title: Get Message
+    description: Get one message's current delivery status, error code, direction, and segment count, without the message text. Use the message SID from Find Messages to Number or Find Messages from Number to recheck a message that was still queued or sent.
+    http_method: GET
+    endpoint_url: https://api.twilio.com/2010-04-01/Accounts/${{ inputs.account_sid }}/Messages/{{ message_sid | strip | url_encode }}.json
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key_sid }}
+      password: ${{ secrets.api_key_secret }}
+    param_schema:
+      - name: message_sid
+        type: string
+        description: The Twilio message SID, starting with SM or MM.
+        required: true
+    response_template: |-
+      {% if response.sid %}Message {{ response.sid }} · {{ response.status }} · {{ response.direction }}
+      From: {{ response.from }} · To: {{ response.to }}
+      Created: {{ response.date_created }}{% if response.date_sent %}
+      Sent: {{ response.date_sent }}{% endif %}
+      Last updated: {{ response.date_updated }}{% if response.error_code %}
+      Error {{ response.error_code }}{% if response.error_message and response.error_message != "" %}: {{ response.error_message | truncate: 300 }}{% endif %}{% endif %}
+      Segments: {{ response.num_segments }} · Media files: {{ response.num_media }}{% else %}Twilio returned an unexpected response.{% endif %}
+
+  - id: find_calls_to_number
+    title: Find Calls to Number
+    description: Find up to 10 calls Twilio placed to a phone number, with status and duration. Use this when a customer says they missed or never received a call, such as a voice verification code.
+    http_method: GET
+    endpoint_url: 'https://api.twilio.com/2010-04-01/Accounts/${{ inputs.account_sid }}/Calls.json?To={{ phone_number | strip | remove: " " | url_encode }}&PageSize=10'
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key_sid }}
+      password: ${{ secrets.api_key_secret }}
+    param_schema:
+      - name: phone_number
+        type: string
+        description: The phone number that was called, in E.164 format, such as +15558675309.
+        required: true
+    response_template: |-
+      {% if response.calls %}{% for call in response.calls limit: 10 %}- {{ call.start_time | default: call.date_created }} · {{ call.status }} · {{ call.direction }} · from {{ call.from_formatted | default: call.from }} to {{ call.to_formatted | default: call.to }}{% if call.duration and call.duration != "" %} · {{ call.duration }} seconds{% endif %}{% if call.answered_by and call.answered_by != "" %} · answered by {{ call.answered_by }}{% endif %}
+        Call SID: {{ call.sid }}
+      {% else %}No calls found to this number.
+      {% endfor %}{% else %}Twilio returned an unexpected response.{% endif %}
+
+  - id: find_calls_from_number
+    title: Find Calls from Number
+    description: Find up to 10 calls a phone number made to your Twilio numbers, with status and duration. Use this when a customer says they called and could not get through.
+    http_method: GET
+    endpoint_url: 'https://api.twilio.com/2010-04-01/Accounts/${{ inputs.account_sid }}/Calls.json?From={{ phone_number | strip | remove: " " | url_encode }}&PageSize=10'
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key_sid }}
+      password: ${{ secrets.api_key_secret }}
+    param_schema:
+      - name: phone_number
+        type: string
+        description: The caller's phone number in E.164 format, such as +15558675309.
+        required: true
+    response_template: |-
+      {% if response.calls %}{% for call in response.calls limit: 10 %}- {{ call.start_time | default: call.date_created }} · {{ call.status }} · {{ call.direction }} · from {{ call.from_formatted | default: call.from }} to {{ call.to_formatted | default: call.to }}{% if call.duration and call.duration != "" %} · {{ call.duration }} seconds{% endif %}
+        Call SID: {{ call.sid }}
+      {% else %}No calls found from this number.
+      {% endfor %}{% else %}Twilio returned an unexpected response.{% endif %}
+
+  - id: lookup_phone_number
+    title: Look Up Phone Number
+    description: Check whether a phone number is valid and get its country and standard formats. Use this when messages to a number keep failing or the customer may have mistyped their number.
+    http_method: GET
+    endpoint_url: 'https://lookups.twilio.com/v2/PhoneNumbers/{{ phone_number | strip | remove: " " | url_encode }}'
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key_sid }}
+      password: ${{ secrets.api_key_secret }}
+    param_schema:
+      - name: phone_number
+        type: string
+        description: The phone number in E.164 format, such as +15558675309. Numbers without a country code are treated as US or Canada numbers.
+        required: true
+    response_template: |-
+      {% if response.phone_number %}{{ response.phone_number }} · {% if response.valid %}valid number{% else %}not a valid number{% endif %}{% if response.country_code %}
+      Country: {{ response.country_code }} (+{{ response.calling_country_code }}){% endif %}{% if response.national_format %}
+      National format: {{ response.national_format }}{% endif %}{% if response.validation_errors.size > 0 %}
+      Problems: {{ response.validation_errors | join: ", " | replace: "_", " " | downcase }}{% endif %}{% else %}Twilio returned an unexpected response.{% endif %}
