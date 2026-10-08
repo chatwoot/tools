@@ -1,0 +1,130 @@
+version: 0.0.1
+kind: captain_toolset
+name: Todoist
+author: chatwoot
+category: Others
+description: Search Todoist tasks, check their details and comments, and add comments to tasks.
+
+secrets:
+  api_token:
+    label: Todoist API token
+    type: password
+    required: true
+
+tools:
+  - id: search_tasks
+    title: Search Tasks
+    description: Search active Todoist tasks by keyword, such as a bug or request a customer mentions. Use this first to find the task ID the other tools need. Returns up to 10 tasks; completed tasks are not included.
+    http_method: GET
+    endpoint_url: 'https://api.todoist.com/api/v1/tasks/filter?query=search%3A%20{{ keyword | replace: "&", " " | replace: "|", " " | replace: ",", " " | replace: "(", " " | replace: ")", " " | replace: "!", " " | strip | url_encode }}&limit=10'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: keyword
+        type: string
+        description: One or two distinctive words to look for in task names.
+        required: true
+    response_template: |-
+      {% if response.results %}{% for task in response.results limit: 10 %}- {{ task.content | truncate: 150 }} (task ID {{ task.id }}) · Priority {{ task.priority }} of 4{% if task.due.date %} · Due {{ task.due.date | slice: 0, 10 }}{% endif %}{% if task.labels.size > 0 %} · Labels: {{ task.labels | join: ", " }}{% endif %}
+        Project ID: {{ task.project_id }} · Comments: {{ task.note_count | default: 0 }}{% if task.updated_at %} · Updated {{ task.updated_at | slice: 0, 10 }}{% endif %}
+      {% else %}No active tasks found matching this search.
+      {% endfor %}{% if response.next_cursor %}More tasks match; use a more specific keyword to narrow the results.{% endif %}{% else %}Todoist returned an unexpected response.{% endif %}
+
+  - id: get_task
+    title: Get Task
+    description: Get one active Todoist task's details, including its description, priority, due date, labels, and comment count. Use a task ID from Search Tasks or List Project Tasks.
+    http_method: GET
+    endpoint_url: https://api.todoist.com/api/v1/tasks/{{ task_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: task_id
+        type: string
+        description: The Todoist task ID from Search Tasks or List Project Tasks.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.content }} (task ID {{ response.id }}) · {% if response.checked %}completed{% else %}active{% endif %}
+      Priority: {{ response.priority }} of 4 (4 is most urgent){% if response.due.date %}
+      Due: {{ response.due.date | slice: 0, 10 }}{% if response.due.is_recurring %} (recurring: {{ response.due.string }}){% endif %}{% endif %}{% if response.deadline.date %}
+      Deadline: {{ response.deadline.date }}{% endif %}{% if response.labels.size > 0 %}
+      Labels: {{ response.labels | join: ", " }}{% endif %}
+      Project ID: {{ response.project_id }}{% if response.parent_id %}
+      Parent task ID: {{ response.parent_id }}{% endif %}
+      Created: {{ response.added_at | slice: 0, 10 }}{% if response.updated_at %} · Updated: {{ response.updated_at | slice: 0, 10 }}{% endif %}
+      Comments: {{ response.note_count | default: 0 }}{% if response.description and response.description != "" %}
+      Description: {{ response.description | truncate: 1500 }}{% endif %}{% else %}Todoist returned an unexpected response.{% endif %}
+
+  - id: list_task_comments
+    title: List Task Comments
+    description: Read up to 10 comments on a Todoist task, such as progress notes. Use a task ID from Search Tasks or List Project Tasks.
+    http_method: GET
+    endpoint_url: https://api.todoist.com/api/v1/comments?task_id={{ task_id | strip | url_encode }}&limit=50
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: task_id
+        type: string
+        description: The Todoist task ID from Search Tasks or List Project Tasks.
+        required: true
+    response_template: |-
+      {% if response.results %}{% assign comments = response.results | sort: "posted_at" | reverse %}{% for comment in comments limit: 10 %}- {{ comment.posted_at | slice: 0, 10 }}: {{ comment.content | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}{% if comment.file_attachment.file_name %} (attachment: {{ comment.file_attachment.file_name }}){% endif %}
+      {% else %}No comments on this task.
+      {% endfor %}{% else %}Todoist returned an unexpected response.{% endif %}
+
+  - id: list_projects
+    title: List Projects
+    description: List up to 50 active Todoist projects with their project IDs. Use this to find the project ID that List Project Tasks needs, or to name the project a task belongs to.
+    http_method: GET
+    endpoint_url: https://api.todoist.com/api/v1/projects?limit=50
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    response_template: |-
+      {% if response.results %}{% for project in response.results limit: 50 %}- {{ project.name }} (project ID {{ project.id }}){% if project.inbox_project %} · Inbox{% endif %}{% if project.is_shared %} · shared{% endif %}{% if project.description and project.description != "" %}
+        {{ project.description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 150 }}{% endif %}
+      {% else %}No active projects found.
+      {% endfor %}{% if response.next_cursor %}More projects exist than the 50 shown.{% endif %}{% else %}Todoist returned an unexpected response.{% endif %}
+
+  - id: list_project_tasks
+    title: List Project Tasks
+    description: List up to 25 active tasks in a Todoist project, to see what is open there. Use a project ID from List Projects.
+    http_method: GET
+    endpoint_url: https://api.todoist.com/api/v1/tasks?project_id={{ project_id | strip | url_encode }}&limit=25
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: project_id
+        type: string
+        description: The Todoist project ID from List Projects.
+        required: true
+    response_template: |-
+      {% if response.results %}{% for task in response.results limit: 25 %}- {{ task.content | truncate: 150 }} (task ID {{ task.id }}) · Priority {{ task.priority }} of 4{% if task.due.date %} · Due {{ task.due.date | slice: 0, 10 }}{% endif %}{% if task.labels.size > 0 %} · Labels: {{ task.labels | join: ", " }}{% endif %}
+        Project ID: {{ task.project_id }} · Comments: {{ task.note_count | default: 0 }}{% if task.updated_at %} · Updated {{ task.updated_at | slice: 0, 10 }}{% endif %}
+      {% else %}No active tasks in this project.
+      {% endfor %}{% if response.next_cursor %}More tasks exist than the 25 shown.{% endif %}{% else %}Todoist returned an unexpected response.{% endif %}
+
+  - id: add_task_comment
+    title: Add Task Comment
+    description: Add a comment to a Todoist task, for example to note that another customer reported the same issue, with a short summary. Use a task ID from Search Tasks. Only add a comment when the conversation needs one.
+    http_method: POST
+    endpoint_url: https://api.todoist.com/api/v1/comments
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: task_id
+        type: string
+        description: The Todoist task ID from Search Tasks or List Project Tasks.
+        required: true
+      - name: content
+        type: string
+        description: The comment text. Todoist renders Markdown.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% capture escaped_newline %}\\n{% endcapture %}{"task_id":"{{ task_id | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}","content":"{{ content | strip | replace: bs, escaped_bs | replace: '"', escaped_quote | newline_to_br | strip_newlines | replace: "<br />", escaped_newline }}"}
+    response_template: |-
+      {% if response.id %}Added the comment to the task.{% else %}Todoist returned an unexpected response.{% endif %}
