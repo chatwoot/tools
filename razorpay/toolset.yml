@@ -1,0 +1,130 @@
+version: 0.0.1
+kind: captain_toolset
+name: Razorpay
+author: chatwoot
+category: Payments & billing
+description: Check payments, refunds, orders, and subscriptions in Razorpay.
+
+secrets:
+  key_id:
+    label: Razorpay key ID
+    type: password
+    required: true
+  key_secret:
+    label: Razorpay key secret
+    type: password
+    required: true
+
+tools:
+  - id: get_payment
+    title: Get Payment
+    description: Check a Razorpay payment by its payment ID, including amount, status, method, failure reason, refunded amount, and bank reference numbers. Use this first when a customer asks about a charge. Razorpay cannot search by email, so ask the customer for the payment ID, which starts with pay_ and appears on their payment receipt. Confirm that the email or phone number on the payment matches the customer before sharing details.
+    http_method: GET
+    endpoint_url: https://api.razorpay.com/v1/payments/{{ payment_id | strip | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.key_id }}
+      password: ${{ secrets.key_secret }}
+    param_schema:
+      - name: payment_id
+        type: string
+        description: The Razorpay payment ID given by the customer, starting with pay_.
+        required: true
+    response_template: |-
+      {% if response.entity == "payment" %}{% assign zero_decimal = "BIF CLP DJF GNF JPY KMF KRW PYG RWF UGX VND VUV XAF XOF XPF" | split: " " %}{% assign three_decimal = "BHD KWD OMR" | split: " " %}{% assign currency = response.currency | upcase %}{% if zero_decimal contains currency %}{% assign divisor = 1 %}{% elsif three_decimal contains currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}Payment {{ response.id }} · {{ response.created_at | date: "%Y-%m-%d" }} · {{ response.amount | divided_by: divisor }} {{ currency }} · {{ response.status }}
+      Method: {{ response.method | default: "unknown" }}{% if response.bank %} · bank {{ response.bank }}{% endif %}{% if response.wallet %} · {{ response.wallet }}{% endif %}{% if response.vpa %} · {{ response.vpa }}{% endif %}
+      Paid by: {{ response.email | default: "no email" }}{% if response.contact %} · {{ response.contact }}{% endif %}{% if response.order_id %}
+      Order ID: {{ response.order_id }}{% endif %}{% if response.invoice_id %}
+      Invoice ID: {{ response.invoice_id }}{% endif %}{% if response.description and response.description != "" %}
+      Description: {{ response.description | strip_newlines | truncate: 200 }}{% endif %}{% if response.status == "authorized" %}
+      The payment is authorized but not captured yet.{% endif %}{% if response.status == "failed" %}
+      Failure: {{ response.error_description | default: "no description" }}{% if response.error_reason %} (reason: {{ response.error_reason | replace: "_", " " }}){% endif %}{% if response.error_step %}, at step {{ response.error_step | replace: "_", " " }}{% endif %}{% endif %}{% if response.amount_refunded > 0 %}
+      Refunded: {{ response.amount_refunded | divided_by: divisor }} {{ currency }}{% if response.refund_status %} ({{ response.refund_status }} refund){% endif %}{% endif %}{% for reference in response.acquirer_data %}{% if reference[1] and reference[1] != "" %}
+      Bank reference ({{ reference[0] | replace: "_", " " }}): {{ reference[1] }}{% endif %}{% endfor %}{% else %}Razorpay returned an unexpected response.{% endif %}
+
+  - id: list_payment_refunds
+    title: List Payment Refunds
+    description: Check the 10 most recent refunds for a Razorpay payment, with amount, status, speed, and the bank reference number a customer can use to trace the refund with their bank. Use this when a customer asks where a refund is. Use the payment ID the customer gave or one from List Order Payments.
+    http_method: GET
+    endpoint_url: https://api.razorpay.com/v1/payments/{{ payment_id | strip | url_encode }}/refunds?count=10
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.key_id }}
+      password: ${{ secrets.key_secret }}
+    param_schema:
+      - name: payment_id
+        type: string
+        description: The Razorpay payment ID, starting with pay_.
+        required: true
+    response_template: |-
+      {% if response.entity == "collection" %}{% assign zero_decimal = "BIF CLP DJF GNF JPY KMF KRW PYG RWF UGX VND VUV XAF XOF XPF" | split: " " %}{% assign three_decimal = "BHD KWD OMR" | split: " " %}{% for refund in response.items %}{% assign currency = refund.currency | upcase %}{% if zero_decimal contains currency %}{% assign divisor = 1 %}{% elsif three_decimal contains currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}- Refund {{ refund.id }} · {{ refund.created_at | date: "%Y-%m-%d" }} · {{ refund.amount | divided_by: divisor }} {{ currency }} · {{ refund.status }}{% if refund.speed_processed %} · {{ refund.speed_processed }} speed{% endif %}{% for reference in refund.acquirer_data %}{% if reference[1] and reference[1] != "" %}
+        Bank reference ({{ reference[0] | upcase }}): {{ reference[1] }}{% endif %}{% endfor %}
+      {% else %}No refunds found for this payment.
+      {% endfor %}{% else %}Razorpay returned an unexpected response.{% endif %}
+
+  - id: get_order
+    title: Get Order
+    description: Check a Razorpay order by its order ID, including amount, amount paid, amount due, status, and number of payment attempts. Use this when the customer has an order ID, which starts with order_, instead of a payment ID. Then use List Order Payments to see each payment attempt.
+    http_method: GET
+    endpoint_url: https://api.razorpay.com/v1/orders/{{ order_id | strip | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.key_id }}
+      password: ${{ secrets.key_secret }}
+    param_schema:
+      - name: order_id
+        type: string
+        description: The Razorpay order ID, starting with order_. It comes from the customer or from Get Payment.
+        required: true
+    response_template: |-
+      {% if response.entity == "order" %}{% assign zero_decimal = "BIF CLP DJF GNF JPY KMF KRW PYG RWF UGX VND VUV XAF XOF XPF" | split: " " %}{% assign three_decimal = "BHD KWD OMR" | split: " " %}{% assign currency = response.currency | upcase %}{% if zero_decimal contains currency %}{% assign divisor = 1 %}{% elsif three_decimal contains currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}Order {{ response.id }} · {{ response.created_at | date: "%Y-%m-%d" }} · {{ response.status }}
+      Amount: {{ response.amount | divided_by: divisor }} {{ currency }} · paid {{ response.amount_paid | default: 0 | divided_by: divisor }} · due {{ response.amount_due | default: 0 | divided_by: divisor }}
+      Payment attempts: {{ response.attempts | default: 0 }}{% if response.receipt %}
+      Receipt reference: {{ response.receipt }}{% endif %}{% else %}Razorpay returned an unexpected response.{% endif %}
+
+  - id: list_order_payments
+    title: List Order Payments
+    description: List the payment attempts made for a Razorpay order, both successful and failed, with amount, status, method, failure reason, and refunded amount. Use this to find out why paying for an order failed, or to get the payment ID for List Payment Refunds. Use an order ID, which starts with order_.
+    http_method: GET
+    endpoint_url: https://api.razorpay.com/v1/orders/{{ order_id | strip | url_encode }}/payments
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.key_id }}
+      password: ${{ secrets.key_secret }}
+    param_schema:
+      - name: order_id
+        type: string
+        description: The Razorpay order ID, starting with order_. It comes from the customer or from Get Payment.
+        required: true
+    response_template: |-
+      {% if response.entity == "collection" %}{% assign zero_decimal = "BIF CLP DJF GNF JPY KMF KRW PYG RWF UGX VND VUV XAF XOF XPF" | split: " " %}{% assign three_decimal = "BHD KWD OMR" | split: " " %}{% for payment in response.items limit: 10 %}{% assign currency = payment.currency | upcase %}{% if zero_decimal contains currency %}{% assign divisor = 1 %}{% elsif three_decimal contains currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}- Payment {{ payment.id }} · {{ payment.created_at | date: "%Y-%m-%d" }} · {{ payment.amount | divided_by: divisor }} {{ currency }} · {{ payment.status }} · {{ payment.method | default: "unknown method" }}
+        Paid by: {{ payment.email | default: "no email" }}{% if payment.contact %} · {{ payment.contact }}{% endif %}{% if payment.status == "failed" %}
+        Failure: {{ payment.error_description | default: "no description" }}{% if payment.error_reason %} (reason: {{ payment.error_reason | replace: "_", " " }}){% endif %}{% endif %}{% if payment.amount_refunded > 0 %}
+        Refunded: {{ payment.amount_refunded | divided_by: divisor }} {{ currency }}{% if payment.refund_status %} ({{ payment.refund_status }} refund){% endif %}{% endif %}
+      {% else %}No payment attempts found for this order.
+      {% endfor %}{% else %}Razorpay returned an unexpected response.{% endif %}
+
+  - id: get_subscription
+    title: Get Subscription
+    description: Check a Razorpay subscription by its subscription ID, including status, plan ID, current billing cycle, next charge date, and billing cycles paid and remaining. Razorpay cannot search by email, so ask the customer for the subscription ID, which starts with sub_.
+    http_method: GET
+    endpoint_url: https://api.razorpay.com/v1/subscriptions/{{ subscription_id | strip | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.key_id }}
+      password: ${{ secrets.key_secret }}
+    param_schema:
+      - name: subscription_id
+        type: string
+        description: The Razorpay subscription ID given by the customer, starting with sub_.
+        required: true
+    response_template: |-
+      {% if response.entity == "subscription" %}{% if response.status == "cancelled" or response.status == "completed" or response.status == "expired" %}{% assign ended = true %}{% else %}{% assign ended = false %}{% endif %}Subscription {{ response.id }} · {{ response.status }} · created {{ response.created_at | date: "%Y-%m-%d" }}
+      Plan ID: {{ response.plan_id }}{% if response.quantity > 1 %} × {{ response.quantity }}{% endif %}{% if response.customer_id %} · customer ID {{ response.customer_id }}{% endif %}{% if response.payment_method %} · paid by {{ response.payment_method }}{% endif %}{% if response.current_start and response.current_end %}
+      Current billing cycle: {{ response.current_start | date: "%Y-%m-%d" }} to {{ response.current_end | date: "%Y-%m-%d" }}{% endif %}{% unless ended %}{% if response.charge_at %}
+      Next charge: {{ response.charge_at | date: "%Y-%m-%d" }}{% endif %}{% endunless %}
+      Billing cycles: {{ response.paid_count | default: 0 }} of {{ response.total_count }} paid, {{ response.remaining_count | default: 0 }} remaining{% if response.ended_at %}
+      Ended on: {{ response.ended_at | date: "%Y-%m-%d" }}{% elsif response.end_at %}
+      Scheduled to end on: {{ response.end_at | date: "%Y-%m-%d" }}{% endif %}{% if response.has_scheduled_changes %}
+      A change to this subscription is scheduled{% if response.change_scheduled_at %} for {{ response.change_scheduled_at | date: "%Y-%m-%d" }}{% endif %}.{% endif %}{% if response.status == "created" and response.short_url %}
+      Authorisation payment link: {{ response.short_url }}{% endif %}{% else %}Razorpay returned an unexpected response.{% endif %}
