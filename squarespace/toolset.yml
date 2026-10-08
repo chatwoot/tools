@@ -1,0 +1,128 @@
+version: 0.0.1
+kind: captain_toolset
+name: Squarespace Commerce
+author: chatwoot
+category: Commerce
+description: Look up Squarespace customers, orders, shipment tracking, and product stock.
+
+headers:
+  User-Agent: Chatwoot Captain
+
+secrets:
+  api_key:
+    label: Squarespace API key
+    type: password
+    required: true
+
+tools:
+  - id: find_customers
+    title: Find Customers
+    description: Find Squarespace customers by email address or name. Use this first when a customer asks about an order; it returns the customer ID that List Customer Orders needs.
+    http_method: POST
+    endpoint_url: https://api.squarespace.com/v1/contacts/query
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: search
+        type: string
+        description: The customer's email address or name.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"searchString":"{{ search | newline_to_br | replace: "<br />", " " | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}","pageSize":5}
+    response_template: |-
+      {% if response.contacts %}{% for contact in response.contacts limit: 5 %}{% capture name %}{{ contact.firstName }} {{ contact.lastName }}{% endcapture %}{% assign name = name | strip %}- {{ name | default: "No name" }} <{{ contact.primaryEmail.email }}>
+        Customer ID: {{ contact.id }}
+        Customer since: {{ contact.createdOn | slice: 0, 10 }}{% if contact.defaultShippingAddress.address.city %}
+        Default shipping address: {{ contact.defaultShippingAddress.address.city }}, {{ contact.defaultShippingAddress.address.region }} {{ contact.defaultShippingAddress.address.countryCode }}{% endif %}
+      {% else %}No Squarespace customer found for this email address or name.
+      {% endfor %}{% if response.pagination.hasNextPage %}More customers match; only the first 5 are shown.{% endif %}{% else %}Squarespace returned an unexpected response.{% endif %}
+
+  - id: list_customer_orders
+    title: List Customer Orders
+    description: List a customer's 10 most recent Squarespace orders with order number, payment and fulfillment status, total, and tracking. Use the customer ID from Find Customers. Returns the order ID that Get Order needs.
+    http_method: GET
+    endpoint_url: https://api.squarespace.com/1.0/commerce/orders?customerId={{ customer_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Squarespace customer ID from Find Customers, such as 585d498fdee9f31a60284a38.
+        required: true
+    response_template: |-
+      {% if response.result %}{% assign orders = response.result | sort: "createdOn" | reverse %}{% for order in orders limit: 10 %}- Order #{{ order.orderNumber }} · {{ order.createdOn | slice: 0, 10 }} · {{ order.grandTotal.value }} {{ order.grandTotal.currency.currencyCode | default: order.grandTotal.currency }}{% if order.testmode %} · test order{% endif %}
+        Order ID: {{ order.id }}
+        Payment: {{ order.paymentState | replace: "_", " " | downcase }} · Fulfillment: {{ order.fulfillmentStatus | downcase }}{% assign refunded = order.refundedTotal.value | plus: 0 %}{% if refunded > 0 %} · refunded {{ order.refundedTotal.value }}{% endif %}
+        Items: {% for item in order.lineItems limit: 5 %}{{ item.quantity }} × {{ item.productName }}{% unless forloop.last %}; {% endunless %}{% endfor %}{% if order.lineItems.size > 5 %}; and {{ order.lineItems.size | minus: 5 }} more{% endif %}{% for fulfillment in order.fulfillments limit: 3 %}{% if fulfillment.trackingNumber or fulfillment.trackingUrl %}
+        Tracking: {{ fulfillment.carrierName }} {{ fulfillment.trackingNumber }}{% if fulfillment.trackingUrl %} · {{ fulfillment.trackingUrl }}{% endif %}{% endif %}{% endfor %}
+      {% else %}No orders found for this customer.
+      {% endfor %}{% if response.result.size > 10 or response.pagination.hasNextPage %}This customer has more orders than are shown here.{% endif %}{% else %}Squarespace returned an unexpected response.{% endif %}
+
+  - id: get_order
+    title: Get Order
+    description: Get one Squarespace order's full details, including items, totals, refunds, shipping address, shipping method, and shipment tracking. Use the order ID from List Customer Orders, not the order number the customer sees.
+    http_method: GET
+    endpoint_url: https://api.squarespace.com/1.0/commerce/orders/{{ order_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: order_id
+        type: string
+        description: The Squarespace order ID from List Customer Orders, such as 585d498fdee9f31a60284a37. This is not the order number.
+        required: true
+    response_template: |-
+      {% if response.id %}{% assign currency = response.grandTotal.currency.currencyCode | default: response.grandTotal.currency %}Order #{{ response.orderNumber }} (order ID {{ response.id }}){% if response.testmode %} · test order{% endif %}
+      Placed: {{ response.createdOn | slice: 0, 10 }} by {{ response.customerEmail }}{% if response.channelName %} via {{ response.channelName }}{% endif %}
+      Payment: {{ response.paymentState | replace: "_", " " | downcase }}
+      Fulfillment: {{ response.fulfillmentStatus | downcase }}{% if response.fulfilledOn %} on {{ response.fulfilledOn | slice: 0, 10 }}{% endif %}
+      Total: {{ response.grandTotal.value }} {{ currency }} (subtotal {{ response.subtotal.value }}, shipping {{ response.shippingTotal.value }}, tax {{ response.taxTotal.value }}{% assign discounted = response.discountTotal.value | plus: 0 %}{% if discounted > 0 %}, discount {{ response.discountTotal.value }}{% endif %}){% assign refunded = response.refundedTotal.value | plus: 0 %}{% if refunded > 0 %}
+      Refunded: {{ response.refundedTotal.value }} {{ currency }}{% endif %}{% for discount in response.discountLines limit: 3 %}{% if discount.promoCode or discount.name %}
+      Discount: {{ discount.promoCode | default: discount.name }}{% endif %}{% endfor %}
+      Items:{% for item in response.lineItems limit: 15 %}
+      - {{ item.quantity }} × {{ item.productName }}{% for option in item.variantOptions limit: 5 %}, {{ option.optionName }}: {{ option.value }}{% endfor %}{% if item.sku %} (SKU {{ item.sku }}){% endif %} · {{ item.unitPricePaid.value }} each{% if item.productId %} · product ID {{ item.productId }}{% endif %}{% endfor %}{% if response.lineItems.size > 15 %}
+      - and {{ response.lineItems.size | minus: 15 }} more items{% endif %}{% if response.shippingOptionName %}
+      Shipping method: {{ response.shippingOptionName }}{% elsif response.shippingLines.first.method %}
+      Shipping method: {{ response.shippingLines.first.method }}{% endif %}{% if response.shippingAddress %}{% capture address %}{{ response.shippingAddress.firstName }} {{ response.shippingAddress.lastName }}, {{ response.shippingAddress.address1 }} {{ response.shippingAddress.address2 }}, {{ response.shippingAddress.city }}, {{ response.shippingAddress.state }} {{ response.shippingAddress.postalCode }}, {{ response.shippingAddress.countryCode }}{% endcapture %}
+      Ship to: {{ address | split: " " | join: " " | replace: " ,", "," }}{% endif %}{% for fulfillment in response.fulfillments limit: 5 %}
+      Shipment: {{ fulfillment.carrierName | default: "Carrier not set" }}{% if fulfillment.service %} {{ fulfillment.service }}{% endif %}{% if fulfillment.shipDate %} · shipped {{ fulfillment.shipDate | slice: 0, 10 }}{% endif %}{% if fulfillment.trackingNumber %} · tracking {{ fulfillment.trackingNumber }}{% endif %}{% if fulfillment.trackingUrl %} · {{ fulfillment.trackingUrl }}{% endif %}{% else %}
+      No shipments recorded yet.{% endfor %}{% else %}Squarespace returned an unexpected response.{% endif %}
+
+  - id: list_products
+    title: List Products
+    description: List the 25 most recently updated products in the Squarespace store with their type and visibility, plus price and stock for products with a single variant. Use this to answer what is for sale or in stock, and to find the product ID that Get Product needs.
+    http_method: GET
+    endpoint_url: https://api.squarespace.com/v2/commerce/products
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.products %}{% assign products = response.products | sort: "modifiedOn" | reverse %}{% for product in products limit: 25 %}{% assign first = product.variants.first %}{% assign variant_count = product.variants.size | default: 0 %}{% assign price = first.pricing | default: product.pricing %}- {{ product.name }} · {{ product.type | downcase | replace: "_", " " }}{% if product.isVisible == false %} · hidden{% endif %}{% if price.basePrice.value and variant_count < 2 %} · {% if price.onSale and price.salePrice.value %}{{ price.salePrice.value }}{% else %}{{ price.basePrice.value }}{% endif %} {{ price.basePrice.currency.currencyCode | default: price.basePrice.currency }}{% endif %}{% if variant_count > 1 %} · {{ variant_count }} variants{% elsif first.stock %} · {% if first.stock.unlimited %}unlimited stock{% elsif first.stock.quantity > 0 %}{{ first.stock.quantity }} in stock{% else %}out of stock{% endif %}{% endif %}
+        Product ID: {{ product.id }}{% if product.url %} · {{ product.url }}{% endif %}
+      {% else %}No products found in this Squarespace store.
+      {% endfor %}{% if response.products.size > 25 or response.pagination.hasNextPage %}The store has more products than are shown here.{% endif %}{% else %}Squarespace returned an unexpected response.{% endif %}
+
+  - id: get_product
+    title: Get Product
+    description: Get one Squarespace product's description and the price, sale price, SKU, and stock of each variant, such as a size or color. Use the product ID from List Products or from an order's items in Get Order.
+    http_method: GET
+    endpoint_url: https://api.squarespace.com/v2/commerce/products/{{ product_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: product_id
+        type: string
+        description: The Squarespace product ID from List Products or from an order item in Get Order.
+        required: true
+    response_template: |-
+      {% if response.products %}{% for product in response.products limit: 1 %}{{ product.name }} (product ID {{ product.id }})
+      Type: {{ product.type | downcase | replace: "_", " " }}{% if product.isVisible == false %} · hidden from the store{% endif %}{% if product.url %}
+      Link: {{ product.url }}{% endif %}{% if product.pricing.basePrice.value %}
+      Price: {% if product.pricing.onSale and product.pricing.salePrice.value %}{{ product.pricing.salePrice.value }} (on sale, was {{ product.pricing.basePrice.value }}){% else %}{{ product.pricing.basePrice.value }}{% endif %} {{ product.pricing.basePrice.currency.currencyCode | default: product.pricing.basePrice.currency }}{% endif %}{% if product.variants.size > 0 %}
+      Variants:{% for variant in product.variants limit: 25 %}
+      - {% capture options %}{% for attribute in variant.attributes %}{{ attribute[0] }}: {{ attribute[1] }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endcapture %}{{ options | default: "Default" }}{% if variant.sku and variant.sku != "" %} · SKU {{ variant.sku }}{% endif %}{% if variant.pricing.basePrice.value %} · {% if variant.pricing.onSale and variant.pricing.salePrice.value %}{{ variant.pricing.salePrice.value }} (on sale, was {{ variant.pricing.basePrice.value }}){% else %}{{ variant.pricing.basePrice.value }}{% endif %} {{ variant.pricing.basePrice.currency.currencyCode | default: variant.pricing.basePrice.currency }}{% endif %}{% if variant.stock %} · {% if variant.stock.unlimited %}unlimited stock{% elsif variant.stock.quantity > 0 %}{{ variant.stock.quantity }} in stock{% else %}out of stock{% endif %}{% endif %}{% endfor %}{% if product.variants.size > 25 %}
+      - and {{ product.variants.size | minus: 25 }} more variants{% endif %}{% endif %}{% if product.description and product.description != "" %}
+      Description: {{ product.description | replace: "<", " <" | strip_html | split: " " | join: " " | truncate: 600 }}{% endif %}{% else %}No product found with this ID.{% endfor %}{% else %}Squarespace returned an unexpected response.{% endif %}
