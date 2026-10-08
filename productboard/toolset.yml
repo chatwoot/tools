@@ -1,0 +1,171 @@
+version: 0.0.1
+kind: captain_toolset
+name: Productboard
+author: chatwoot
+category: Others
+description: Look up features, their status, and customer feedback in Productboard, and log new feedback as notes.
+
+headers:
+  Accept: application/json
+
+secrets:
+  api_token:
+    label: Productboard API access token
+    type: password
+    required: true
+
+tools:
+  - id: search_features
+    title: Search Features
+    description: Find Productboard features by name and get up to 10 matches with status, timeframe, and feature IDs. Use this first when a customer asks whether a feature is planned, in progress, or released. Try a short, distinctive word from the feature name.
+    http_method: POST
+    endpoint_url: https://api.productboard.com/v2/entities/search
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: name
+        type: string
+        description: The feature name or a distinctive word from it, such as "SSO" or "dark mode".
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"data":{"filter":{"type":["feature"],"fields":{"name":"{{ name | newline_to_br | replace: "<br />", " " | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}","archived":false}},"return":{"fields":["name","status","timeframe"]}}}
+    response_template: |-
+      {% if response.data %}{% for entity in response.data limit: 10 %}- {{ entity.fields.name | default: "Unnamed feature" }} (feature ID {{ entity.id }})
+        Status: {{ entity.fields.status.name | default: "not set" }}{% if entity.fields.timeframe.startDate or entity.fields.timeframe.endDate %} · Timeframe: {{ entity.fields.timeframe.startDate | default: "?" }} to {{ entity.fields.timeframe.endDate | default: "?" }}{% endif %}
+      {% else %}No Productboard feature matches this name.{% endfor %}{% if response.data.size > 10 %}More features match. Use a more specific name.{% endif %}{% else %}Productboard returned an unexpected response.{% endif %}
+
+  - id: get_feature
+    title: Get Feature
+    description: Get one Productboard feature with its status, timeframe, progress, health, owner, and description. Use the feature ID from Search Features or from a note's linked features.
+    http_method: GET
+    endpoint_url: https://api.productboard.com/v2/entities/{{ feature_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: feature_id
+        type: string
+        description: The Productboard feature ID, a UUID from Search Features or from the linked features of a note.
+        required: true
+    response_template: |-
+      {% if response.data.id %}{% assign entity = response.data %}{% assign f = entity.fields %}{{ f.name | default: "Unnamed" }} ({{ entity.type }} ID {{ entity.id }})
+      Status: {{ f.status.name | default: "not set" }}{% if f.archived %} · archived{% endif %}{% if f.timeframe.startDate or f.timeframe.endDate %}
+      Timeframe: {{ f.timeframe.startDate | default: "?" }} to {{ f.timeframe.endDate | default: "?" }}{% endif %}{% if f.workProgress.value %}
+      Progress: {{ f.workProgress.value }}%{% endif %}{% if f.health.status and f.health.status != "notSet" %}
+      Health: {{ f.health.status }}{% if f.health.comment and f.health.comment != "" %} ({{ f.health.comment | strip_html | strip_newlines | truncate: 200 }}){% endif %}{% endif %}{% if f.owner.email and f.owner.email != "[redacted]" %}
+      Owner: {{ f.owner.email }}{% endif %}{% if f.teams.size > 0 %}
+      Teams: {{ f.teams | map: "name" | join: ", " }}{% endif %}{% assign description = f.description | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}{% if description != "" %}
+      Description: {{ description | truncate: 800 }}{% endif %}{% if entity.updatedAt %}
+      Updated: {{ entity.updatedAt | slice: 0, 10 }}{% endif %}{% if entity.links.html %}
+      Open in Productboard: {{ entity.links.html }}{% endif %}{% else %}Productboard returned an unexpected response.{% endif %}
+
+  - id: list_feature_notes
+    title: List Feature Notes
+    description: Read up to 10 customer feedback notes linked to a Productboard feature. Use this to see what customers have said about a feature. Use the feature ID from Search Features.
+    http_method: POST
+    endpoint_url: https://api.productboard.com/v2/notes/search
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: feature_id
+        type: string
+        description: The Productboard feature ID, a UUID from Search Features.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{"data":{"filter":{"relationships":{"link":[{"id":"{{ feature_id | strip | remove: bs | remove: '"' }}"}]}},"return":{"fields":["name","content","tags","processed"]}}}
+    response_template: |-
+      {% if response.data %}{% for note in response.data limit: 10 %}- {{ note.fields.name | default: "Untitled note" }} (note ID {{ note.id }}){% if note.createdAt %} · {{ note.createdAt | slice: 0, 10 }}{% endif %}{% if note.fields.tags.size > 0 %} · tags: {{ note.fields.tags | map: "name" | join: ", " }}{% endif %}{% capture content %}{% if note.fields.content.first.content %}{% for part in note.fields.content limit: 6 %}{{ part.authorName | default: part.authorType }}: {{ part.content }} {% endfor %}{% else %}{{ note.fields.content }}{% endif %}{% endcapture %}{% assign content = content | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}{% if content != "" %}
+        {{ content | truncate: 300 }}{% endif %}
+      {% else %}No feedback notes are linked to this feature.{% endfor %}{% if response.links.next %}More notes exist. Only the first 10 are shown.{% endif %}{% else %}Productboard returned an unexpected response.{% endif %}
+
+  - id: find_customer
+    title: Find Customer
+    description: Find a Productboard user, meaning one of your customers, by email address. Use this first to get the customer ID that List Customer Notes needs.
+    http_method: POST
+    endpoint_url: https://api.productboard.com/v2/entities/search
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{"data":{"filter":{"type":["user"],"fields":{"email":{"contains":"{{ email | strip_newlines | strip | remove: bs | remove: '"' }}"}}},"return":{"fields":["name","email"]}}}
+    response_template: |-
+      {% if response.data %}{% for entity in response.data limit: 5 %}- {{ entity.fields.name | default: "Unnamed user" }}{% if entity.fields.email %} <{{ entity.fields.email }}>{% endif %} (customer ID {{ entity.id }}){% for relationship in entity.relationships.data %}{% if relationship.type == "parent" %}
+        Company ID: {{ relationship.target.id }}{% endif %}{% endfor %}
+      {% else %}No Productboard user found with this email address.{% endfor %}{% else %}Productboard returned an unexpected response.{% endif %}
+
+  - id: list_customer_notes
+    title: List Customer Notes
+    description: Read up to 10 feedback notes from one customer in Productboard, with the features each note is linked to. Use this when a customer asks about feedback or requests they sent before. Use the customer ID from Find Customer, or a company ID to see a whole account.
+    http_method: POST
+    endpoint_url: https://api.productboard.com/v2/notes/search
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Productboard user ID or company ID, a UUID from Find Customer.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{"data":{"filter":{"relationships":{"customer":[{"id":"{{ customer_id | strip | remove: bs | remove: '"' }}"}]}},"return":{"fields":["name","content","tags","processed"]}}}
+    response_template: |-
+      {% if response.data %}{% for note in response.data limit: 10 %}- {{ note.fields.name | default: "Untitled note" }} (note ID {{ note.id }}){% if note.createdAt %} · {{ note.createdAt | slice: 0, 10 }}{% endif %}{% if note.fields.processed %} · processed{% endif %}{% capture content %}{% if note.fields.content.first.content %}{% for part in note.fields.content limit: 6 %}{{ part.authorName | default: part.authorType }}: {{ part.content }} {% endfor %}{% else %}{{ note.fields.content }}{% endif %}{% endcapture %}{% assign content = content | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}{% if content != "" %}
+        {{ content | truncate: 300 }}{% endif %}{% assign relationships = note.relationships.data | default: note.relationships %}{% for relationship in relationships %}{% if relationship.type == "link" %}
+        Linked {{ relationship.target.type | default: "feature" }} ID: {{ relationship.target.id }}{% endif %}{% endfor %}
+      {% else %}No feedback notes found for this customer.{% endfor %}{% if response.links.next %}More notes exist. Only the first 10 are shown.{% endif %}{% else %}Productboard returned an unexpected response.{% endif %}
+
+  - id: get_note
+    title: Get Note
+    description: Read one Productboard feedback note in full, with its tags, customer, and linked features. Use the note ID from List Feature Notes or List Customer Notes.
+    http_method: GET
+    endpoint_url: https://api.productboard.com/v2/notes/{{ note_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: note_id
+        type: string
+        description: The Productboard note ID, a UUID from List Feature Notes or List Customer Notes.
+        required: true
+    response_template: |-
+      {% if response.data.id %}{% assign note = response.data %}{{ note.fields.name | default: "Untitled note" }} (note ID {{ note.id }})
+      Type: {{ note.type }}{% if note.createdAt %} · Created: {{ note.createdAt | slice: 0, 10 }}{% endif %}{% if note.fields.processed %} · processed{% endif %}{% if note.fields.archived %} · archived{% endif %}{% if note.fields.tags.size > 0 %}
+      Tags: {{ note.fields.tags | map: "name" | join: ", " }}{% endif %}{% assign relationships = note.relationships.data | default: note.relationships %}{% for relationship in relationships %}{% if relationship.type == "customer" %}
+      Customer: {{ relationship.target.type }} ID {{ relationship.target.id }}{% elsif relationship.type == "link" %}
+      Linked {{ relationship.target.type | default: "feature" }} ID: {{ relationship.target.id }}{% endif %}{% endfor %}{% capture content %}{% if note.fields.content.first.content %}{% for part in note.fields.content limit: 20 %}{{ part.authorName | default: part.authorType }}: {{ part.content }} | {% endfor %}{% else %}{{ note.fields.content }}{% endif %}{% endcapture %}{% assign content = content | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}{% if content != "" %}
+      Content: {{ content | truncate: 1500 }}{% endif %}{% if note.links.html %}
+      Open in Productboard: {{ note.links.html }}{% endif %}{% else %}Productboard returned an unexpected response.{% endif %}
+
+  - id: add_note
+    title: Add Note
+    description: Log a customer's feature request or product feedback as a new note in Productboard for the product team. Only use this when the customer gave real feedback and no existing note covers it. Leave customer_email empty unless Find Customer found that user, because Productboard rejects emails it does not know.
+    http_method: POST
+    endpoint_url: https://api.productboard.com/v2/notes
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: title
+        type: string
+        description: A short title for the feedback, such as "Wants CSV export for invoices".
+        required: true
+      - name: content
+        type: string
+        description: The feedback in the customer's own words, plus any useful context. Plain text only.
+        required: true
+      - name: customer_email
+        type: string
+        description: Optional email of an existing Productboard user to attribute the note to. Use the email returned by Find Customer.
+        required: false
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% capture escaped_newline %}\\n{% endcapture %}{% assign customer_email = customer_email | strip_newlines | strip | remove: bs | remove: '"' %}{"data":{"type":"textNote","fields":{"name":"{{ title | newline_to_br | replace: "<br />", " " | strip_newlines | strip | truncate: 250 | replace: bs, escaped_bs | replace: '"', escaped_quote }}","content":"{{ content | strip | replace: bs, escaped_bs | replace: '"', escaped_quote | newline_to_br | strip_newlines | replace: "<br />", escaped_newline }}"}{% if customer_email != "" %},"relationships":[{"type":"customer","target":{"type":"user","email":"{{ customer_email }}"}}]{% endif %}}}
+    response_template: |-
+      {% if response.data.id %}Logged the feedback in Productboard (note ID {{ response.data.id }}).{% if response.data.links.html %}
+      Open in Productboard: {{ response.data.links.html }}{% endif %}{% else %}Productboard returned an unexpected response.{% endif %}
