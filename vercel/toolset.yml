@@ -1,0 +1,153 @@
+version: 0.0.1
+kind: captain_toolset
+name: Vercel
+author: chatwoot
+category: Engineering & status
+description: Check Vercel projects, recent deployments, and whether the latest production deployment succeeded.
+
+secrets:
+  access_token:
+    label: Vercel access token
+    type: password
+    required: true
+
+tools:
+  - id: list_projects
+    title: List Projects
+    description: List up to 20 Vercel projects with the state of each one's current production deployment. Use this first to find the project name or ID the other Vercel tools need.
+    http_method: GET
+    endpoint_url: https://api.vercel.com/v10/projects?limit=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    response_template: |-
+      {% if response.projects %}{% for project in response.projects %}{% assign production = project.targets.production %}- {{ project.name }} (project ID {{ project.id }}){% if project.framework %} · {{ project.framework }}{% endif %}{% if project.paused %} · paused{% endif %}{% if production.id %} · production: {{ production.readyState | default: "unknown" | downcase }}{% if production.createdAt %}, deployed {{ production.createdAt | divided_by: 1000 | date: "%Y-%m-%d %H:%M %Z" }}{% endif %}{% if production.alias.first %}, https://{{ production.alias.first }}{% endif %}{% else %} · no production deployment{% endif %}
+      {% else %}No projects found.
+      {% endfor %}{% if response.pagination.next %}More projects exist than the 20 shown.{% endif %}{% else %}Vercel returned an unexpected response.{% endif %}
+
+  - id: get_project
+    title: Get Project
+    description: Read one Vercel project, including its current production deployment and its 5 latest deployments. Use a project name or ID from List Projects.
+    http_method: GET
+    endpoint_url: https://api.vercel.com/v9/projects/{{ project | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: project
+        type: string
+        description: The Vercel project name or project ID (starting with prj_) from List Projects.
+        required: true
+    response_template: |-
+      {% if response.id and response.name %}{% assign production = response.targets.production %}{{ response.name }} (project ID {{ response.id }}){% if response.framework %}
+      Framework: {{ response.framework }}{% endif %}{% if response.paused %}
+      Project is paused.{% endif %}{% if response.link.repo %}
+      Repository: {{ response.link.type }} {% if response.link.org %}{{ response.link.org }}/{% endif %}{{ response.link.repo }}{% if response.link.productionBranch %} (production branch {{ response.link.productionBranch }}){% endif %}{% endif %}{% if production.id %}
+      Production deployment: {{ production.readyState | default: "unknown" | downcase }} (deployment ID {{ production.id }}){% if production.createdAt %}, created {{ production.createdAt | divided_by: 1000 | date: "%Y-%m-%d %H:%M %Z" }}{% endif %}{% if production.alias.size > 0 %}
+      Production domains: {% for alias in production.alias limit: 5 %}{{ alias }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% else %}
+      No production deployment yet.{% endif %}{% if response.latestDeployments.size > 0 %}
+      Latest deployments:{% for deployment in response.latestDeployments limit: 5 %}
+      - {{ deployment.createdAt | divided_by: 1000 | date: "%Y-%m-%d %H:%M %Z" }} · {{ deployment.target | default: "preview" }} · {{ deployment.readyState | default: "unknown" | downcase }} (deployment ID {{ deployment.id }}){% endfor %}{% endif %}{% else %}Vercel returned an unexpected response.{% endif %}
+
+  - id: get_latest_production_deployment
+    title: Get Latest Production Deployment
+    description: Check whether the most recent production deployment of a Vercel project succeeded, failed, or is still building. Use this when a customer reports a problem that may have started with a release.
+    http_method: GET
+    endpoint_url: https://api.vercel.com/v7/deployments?projectId={{ project | strip | url_encode }}&target=production&limit=1
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: project
+        type: string
+        description: The Vercel project name or project ID (starting with prj_) from List Projects.
+        required: true
+    response_template: |-
+      {% if response.deployments %}{% for deployment in response.deployments limit: 1 %}{% assign state = deployment.state | default: deployment.readyState | default: "unknown" %}Latest production deployment of {{ deployment.name }}: {% case state %}{% when "READY" %}succeeded (ready){% when "ERROR" %}failed{% when "CANCELED" %}canceled{% when "BUILDING" %}still building{% when "QUEUED" %}queued{% when "INITIALIZING" %}initializing{% else %}{{ state | downcase }}{% endcase %}
+      Deployment ID: {{ deployment.uid }}
+      Created: {{ deployment.created | divided_by: 1000 | date: "%Y-%m-%d %H:%M %Z" }}{% if deployment.ready %}
+      Ready: {{ deployment.ready | divided_by: 1000 | date: "%Y-%m-%d %H:%M %Z" }}{% endif %}{% if deployment.readySubstate %}
+      Rollout: {{ deployment.readySubstate | downcase }}{% endif %}{% if deployment.errorMessage %}
+      Error: {{ deployment.errorMessage | truncate: 300 }}{% if deployment.errorCode %} ({{ deployment.errorCode }}){% endif %}{% endif %}{% if deployment.url %}
+      URL: https://{{ deployment.url }}{% endif %}{% if deployment.inspectorUrl %}
+      Inspect: {{ deployment.inspectorUrl }}{% endif %}{% else %}No production deployments found for this project.{% endfor %}{% else %}Vercel returned an unexpected response.{% endif %}
+
+  - id: list_project_deployments
+    title: List Project Deployments
+    description: List the 10 most recent deployments of a Vercel project, production and preview, with their state and any error. Returns deployment IDs for Get Deployment.
+    http_method: GET
+    endpoint_url: https://api.vercel.com/v7/deployments?projectId={{ project | strip | url_encode }}&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: project
+        type: string
+        description: The Vercel project name or project ID (starting with prj_) from List Projects.
+        required: true
+    response_template: |-
+      {% if response.deployments %}{% for deployment in response.deployments %}- {{ deployment.created | divided_by: 1000 | date: "%Y-%m-%d %H:%M %Z" }} · {{ deployment.target | default: "preview" }} · {{ deployment.state | default: deployment.readyState | default: "unknown" | downcase }} (deployment ID {{ deployment.uid }}){% if deployment.url %} · https://{{ deployment.url }}{% endif %}{% if deployment.errorMessage %}
+        Error: {{ deployment.errorMessage | truncate: 200 }}{% endif %}
+      {% else %}No deployments found for this project.
+      {% endfor %}{% else %}Vercel returned an unexpected response.{% endif %}
+
+  - id: list_recent_deployments
+    title: List Recent Deployments
+    description: List the 10 most recent deployments across all Vercel projects the token can access. Use this when you do not know which project a customer's problem relates to.
+    http_method: GET
+    endpoint_url: https://api.vercel.com/v7/deployments?limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    response_template: |-
+      {% if response.deployments %}{% for deployment in response.deployments %}- {{ deployment.created | divided_by: 1000 | date: "%Y-%m-%d %H:%M %Z" }} · {{ deployment.name }} · {{ deployment.target | default: "preview" }} · {{ deployment.state | default: deployment.readyState | default: "unknown" | downcase }} (deployment ID {{ deployment.uid }}){% if deployment.errorMessage %}
+        Error: {{ deployment.errorMessage | truncate: 200 }}{% endif %}
+      {% else %}No deployments found.
+      {% endfor %}{% else %}Vercel returned an unexpected response.{% endif %}
+
+  - id: get_deployment
+    title: Get Deployment
+    description: Read one Vercel deployment, including its state, environment, Git branch and commit, domains, and the error if it failed. Use a deployment ID from the Vercel list tools, or the deployment's hostname.
+    http_method: GET
+    endpoint_url: https://api.vercel.com/v13/deployments/{{ deployment | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: deployment
+        type: string
+        description: The deployment ID (starting with dpl_) from the Vercel list tools, or the deployment hostname without https://, such as my-app-abc123.vercel.app.
+        required: true
+    response_template: |-
+      {% if response.id and response.readyState %}{{ response.name }} deployment {{ response.id }}
+      State: {{ response.readyState | downcase }}{% if response.readySubstate %} ({{ response.readySubstate | downcase }}){% endif %}
+      Environment: {{ response.target | default: "preview" }}
+      Created: {{ response.createdAt | divided_by: 1000 | date: "%Y-%m-%d %H:%M %Z" }}{% if response.ready %}
+      Ready: {{ response.ready | divided_by: 1000 | date: "%Y-%m-%d %H:%M %Z" }}{% endif %}{% if response.canceledAt %}
+      Canceled: {{ response.canceledAt | divided_by: 1000 | date: "%Y-%m-%d %H:%M %Z" }}{% endif %}{% if response.errorMessage %}
+      Error: {{ response.errorMessage | truncate: 400 }}{% if response.errorCode %} ({{ response.errorCode }}){% endif %}{% if response.errorStep %}
+      Failed step: {{ response.errorStep }}{% endif %}{% endif %}{% if response.gitSource.ref or response.gitSource.sha %}
+      Git: {% if response.gitSource.ref %}branch {{ response.gitSource.ref }}{% endif %}{% if response.gitSource.sha %} commit {{ response.gitSource.sha | slice: 0, 7 }}{% endif %}{% endif %}{% if response.checksConclusion %}
+      Checks: {{ response.checksConclusion }}{% endif %}{% if response.url %}
+      URL: https://{{ response.url }}{% endif %}{% if response.alias.size > 0 %}
+      Domains: {% for alias in response.alias limit: 5 %}{{ alias }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if response.aliasError.message %}
+      Domain assignment error: {{ response.aliasError.message | truncate: 200 }}{% endif %}{% if response.inspectorUrl %}
+      Inspect: {{ response.inspectorUrl }}{% endif %}{% else %}Vercel returned an unexpected response.{% endif %}
+
+  - id: list_project_domains
+    title: List Project Domains
+    description: List up to 20 domains attached to a Vercel project and whether each one is verified. Use this when a customer reports that a domain does not load or points to the wrong place.
+    http_method: GET
+    endpoint_url: https://api.vercel.com/v9/projects/{{ project | strip | url_encode }}/domains?limit=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: project
+        type: string
+        description: The Vercel project name or project ID (starting with prj_) from List Projects.
+        required: true
+    response_template: |-
+      {% if response.domains %}{% for domain in response.domains %}- {{ domain.name }}: {% if domain.verified %}verified{% else %}not verified{% endif %}{% if domain.redirect %} · redirects to {{ domain.redirect }}{% endif %}{% if domain.gitBranch %} · branch {{ domain.gitBranch }}{% endif %}
+      {% else %}No domains are attached to this project.
+      {% endfor %}{% else %}Vercel returned an unexpected response.{% endif %}
