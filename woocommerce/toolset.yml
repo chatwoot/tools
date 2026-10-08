@@ -1,0 +1,129 @@
+version: 0.0.1
+kind: captain_toolset
+name: WooCommerce
+author: chatwoot
+category: Commerce
+description: Look up WooCommerce customers, orders, and order notes.
+
+inputs:
+  store_domain:
+    label: Store domain
+    placeholder: shop.example.com
+    required: true
+
+secrets:
+  consumer_key:
+    label: WooCommerce consumer key
+    type: password
+    required: true
+  consumer_secret:
+    label: WooCommerce consumer secret
+    type: password
+    required: true
+
+tools:
+  - id: find_customer_by_email
+    title: Find Customer by Email
+    description: Find a WooCommerce customer account by email address. Use this first to get the customer ID that List Customer Orders needs. If no customer is found, the customer may have checked out as a guest; try Search Orders with their email.
+    http_method: GET
+    endpoint_url: https://${{ inputs.store_domain }}/wp-json/wc/v3/customers?email={{ email | strip | url_encode }}&role=all&per_page=5
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.consumer_key }}
+      password: ${{ secrets.consumer_secret }}
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    response_template: |-
+      {% if response.size == 0 %}No WooCommerce customer found with this email address.{% elsif response[0].id %}{% for customer in response limit: 5 %}{% capture name %}{{ customer.first_name }} {{ customer.last_name }}{% endcapture %}{% assign name = name | strip %}- {{ name | default: customer.username | default: "No name" }} <{{ customer.email }}>
+        Customer ID: {{ customer.id }}
+        Customer since: {{ customer.date_created | slice: 0, 10 }}{% if customer.is_paying_customer %} · Has paid orders{% endif %}{% if customer.billing.phone and customer.billing.phone != "" %}
+        Phone: {{ customer.billing.phone }}{% endif %}{% if customer.billing.country and customer.billing.country != "" %}
+        Billing location: {{ customer.billing.city }} {{ customer.billing.state }} {{ customer.billing.country }}{% endif %}
+      {% endfor %}{% else %}WooCommerce returned an unexpected response.{% endif %}
+
+  - id: list_customer_orders
+    title: List Customer Orders
+    description: Check a customer's 10 most recent WooCommerce orders, with status, total, and items. Use the customer ID from Find Customer by Email. Do not use 0, which means guest orders; use Search Orders for guests.
+    http_method: GET
+    endpoint_url: https://${{ inputs.store_domain }}/wp-json/wc/v3/orders?customer={{ customer_id | url_encode }}&per_page=10
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.consumer_key }}
+      password: ${{ secrets.consumer_secret }}
+    param_schema:
+      - name: customer_id
+        type: integer
+        description: The numeric WooCommerce customer ID from Find Customer by Email.
+        required: true
+    response_template: |-
+      {% if response.size == 0 %}No orders found for this customer.{% elsif response[0].id %}{% for order in response limit: 10 %}- Order #{{ order.number }} (order ID {{ order.id }}) · {{ order.date_created | slice: 0, 10 }} · {{ order.status }} · {{ order.total }} {{ order.currency }}
+        Items: {% for item in order.line_items limit: 5 %}{{ item.quantity }} × {{ item.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% if order.line_items.size > 5 %}, and more{% endif %}
+      {% endfor %}{% else %}WooCommerce returned an unexpected response.{% endif %}
+
+  - id: search_orders
+    title: Search Orders
+    description: Search WooCommerce orders by a term such as the customer's email address, name, or order number, and get the 10 most recent matches. Use this for guest checkouts or when the customer only knows their order number.
+    http_method: GET
+    endpoint_url: https://${{ inputs.store_domain }}/wp-json/wc/v3/orders?search={{ search | strip | url_encode }}&per_page=10
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.consumer_key }}
+      password: ${{ secrets.consumer_secret }}
+    param_schema:
+      - name: search
+        type: string
+        description: The text to search for, such as an email address, a customer name, or an order number without the # sign.
+        required: true
+    response_template: |-
+      {% if response.size == 0 %}No orders match this search.{% elsif response[0].id %}{% for order in response limit: 10 %}- Order #{{ order.number }} (order ID {{ order.id }}) · {{ order.date_created | slice: 0, 10 }} · {{ order.status }} · {{ order.total }} {{ order.currency }}
+        Customer: {{ order.billing.first_name }} {{ order.billing.last_name }}{% if order.billing.email and order.billing.email != "" %} <{{ order.billing.email }}>{% endif %}{% if order.customer_id == 0 %} (guest){% endif %}
+        Items: {% for item in order.line_items limit: 5 %}{{ item.quantity }} × {{ item.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% if order.line_items.size > 5 %}, and more{% endif %}
+      {% endfor %}{% else %}WooCommerce returned an unexpected response.{% endif %}
+
+  - id: get_order
+    title: Get Order
+    description: Get full details of one WooCommerce order, including items, totals, payment, shipping method and destination, and refunds. Use the order ID from List Customer Orders or Search Orders.
+    http_method: GET
+    endpoint_url: https://${{ inputs.store_domain }}/wp-json/wc/v3/orders/{{ order_id | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.consumer_key }}
+      password: ${{ secrets.consumer_secret }}
+    param_schema:
+      - name: order_id
+        type: integer
+        description: The numeric WooCommerce order ID from List Customer Orders or Search Orders.
+        required: true
+    response_template: |-
+      {% if response.id %}Order #{{ response.number }} (order ID {{ response.id }}) · {{ response.status }}
+      Placed: {{ response.date_created | slice: 0, 10 }}{% if response.date_paid %} · Paid: {{ response.date_paid | slice: 0, 10 }}{% endif %}{% if response.date_completed %} · Completed: {{ response.date_completed | slice: 0, 10 }}{% endif %}
+      Customer: {{ response.billing.first_name }} {{ response.billing.last_name }}{% if response.billing.email and response.billing.email != "" %} <{{ response.billing.email }}>{% endif %}{% if response.customer_id == 0 %} (guest){% endif %}
+      Total: {{ response.total }} {{ response.currency }} (shipping {{ response.shipping_total }}, discount {{ response.discount_total }}){% if response.payment_method_title and response.payment_method_title != "" %}
+      Payment method: {{ response.payment_method_title }}{% endif %}
+      Items:{% for item in response.line_items limit: 20 %}
+      - {{ item.quantity }} × {{ item.name }}{% if item.sku and item.sku != "" %} (SKU {{ item.sku }}){% endif %} · {{ item.total }} {{ response.currency }}{% endfor %}{% if response.shipping_lines.size > 0 %}
+      Shipping method: {% for line in response.shipping_lines limit: 3 %}{{ line.method_title }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if response.shipping.country and response.shipping.country != "" %}
+      Ships to: {{ response.shipping.city }} {{ response.shipping.state }} {{ response.shipping.postcode }} {{ response.shipping.country }}{% endif %}{% for refund in response.refunds limit: 5 %}
+      Refund: {{ refund.total | remove: "-" }} {{ response.currency }}{% if refund.reason and refund.reason != "" %} ({{ refund.reason | truncate: 150 }}){% endif %}{% endfor %}{% if response.customer_note and response.customer_note != "" %}
+      Customer note: {{ response.customer_note | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}{% else %}WooCommerce returned an unexpected response.{% endif %}
+
+  - id: list_order_notes
+    title: List Order Notes
+    description: Read the 10 most recent notes on a WooCommerce order, such as status changes, payment events, and tracking details added by the store or its plugins. Use the order ID from List Customer Orders or Search Orders.
+    http_method: GET
+    endpoint_url: https://${{ inputs.store_domain }}/wp-json/wc/v3/orders/{{ order_id | url_encode }}/notes
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.consumer_key }}
+      password: ${{ secrets.consumer_secret }}
+    param_schema:
+      - name: order_id
+        type: integer
+        description: The numeric WooCommerce order ID from List Customer Orders or Search Orders.
+        required: true
+    response_template: |-
+      {% if response.size == 0 %}No notes on this order.{% elsif response[0].id %}{% assign notes = response | sort: "date_created" | reverse %}{% for note in notes limit: 10 %}- {{ note.date_created | slice: 0, 10 }} · {% if note.customer_note %}sent to customer{% else %}internal{% endif %}{% if note.author and note.author != "" %} · {{ note.author }}{% endif %}: {{ note.note | newline_to_br | replace: "<br />", " " | strip_html | strip_newlines | truncate: 300 }}
+      {% endfor %}{% else %}WooCommerce returned an unexpected response.{% endif %}
