@@ -1,0 +1,168 @@
+version: 0.0.1
+kind: captain_toolset
+name: Postmark
+author: chatwoot
+category: Others
+description: Check sent emails, delivery events, bounces, and suppressions in Postmark.
+
+headers:
+  Accept: application/json
+
+inputs:
+  message_stream:
+    label: Message stream ID
+    placeholder: outbound
+    required: true
+
+secrets:
+  server_token:
+    label: Postmark Server API token
+    type: password
+    required: true
+
+tools:
+  - id: find_messages_by_recipient
+    title: Find Messages by Recipient
+    description: Find up to 10 emails Postmark sent to an address in the configured message stream, with subject, status, and sent time. Use this first when a customer says an email did not arrive. Returns the message ID that Get Message Details needs.
+    http_method: GET
+    endpoint_url: https://api.postmarkapp.com/messages/outbound?recipient={{ email | strip | url_encode }}&count=10&offset=0&messagestream=${{ inputs.message_stream }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Postmark-Server-Token
+      key: ${{ secrets.server_token }}
+    param_schema:
+      - name: email
+        type: string
+        description: The recipient's email address.
+        required: true
+    response_template: |-
+      {% if response.Messages %}{% for message in response.Messages limit: 10 %}- {{ message.ReceivedAt }} · {{ message.Status }} · {{ message.Subject | default: "No subject" | truncate: 80 }}
+        From: {{ message.From }} · To: {{ message.Recipients | join: ", " | truncate: 150 }}{% if message.Tag and message.Tag != "" %} · Tag: {{ message.Tag }}{% endif %}
+        Message ID: {{ message.MessageID }}
+      {% else %}No messages found for this recipient in this message stream.
+      {% endfor %}{% if response.TotalCount > 10 %}Showing 10 of {{ response.TotalCount }} messages.{% endif %}{% else %}Postmark returned an unexpected response.{% endif %}
+
+  - id: get_message_details
+    title: Get Message Details
+    description: Get one email's delivery events, such as delivered, delayed, bounced, opened, or link clicked, with the receiving mail server's response. Use the message ID from Find Messages by Recipient.
+    http_method: GET
+    endpoint_url: https://api.postmarkapp.com/messages/outbound/{{ message_id | strip | url_encode }}/details
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Postmark-Server-Token
+      key: ${{ secrets.server_token }}
+    param_schema:
+      - name: message_id
+        type: string
+        description: The Postmark message ID from Find Messages by Recipient.
+        required: true
+    response_template: |-
+      {% if response.MessageID %}{{ response.Subject | default: "No subject" | truncate: 120 }}
+      From: {{ response.From }} · To: {{ response.Recipients | join: ", " | truncate: 150 }}
+      Status: {{ response.Status }} · Sent: {{ response.ReceivedAt }} · Stream: {{ response.MessageStream }}
+      Events:{% for event in response.MessageEvents limit: 20 %}{% assign detail = event.Details.DeliveryMessage | default: event.Details.Summary %}
+      - {{ event.ReceivedAt }} · {{ event.Type }} · {{ event.Recipient }}{% if detail and detail != "" %}
+        Detail: {{ detail | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 250 }}{% endif %}{% if event.Details.BounceID %}
+        Bounce ID: {{ event.Details.BounceID }}{% endif %}{% if event.Type == "SubscriptionChanged" %}
+        Sending suppressed: {{ event.Details.SuppressSending }} (origin: {{ event.Details.Origin }}){% endif %}{% else %}
+      No events recorded for this message yet.{% endfor %}{% else %}Postmark returned an unexpected response.{% endif %}
+
+  - id: find_bounces_by_email
+    title: Find Bounces by Email
+    description: Find up to 10 bounces and spam complaints recorded for an email address in the configured message stream, with the bounce type, the mail server's explanation, and whether Postmark deactivated the address.
+    http_method: GET
+    endpoint_url: https://api.postmarkapp.com/bounces?emailFilter={{ email | strip | url_encode }}&count=10&offset=0&messagestream=${{ inputs.message_stream }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Postmark-Server-Token
+      key: ${{ secrets.server_token }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address to check.
+        required: true
+    response_template: |-
+      {% if response.Bounces %}{% for bounce in response.Bounces limit: 10 %}- {{ bounce.BouncedAt }} · {{ bounce.Name | default: bounce.Type }} · {{ bounce.Email }}{% if bounce.Subject and bounce.Subject != "" %} · {{ bounce.Subject | truncate: 80 }}{% endif %}
+        {{ bounce.Description | truncate: 200 }}{% if bounce.Details and bounce.Details != "" %}
+        Detail: {{ bounce.Details | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 250 }}{% endif %}
+        Address deactivated: {% if bounce.Inactive %}yes{% if bounce.CanActivate %} (can be reactivated){% endif %}{% else %}no{% endif %}
+      {% else %}No bounces found for this address in this message stream.
+      {% endfor %}{% else %}Postmark returned an unexpected response.{% endif %}
+
+  - id: list_recent_bounces
+    title: List Recent Bounces
+    description: List up to 10 bounces from the configured message stream, with address, bounce type, and explanation. Use this to check whether a delivery problem affects many recipients rather than one customer.
+    http_method: GET
+    endpoint_url: https://api.postmarkapp.com/bounces?count=10&offset=0&messagestream=${{ inputs.message_stream }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Postmark-Server-Token
+      key: ${{ secrets.server_token }}
+    response_template: |-
+      {% if response.Bounces %}{% for bounce in response.Bounces limit: 10 %}- {{ bounce.BouncedAt }} · {{ bounce.Name | default: bounce.Type }} · {{ bounce.Email }}{% if bounce.Details and bounce.Details != "" %}
+        Detail: {{ bounce.Details | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 200 }}{% endif %}
+      {% else %}No bounces found in this message stream.
+      {% endfor %}{% else %}Postmark returned an unexpected response.{% endif %}
+
+  - id: check_suppression
+    title: Check Suppression
+    description: Check whether an email address is suppressed in the configured message stream, which makes Postmark stop sending to it, and whether the cause was a hard bounce, a spam complaint, or a manual suppression such as an unsubscribe.
+    http_method: GET
+    endpoint_url: https://api.postmarkapp.com/message-streams/${{ inputs.message_stream }}/suppressions/dump?EmailAddress={{ email | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Postmark-Server-Token
+      key: ${{ secrets.server_token }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address to check.
+        required: true
+    response_template: |-
+      {% if response.Suppressions %}{% for suppression in response.Suppressions limit: 5 %}- {{ suppression.EmailAddress }} is suppressed, so Postmark is not sending to it.
+        Reason: {{ suppression.SuppressionReason }} · Origin: {{ suppression.Origin }} · Since: {{ suppression.CreatedAt }}
+      {% else %}This address is not suppressed in this message stream.
+      {% endfor %}{% else %}Postmark returned an unexpected response.{% endif %}
+
+  - id: get_delivery_stats
+    title: Get Delivery Stats
+    description: Get the Postmark server's bounce totals by type and the number of deactivated addresses. Use this for an overview when a customer reports widespread delivery problems.
+    http_method: GET
+    endpoint_url: https://api.postmarkapp.com/deliverystats
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Postmark-Server-Token
+      key: ${{ secrets.server_token }}
+    response_template: |-
+      {% if response.Bounces %}Deactivated addresses: {{ response.InactiveMails }}
+      Bounces by type:{% for entry in response.Bounces limit: 25 %}
+      - {{ entry.Name }}: {{ entry.Count }}{% else %}
+      No bounces recorded.{% endfor %}{% else %}Postmark returned an unexpected response.{% endif %}
+
+  - id: remove_suppression
+    title: Remove Suppression
+    description: Remove an email address from the configured message stream's suppression list so Postmark sends to it again. Only use this after Check Suppression shows the address is suppressed and the customer confirms they want the emails. Spam complaint suppressions cannot be removed.
+    http_method: POST
+    endpoint_url: https://api.postmarkapp.com/message-streams/${{ inputs.message_stream }}/suppressions/delete
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Postmark-Server-Token
+      key: ${{ secrets.server_token }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address to remove from the suppression list.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"Suppressions":[{"EmailAddress":"{{ email | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}"}]}
+    response_template: |-
+      {% if response.Suppressions %}{% for result in response.Suppressions limit: 5 %}{% if result.Status == "Deleted" %}Removed {{ result.EmailAddress }} from the suppression list. Postmark will send to it again.{% else %}Could not remove {{ result.EmailAddress }} from the suppression list{% if result.Message %}: {{ result.Message | truncate: 200 }}{% else %}.{% endif %}{% endif %}
+      {% else %}Postmark did not report a result for this address.
+      {% endfor %}{% else %}Postmark returned an unexpected response.{% endif %}
