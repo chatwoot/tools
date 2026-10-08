@@ -1,0 +1,158 @@
+version: 0.0.1
+kind: captain_toolset
+name: Printful
+author: chatwoot
+category: Commerce
+description: Check Printful order fulfillment, shipment tracking, product availability, and shipping rates.
+
+secrets:
+  api_token:
+    label: Printful private token
+    type: password
+    required: true
+
+tools:
+  - id: get_order_by_external_id
+    title: Get Order by External ID
+    description: Get a Printful order's fulfillment status, items, and shipment tracking using the order ID from the connected store, such as the Shopify, WooCommerce, or Etsy order ID. Use this first when a customer asks where their order is; if it finds nothing, use List Orders.
+    http_method: GET
+    endpoint_url: 'https://api.printful.com/orders/@{{ external_id | strip | remove: "#" | url_encode }}'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: external_id
+        type: string
+        description: The order ID from the store's own e-commerce platform, without a leading # or @.
+        required: true
+    response_template: |-
+      {% if response.result.id %}{% assign order = response.result %}Order {{ order.id }}{% if order.external_id %} (external ID {{ order.external_id }}){% endif %} · {{ order.status | replace: "inprocess", "in process" | replace: "onhold", "on hold" | replace: "inreview", "in review" | replace: "partial", "partially shipped" }}
+      Created: {{ order.created | date: "%Y-%m-%d" }} · Updated: {{ order.updated | date: "%Y-%m-%d" }}
+      Recipient: {{ order.recipient.name }}{% if order.recipient.email %} <{{ order.recipient.email }}>{% endif %}, {{ order.recipient.city }}, {{ order.recipient.state_code }} {{ order.recipient.zip }}, {{ order.recipient.country_code }}
+      Shipping method: {{ order.shipping_service_name | default: order.shipping }}{% if order.retail_costs.total %}
+      Retail total: {{ order.retail_costs.total }} {{ order.retail_costs.currency }}{% endif %}
+      Items:{% for item in order.items limit: 15 %}
+      - {{ item.quantity }} × {{ item.name | default: item.product.name }}{% if item.sku %} (SKU {{ item.sku }}){% endif %}{% if item.discontinued %} · discontinued{% elsif item.out_of_stock %} · out of stock{% endif %}{% endfor %}{% if order.items.size > 15 %}
+      - and {{ order.items.size | minus: 15 }} more items{% endif %}{% for shipment in order.shipments limit: 5 %}
+      Shipment: {{ shipment.carrier }} {{ shipment.service }}{% if shipment.ship_date %} · shipped {{ shipment.ship_date }}{% endif %}{% if shipment.tracking_number %} · tracking {{ shipment.tracking_number }}{% endif %}{% if shipment.tracking_url %} · {{ shipment.tracking_url }}{% endif %}{% if shipment.reshipment %} · reshipment{% endif %}{% else %}
+      No shipments yet.{% endfor %}{% else %}Printful returned an unexpected response.{% endif %}
+
+  - id: get_order
+    title: Get Order
+    description: Get a Printful order's fulfillment status, items, and shipment tracking by its Printful order ID. Use the numeric order ID from List Orders; for an order ID from the store's own platform, use Get Order by External ID instead.
+    http_method: GET
+    endpoint_url: https://api.printful.com/orders/{{ order_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: order_id
+        type: integer
+        description: The numeric Printful order ID from List Orders.
+        required: true
+    response_template: |-
+      {% if response.result.id %}{% assign order = response.result %}Order {{ order.id }}{% if order.external_id %} (external ID {{ order.external_id }}){% endif %} · {{ order.status | replace: "inprocess", "in process" | replace: "onhold", "on hold" | replace: "inreview", "in review" | replace: "partial", "partially shipped" }}
+      Created: {{ order.created | date: "%Y-%m-%d" }} · Updated: {{ order.updated | date: "%Y-%m-%d" }}
+      Recipient: {{ order.recipient.name }}{% if order.recipient.email %} <{{ order.recipient.email }}>{% endif %}, {{ order.recipient.city }}, {{ order.recipient.state_code }} {{ order.recipient.zip }}, {{ order.recipient.country_code }}
+      Shipping method: {{ order.shipping_service_name | default: order.shipping }}{% if order.retail_costs.total %}
+      Retail total: {{ order.retail_costs.total }} {{ order.retail_costs.currency }}{% endif %}
+      Items:{% for item in order.items limit: 15 %}
+      - {{ item.quantity }} × {{ item.name | default: item.product.name }}{% if item.sku %} (SKU {{ item.sku }}){% endif %}{% if item.discontinued %} · discontinued{% elsif item.out_of_stock %} · out of stock{% endif %}{% endfor %}{% if order.items.size > 15 %}
+      - and {{ order.items.size | minus: 15 }} more items{% endif %}{% for shipment in order.shipments limit: 5 %}
+      Shipment: {{ shipment.carrier }} {{ shipment.service }}{% if shipment.ship_date %} · shipped {{ shipment.ship_date }}{% endif %}{% if shipment.tracking_number %} · tracking {{ shipment.tracking_number }}{% endif %}{% if shipment.tracking_url %} · {{ shipment.tracking_url }}{% endif %}{% if shipment.reshipment %} · reshipment{% endif %}{% else %}
+      No shipments yet.{% endfor %}{% else %}Printful returned an unexpected response.{% endif %}
+
+  - id: list_orders
+    title: List Orders
+    description: List Printful orders 10 at a time with status, recipient name and email, and tracking. Use this to find a customer's order by their name or email when the store's order ID is unknown. Start with offset 0 and add 10 to see the next group.
+    http_method: GET
+    endpoint_url: 'https://api.printful.com/orders?limit=10&offset={{ offset | default: 0 | plus: 0 }}'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: offset
+        type: integer
+        description: Number of orders to skip, starting at 0.
+        required: true
+    response_template: |-
+      {% if response.result and response.paging %}{% for order in response.result limit: 10 %}- Order {{ order.id }}{% if order.external_id %} (external ID {{ order.external_id }}){% endif %} · {{ order.created | date: "%Y-%m-%d" }} · {{ order.status | replace: "inprocess", "in process" | replace: "onhold", "on hold" | replace: "inreview", "in review" | replace: "partial", "partially shipped" }}
+        Recipient: {{ order.recipient.name }}{% if order.recipient.email %} <{{ order.recipient.email }}>{% endif %}, {{ order.recipient.country_code }}
+        Items: {% for item in order.items limit: 3 %}{{ item.quantity }} × {{ item.name | default: item.product.name }}{% unless forloop.last %}; {% endunless %}{% endfor %}{% if order.items.size > 3 %}; and {{ order.items.size | minus: 3 }} more{% endif %}{% for shipment in order.shipments limit: 2 %}{% if shipment.tracking_number %}
+        Tracking: {{ shipment.carrier }} {{ shipment.tracking_number }}{% if shipment.tracking_url %} · {{ shipment.tracking_url }}{% endif %}{% endif %}{% endfor %}
+      {% else %}No orders found at this offset.
+      {% endfor %}{% if response.paging.total %}Total orders: {{ response.paging.total }}{% endif %}{% else %}Printful returned an unexpected response.{% endif %}
+
+  - id: search_products
+    title: Search Products
+    description: Search the products synced between the store and Printful by name. Use this when a customer asks whether a product is available; it returns the product ID that Get Product needs.
+    http_method: GET
+    endpoint_url: https://api.printful.com/sync/products?search={{ search | strip | url_encode }}&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: search
+        type: string
+        description: A product name or part of one.
+        required: true
+    response_template: |-
+      {% if response.result and response.paging %}{% for product in response.result limit: 10 %}- {{ product.name }} (product ID {{ product.id }}) · {{ product.variants }} variants{% if product.is_ignored %} · ignored{% endif %}
+      {% else %}No products match this search.
+      {% endfor %}{% if response.paging.total > 10 %}Showing 10 of {{ response.paging.total }} matching products.{% endif %}{% else %}Printful returned an unexpected response.{% endif %}
+
+  - id: get_product
+    title: Get Product
+    description: Get a synced Printful product's variants with retail price, SKU, and whether each one is active, out of stock, or discontinued. Use the product ID from Search Products. Each variant also shows the catalog variant ID that Calculate Shipping Rates needs.
+    http_method: GET
+    endpoint_url: https://api.printful.com/sync/products/{{ product_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: product_id
+        type: integer
+        description: The numeric Printful product ID from Search Products.
+        required: true
+    response_template: |-
+      {% if response.result.sync_product.id %}{% assign product = response.result.sync_product %}{{ product.name }} (product ID {{ product.id }})
+      Variants:{% for variant in response.result.sync_variants limit: 30 %}
+      - {{ variant.name }}{% if variant.sku and variant.sku != "" %} · SKU {{ variant.sku }}{% endif %}{% if variant.retail_price %} · {{ variant.retail_price }} {{ variant.currency }}{% endif %} · {{ variant.availability_status | default: "status unknown" | replace: "_", " " }}{% if variant.variant_id %} · catalog variant ID {{ variant.variant_id }}{% endif %}{% else %}
+      No variants found.{% endfor %}{% if response.result.sync_variants.size > 30 %}
+      - and {{ response.result.sync_variants.size | minus: 30 }} more variants{% endif %}{% else %}Printful returned an unexpected response.{% endif %}
+
+  - id: calculate_shipping_rates
+    title: Calculate Shipping Rates
+    description: Get Printful's shipping options, rates, and estimated delivery days for sending a product to a destination. Use this when a customer asks how much shipping costs or how long delivery takes. Get the catalog variant ID from Get Product first. Rates are what Printful charges the store, which may differ from what the store charges customers.
+    http_method: POST
+    endpoint_url: https://api.printful.com/shipping/rates
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: variant_id
+        type: integer
+        description: The catalog variant ID shown for the variant in Get Product.
+        required: true
+      - name: quantity
+        type: integer
+        description: How many of the item to ship. Use 1 if unknown.
+        required: true
+      - name: country_code
+        type: string
+        description: The destination's two-letter ISO country code, such as US or DE.
+        required: true
+      - name: state_code
+        type: string
+        description: The destination's state or province code, such as CA. Required for the United States, Canada, and Australia.
+        required: false
+      - name: zip
+        type: string
+        description: The destination's ZIP or postal code, if known.
+        required: false
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% assign country_code = country_code | strip_newlines | strip | upcase | remove: '"' | remove: bs %}{% assign state_code = state_code | strip_newlines | strip | upcase | remove: '"' | remove: bs %}{% assign zip = zip | strip_newlines | strip | remove: '"' | remove: bs %}{"recipient":{"country_code":"{{ country_code }}"{% if state_code != "" %},"state_code":"{{ state_code }}"{% endif %}{% if zip != "" %},"zip":"{{ zip }}"{% endif %}},"items":[{"variant_id":"{{ variant_id | plus: 0 }}","quantity":{{ quantity | default: 1 | plus: 0 | at_least: 1 }}}]}
+    response_template: |-
+      {% if response.result %}{% for rate in response.result limit: 10 %}- {{ rate.name }}: {{ rate.rate }} {{ rate.currency }}{% if rate.minDeliveryDays %} · {{ rate.minDeliveryDays }}{% if rate.maxDeliveryDays and rate.maxDeliveryDays != rate.minDeliveryDays %}–{{ rate.maxDeliveryDays }}{% endif %} days{% endif %}
+      {% else %}No shipping options are available for this destination.
+      {% endfor %}{% else %}Printful returned an unexpected response.{% endif %}
