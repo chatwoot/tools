@@ -1,0 +1,155 @@
+version: 0.0.1
+kind: captain_toolset
+name: Printify
+author: chatwoot
+category: Commerce
+description: Check Printify order production, shipment tracking, support requests, products, and shipping costs.
+
+headers:
+  User-Agent: Chatwoot Captain
+
+inputs:
+  shop_id:
+    label: Printify shop ID
+    type: number
+    placeholder: '5432109'
+    required: true
+
+secrets:
+  api_token:
+    label: Printify personal access token
+    type: password
+    required: true
+
+tools:
+  - id: list_orders
+    title: List Orders
+    description: List Printify orders 10 at a time with status, the store's own order number, customer name and email, and tracking. Printify cannot search orders by customer, so use this to find a customer's order and its order ID. Start with page 1.
+    http_method: GET
+    endpoint_url: 'https://api.printify.com/v1/shops/${{ inputs.shop_id }}/orders.json?limit=10&page={{ page | default: 1 | plus: 0 | at_least: 1 }}'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: page
+        type: integer
+        description: The page number to fetch, starting at 1.
+        required: true
+    response_template: |-
+      {% if response.data and response.current_page %}{% for order in response.data limit: 10 %}- Order {{ order.id }}{% if order.metadata.shop_order_label %} (store order {{ order.metadata.shop_order_label }}){% endif %} · {{ order.created_at | slice: 0, 10 }} · {{ order.status | replace: "-", " " | replace: "_", " " }}
+        Customer: {{ order.address_to.first_name }} {{ order.address_to.last_name }}{% if order.address_to.email %} <{{ order.address_to.email }}>{% endif %}, {{ order.address_to.country }}
+        Items: {% for item in order.line_items limit: 3 %}{{ item.quantity }} × {{ item.metadata.title | default: "Item" }}{% if item.metadata.variant_label %} ({{ item.metadata.variant_label }}){% endif %}{% unless forloop.last %}; {% endunless %}{% endfor %}{% if order.line_items.size > 3 %}; and {{ order.line_items.size | minus: 3 }} more{% endif %}{% for shipment in order.shipments limit: 2 %}
+        Tracking: {{ shipment.carrier }} {{ shipment.number }}{% if shipment.url %} · {{ shipment.url }}{% endif %}{% endfor %}
+      {% else %}No orders found on this page.
+      {% endfor %}Page {{ response.current_page }} of {{ response.last_page | default: response.current_page }}{% if response.total %} · {{ response.total }} orders in total{% endif %}{% else %}Printify returned an unexpected response.{% endif %}
+
+  - id: get_order
+    title: Get Order
+    description: Get one Printify order's production status, items, shipping method, shipment tracking, and delivery dates. Use the order ID from List Orders, not the store's own order number.
+    http_method: GET
+    endpoint_url: https://api.printify.com/v1/shops/${{ inputs.shop_id }}/orders/{{ order_id | strip | url_encode }}.json
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: order_id
+        type: string
+        description: The Printify order ID from List Orders, such as 5a96f649b2439217d070f507.
+        required: true
+    response_template: |-
+      {% if response.id and response.status %}Order {{ response.id }}{% if response.metadata.shop_order_label %} (store order {{ response.metadata.shop_order_label }}){% endif %} · {{ response.status | replace: "-", " " | replace: "_", " " }}
+      Created: {{ response.created_at | slice: 0, 10 }}{% if response.sent_to_production_at %} · Sent to production: {{ response.sent_to_production_at | slice: 0, 10 }}{% endif %}{% if response.fulfilled_at %} · Fulfilled: {{ response.fulfilled_at | slice: 0, 10 }}{% endif %}
+      Customer: {{ response.address_to.first_name }} {{ response.address_to.last_name }}{% if response.address_to.email %} <{{ response.address_to.email }}>{% endif %}{% capture address %}{{ response.address_to.address1 }} {{ response.address_to.address2 }}, {{ response.address_to.city }}, {{ response.address_to.region }} {{ response.address_to.zip }}, {{ response.address_to.country }}{% endcapture %}
+      Ship to: {{ address | split: " " | join: " " | replace: " ,", "," }}
+      Shipping method: {% case response.shipping_method %}{% when 1 %}standard{% when 2 %}priority{% when 3 %}Printify Express{% when 4 %}economy{% else %}not set{% endcase %}{% if response.metadata.is_reprint %}
+      This order is a reprint of an earlier order.{% endif %}
+      Items:{% for item in response.line_items limit: 15 %}
+      - {{ item.quantity }} × {{ item.metadata.title | default: "Item" }}{% if item.metadata.variant_label %} ({{ item.metadata.variant_label }}){% endif %}{% if item.metadata.sku %} · SKU {{ item.metadata.sku }}{% endif %} · {{ item.status | replace: "-", " " | replace: "_", " " }}{% if item.product_id %} · product ID {{ item.product_id }}{% endif %}{% endfor %}{% if response.line_items.size > 15 %}
+      - and {{ response.line_items.size | minus: 15 }} more items{% endif %}{% for shipment in response.shipments limit: 5 %}
+      Shipment: {{ shipment.carrier }} {{ shipment.number }}{% if shipment.url %} · {{ shipment.url }}{% endif %}{% if shipment.delivered_at %} · delivered {{ shipment.delivered_at | slice: 0, 10 }}{% endif %}{% else %}
+      No shipments yet.{% endfor %}{% if response.printify_connect.url %}
+      Order status page: {{ response.printify_connect.url }}{% endif %}{% else %}Printify returned an unexpected response.{% endif %}
+
+  - id: list_order_support_requests
+    title: List Order Support Requests
+    description: Check the support requests already opened with Printify for an order, such as a reprint, refund, cancellation, or address change, and whether each one is pending, in progress, or resolved. Use the order ID from List Orders.
+    http_method: GET
+    endpoint_url: https://api.printify.com/v1/shops/${{ inputs.shop_id }}/orders/{{ order_id | strip | url_encode }}/support-requests
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: order_id
+        type: string
+        description: The Printify order ID from List Orders, such as 5a96f649b2439217d070f507.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for request in response.data limit: 10 %}- {{ request.type | remove_first: "order_" | replace: "_", " " }} · {{ request.status | replace: "_", " " }}{% if request.outcome %} · outcome: {{ request.outcome }}{% endif %}
+        Opened: {{ request.created_at | slice: 0, 10 }} · Updated: {{ request.updated_at | slice: 0, 10 }}{% if request.status_details and request.status_details != "" %}
+        Details: {{ request.status_details | strip_newlines | truncate: 300 }}{% endif %}
+      {% else %}No support requests have been opened for this order.
+      {% endfor %}{% else %}Printify returned an unexpected response.{% endif %}
+
+  - id: list_products
+    title: List Products
+    description: List the products in the Printify shop 10 at a time, with how many variants are enabled and available. Use this to find the product ID that Get Product needs. Start with page 1.
+    http_method: GET
+    endpoint_url: 'https://api.printify.com/v1/shops/${{ inputs.shop_id }}/products.json?limit=10&page={{ page | default: 1 | plus: 0 | at_least: 1 }}'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: page
+        type: integer
+        description: The page number to fetch, starting at 1.
+        required: true
+    response_template: |-
+      {% if response.data and response.current_page %}{% for product in response.data limit: 10 %}{% assign enabled = product.variants | where: "is_enabled", true %}{% assign available = enabled | where: "is_available", true %}- {{ product.title }} (product ID {{ product.id }}){% if product.visible == false %} · hidden{% endif %} · {{ enabled.size }} variants on sale, {{ available.size }} available
+      {% else %}No products found on this page.
+      {% endfor %}Page {{ response.current_page }} of {{ response.last_page | default: response.current_page }}{% if response.total %} · {{ response.total }} products in total{% endif %}{% else %}Printify returned an unexpected response.{% endif %}
+
+  - id: get_product
+    title: Get Product
+    description: Get one Printify product's description and the price, SKU, and availability of each variant on sale. Use the product ID from List Products or from an order's items. Also returns the blueprint ID and print provider ID that Get Shipping Info needs.
+    http_method: GET
+    endpoint_url: https://api.printify.com/v1/shops/${{ inputs.shop_id }}/products/{{ product_id | strip | url_encode }}.json
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: product_id
+        type: string
+        description: The Printify product ID from List Products or from an order item in Get Order.
+        required: true
+    response_template: |-
+      {% if response.id and response.title %}{% assign enabled = response.variants | where: "is_enabled", true %}{{ response.title }} (product ID {{ response.id }}){% if response.visible == false %} · hidden{% endif %}
+      Blueprint ID: {{ response.blueprint_id }} · Print provider ID: {{ response.print_provider_id }}
+      Variants on sale:{% for variant in enabled limit: 30 %}
+      - {{ variant.title }}{% if variant.sku and variant.sku != "" %} · SKU {{ variant.sku }}{% endif %} · price {{ variant.price | divided_by: 100.0 }} · {% if variant.is_available %}available{% else %}out of stock{% endif %}{% else %}
+      No variants are on sale.{% endfor %}{% if enabled.size > 30 %}
+      - and {{ enabled.size | minus: 30 }} more variants{% endif %}{% if response.description and response.description != "" %}
+      Description: {{ response.description | replace: "<", " <" | strip_html | split: " " | join: " " | truncate: 600 }}{% endif %}{% else %}Printify returned an unexpected response.{% endif %}
+
+  - id: get_shipping_info
+    title: Get Shipping Info
+    description: Get the print provider's handling time and shipping costs by destination country for a product. Use this when a customer asks how long an order takes to ship or what shipping costs. Get the blueprint ID and print provider ID from Get Product first. Costs are what Printify charges the store, which may differ from what the store charges customers.
+    http_method: GET
+    endpoint_url: https://api.printify.com/v1/catalog/blueprints/{{ blueprint_id | strip | url_encode }}/print_providers/{{ print_provider_id | strip | url_encode }}/shipping.json
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: blueprint_id
+        type: integer
+        description: The blueprint ID shown in Get Product.
+        required: true
+      - name: print_provider_id
+        type: integer
+        description: The print provider ID shown in Get Product.
+        required: true
+    response_template: |-
+      {% if response.profiles %}{% if response.handling_time.value %}Handling time before shipping: {{ response.handling_time.value }} {{ response.handling_time.unit }}{% if response.handling_time.value != 1 %}s{% endif %}
+      {% endif %}Shipping costs by destination:
+      {% for profile in response.profiles limit: 20 %}- {{ profile.countries | slice: 0, 12 | join: ", " | replace: "REST_OF_THE_WORLD", "rest of the world" }}{% if profile.countries.size > 12 %} and {{ profile.countries.size | minus: 12 }} more countries{% endif %}: {{ profile.first_item.cost | divided_by: 100.0 }} {{ profile.first_item.currency }} for the first item, {{ profile.additional_items.cost | divided_by: 100.0 }} {{ profile.additional_items.currency }} for each additional item · applies to {{ profile.variant_ids.size }} variants
+      {% else %}No shipping profiles found for this product.
+      {% endfor %}{% if response.profiles.size > 20 %}{{ response.profiles.size | minus: 20 }} more shipping profiles are not shown.{% endif %}{% else %}Printify returned an unexpected response.{% endif %}
