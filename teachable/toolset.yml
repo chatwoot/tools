@@ -1,0 +1,148 @@
+version: 0.0.1
+kind: captain_toolset
+name: Teachable
+author: chatwoot
+category: Commerce
+description: Look up students, course enrollments, progress, purchases, and pricing plans in a Teachable school.
+
+secrets:
+  api_key:
+    label: Teachable API key
+    type: password
+    required: true
+
+tools:
+  - id: find_user_by_email
+    title: Find User by Email
+    description: Find a student in the Teachable school by email address. Use this first to get the user ID the other Teachable tools need.
+    http_method: GET
+    endpoint_url: https://developers.teachable.com/v1/users?email={{ email | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: apiKey
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The student's email address.
+        required: true
+    response_template: |-
+      {% if response.users %}{% for user in response.users limit: 5 %}- {{ user.name | default: "No name" }} <{{ user.email }}> · user ID {{ user.id }}
+      {% else %}No Teachable user found with this email address.{% endfor %}{% else %}Teachable returned an unexpected response.{% endif %}
+
+  - id: get_user_enrollments
+    title: Get User Enrollments
+    description: Get a student's profile and the courses they are enrolled in, with enrollment date, whether the enrollment is active, and percent complete. Use the user ID from Find User by Email. Call this when a customer cannot access a course or asks about their progress.
+    http_method: GET
+    endpoint_url: https://developers.teachable.com/v1/users/{{ user_id | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: apiKey
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: user_id
+        type: string
+        description: The numeric Teachable user ID from Find User by Email.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.name | default: "No name" }} <{{ response.email }}> · user ID {{ response.id }} · role: {{ response.role | default: "unknown" }}{% if response.tags.size > 0 %}
+      Tags: {% for tag in response.tags limit: 15 %}{{ tag.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}
+      Courses ({{ response.courses.size | default: 0 }}):
+      {% for course in response.courses limit: 25 %}- {{ course.course_name }} (course ID {{ course.course_id }}): {% if course.is_active_enrollment %}active{% else %}not active{% endif %}, {{ course.percent_complete | default: 0 }}% complete, enrolled {{ course.enrolled_at | slice: 0, 10 }}{% if course.completed_at %}, completed {{ course.completed_at | slice: 0, 10 }}{% endif %}
+      {% else %}This user is not enrolled in any course.{% endfor %}{% if response.courses.size > 25 %}Only the first 25 courses are shown.{% endif %}{% else %}Teachable returned an unexpected response.{% endif %}
+
+  - id: get_course_progress
+    title: Get Course Progress
+    description: Get a student's progress in one course, section by section, with completion date and certificate details. Use the user ID from Find User by Email and a course ID from Get User Enrollments or Find Courses.
+    http_method: GET
+    endpoint_url: https://developers.teachable.com/v1/courses/{{ course_id | strip | url_encode }}/progress?user_id={{ user_id | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: apiKey
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: course_id
+        type: string
+        description: The numeric Teachable course ID from Get User Enrollments or Find Courses.
+        required: true
+      - name: user_id
+        type: string
+        description: The numeric Teachable user ID from Find User by Email.
+        required: true
+    response_template: |-
+      {% if response.course_progress %}{% assign progress = response.course_progress %}Progress: {{ progress.percent_complete | default: 0 }}% complete
+      Enrolled: {{ progress.enrolled_at | slice: 0, 10 | default: "unknown" }}
+      Completed: {% if progress.completed_at %}{{ progress.completed_at | slice: 0, 10 }}{% else %}not yet{% endif %}{% if progress.certificate.serial_number %}
+      Certificate: issued, serial number {{ progress.certificate.serial_number }}{% endif %}{% for entry in progress.lecture_sections limit: 30 %}{% assign section = entry.lecture_section_progress %}{% assign done = 0 %}{% for lecture in section.lectures %}{% if lecture.lecture_progress.is_completed %}{% assign done = done | plus: 1 %}{% endif %}{% endfor %}
+      - {{ section.name | truncate: 80 }}: {{ done }} of {{ section.lectures.size }} lectures completed{% endfor %}{% if progress.lecture_sections.size > 30 %}
+      Only the first 30 sections are shown.{% endif %}{% else %}Teachable returned an unexpected response.{% endif %}
+
+  - id: list_transactions
+    title: List Transactions
+    description: List a student's 10 most recently returned sales transactions, with amount, payment status, refunds, and chargebacks. Use the user ID from Find User by Email. Call this for billing or refund questions. Use Get Pricing Plan with the pricing plan ID to see what was bought.
+    http_method: GET
+    endpoint_url: https://developers.teachable.com/v1/transactions?user_id={{ user_id | strip | url_encode }}&per=10
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: apiKey
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: user_id
+        type: string
+        description: The numeric Teachable user ID from Find User by Email.
+        required: true
+    response_template: |-
+      {% if response.transactions %}{% if response.transactions.size > 0 %}Amounts are in the smallest currency unit (for example cents).
+      {% endif %}{% for txn in response.transactions limit: 10 %}- {{ txn.purchased_at | slice: 0, 10 }} · transaction ID {{ txn.id }} · {{ txn.final_price }} {{ txn.currency | upcase }} listed price, {{ txn.charge }} charged · {{ txn.status | default: "unpaid" }}{% if txn.amount_refunded > 0 %} · refunded {{ txn.amount_refunded }}{% if txn.refunded_at %} on {{ txn.refunded_at | slice: 0, 10 }}{% endif %}{% endif %}{% if txn.has_chargeback %} · chargeback{% endif %}
+        Pricing plan ID: {{ txn.pricing_plan_id }} · sale ID: {{ txn.sale_id }}{% if txn.coupon_id %} · coupon ID: {{ txn.coupon_id }}{% endif %}
+      {% else %}No transactions found for this user.{% endfor %}{% if response.meta.total > 10 %}Showing 10 of {{ response.meta.total }} transactions.{% endif %}{% else %}Teachable returned an unexpected response.{% endif %}
+
+  - id: get_pricing_plan
+    title: Get Pricing Plan
+    description: Get a pricing plan's name, price, billing interval, free trial, access limits, and the course it belongs to. Use a pricing plan ID from List Transactions. Call this to explain what a customer bought or how often they are billed.
+    http_method: GET
+    endpoint_url: https://developers.teachable.com/v1/pricing_plans/{{ pricing_plan_id | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: apiKey
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: pricing_plan_id
+        type: string
+        description: The numeric pricing plan ID from List Transactions.
+        required: true
+    response_template: |-
+      {% if response.pricing_plan.id %}{% assign plan = response.pricing_plan %}{{ plan.name | default: "Unnamed pricing plan" }} (pricing plan ID {{ plan.id }})
+      Course ID: {{ plan.course_id }}
+      Price: {{ plan.price }} {{ plan.currency | upcase }} in the smallest currency unit (for example cents)
+      Type: {{ plan.frequency.type | default: "unknown" | replace: "_", " " }}{% if plan.frequency.billing_interval %}
+      Billed every {{ plan.frequency.billing_interval_count | default: 1 }} {{ plan.frequency.billing_interval }}{% endif %}{% if plan.free_trial_length %}
+      Free trial: {{ plan.free_trial_length }} days{% endif %}{% if plan.frequency.access_limit_date %}
+      Access ends for all students on: {{ plan.frequency.access_limit_date | slice: 0, 10 }}{% elsif plan.frequency.access_limit_duration %}
+      Access lasts: {{ plan.frequency.access_limit_duration }} {{ plan.frequency.access_limit_interval }}{% endif %}{% if plan.enrollment_cap %}
+      Enrollment cap: {{ plan.enrollment_cap }}{% endif %}{% if plan.description and plan.description != "" %}
+      Description: {{ plan.description | strip_html | strip_newlines | truncate: 300 }}{% endif %}{% else %}Teachable returned an unexpected response.{% endif %}
+
+  - id: find_courses
+    title: Find Courses
+    description: Find courses in the Teachable school by name, with their course ID and whether they are published. Use this when a customer mentions a course by name and you need its course ID for Get Course Progress.
+    http_method: GET
+    endpoint_url: https://developers.teachable.com/v1/courses?name={{ name | strip | url_encode }}&per=10
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: apiKey
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: name
+        type: string
+        description: The course name to look for.
+        required: true
+    response_template: |-
+      {% if response.courses %}{% for course in response.courses limit: 10 %}- {{ course.name }} (course ID {{ course.id }}): {% if course.is_published %}published{% else %}not published{% endif %}{% if course.heading and course.heading != "" %} · {{ course.heading | strip_html | strip_newlines | truncate: 150 }}{% endif %}
+      {% else %}No course found with that name.{% endfor %}{% if response.meta.total > 10 %}Showing 10 of {{ response.meta.total }} matching courses.{% endif %}{% else %}Teachable returned an unexpected response.{% endif %}
