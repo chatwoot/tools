@@ -1,0 +1,189 @@
+version: 0.0.1
+kind: captain_toolset
+name: Xendit
+author: chatwoot
+category: Payments & billing
+description: Look up transactions, payments, customers, and subscription plans in Xendit.
+
+secrets:
+  secret_key:
+    label: Xendit secret API key
+    type: password
+    required: true
+
+tools:
+  - id: find_transactions
+    title: Find Transactions by Reference
+    description: Find Xendit transactions by reference ID, the reference your business assigned to the payment, such as an order or invoice number. Use this first when a customer asks about a payment, refund, or payout. The match is exact and case sensitive.
+    http_method: GET
+    endpoint_url: https://api.xendit.co/transactions?reference_id={{ reference_id | strip | url_encode }}&limit=10
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.secret_key }}
+      password: ''
+    param_schema:
+      - name: reference_id
+        type: string
+        description: The reference your business assigned to the payment, exactly as given, such as an order or invoice number.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for transaction in response.data limit: 10 %}- {{ transaction.created | slice: 0, 10 }} · {{ transaction.type | replace: "_", " " | downcase }} · {{ transaction.status | downcase }} · {{ transaction.amount }} {{ transaction.currency }} · {{ transaction.channel_category | replace: "_", " " | downcase }}{% if transaction.channel_code %} ({{ transaction.channel_code }}){% endif %}
+        Transaction ID: {{ transaction.id }}
+        Product ID: {{ transaction.product_id }}{% if transaction.settlement_status %}
+        Settlement: {{ transaction.settlement_status | replace: "_", " " | downcase }}{% endif %}
+      {% else %}No transactions found with this reference.
+      {% endfor %}{% if response.has_more %}More transactions match this reference than the 10 shown.{% endif %}{% else %}Xendit returned an unexpected response.{% endif %}
+
+  - id: get_transaction
+    title: Get Transaction
+    description: Get one Xendit transaction with its type, status, amount, fees, net amount, and settlement status. Use a transaction ID from Find Transactions by Reference, starting with txn_.
+    http_method: GET
+    endpoint_url: https://api.xendit.co/transactions/{{ transaction_id | strip | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.secret_key }}
+      password: ''
+    param_schema:
+      - name: transaction_id
+        type: string
+        description: The Xendit transaction ID from Find Transactions by Reference, starting with txn_.
+        required: true
+    response_template: |-
+      {% if response.id %}Transaction {{ response.id }} · {{ response.type | replace: "_", " " | downcase }} · {{ response.status | downcase }}
+      Reference: {{ response.reference_id }}
+      Amount: {{ response.amount }} {{ response.currency }} ({{ response.cashflow | replace: "_", " " | downcase }})
+      Channel: {{ response.channel_category | replace: "_", " " | downcase }}{% if response.channel_code %} ({{ response.channel_code }}){% endif %}{% if response.fee %}
+      Xendit fee: {{ response.fee.xendit_fee }} · VAT: {{ response.fee.value_added_tax }} · fee status {{ response.fee.status | replace: "_", " " | downcase }}{% endif %}
+      Net amount: {{ response.net_amount }} {{ response.net_amount_currency | default: response.currency }}
+      Settlement: {{ response.settlement_status | default: "unknown" | replace: "_", " " | downcase }}{% if response.estimated_settlement_time %}, estimated {{ response.estimated_settlement_time | slice: 0, 10 }}{% endif %}
+      Created: {{ response.created | slice: 0, 10 }} · updated {{ response.updated | slice: 0, 10 }}
+      Product ID: {{ response.product_id }}{% if response.product_data.payment_request_id %}
+      Payment request ID: {{ response.product_data.payment_request_id }}{% endif %}{% else %}Xendit returned an unexpected response.{% endif %}
+
+  - id: get_payment_request
+    title: Get Payment Request
+    description: Check the status of a Xendit payment request, including amount, payment channel, failure reason, and what the customer still needs to do to pay. Use a payment request ID starting with pr-, from Get Transaction or from your own records.
+    http_method: GET
+    endpoint_url: https://api.xendit.co/v3/payment_requests/{{ payment_request_id | strip | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.secret_key }}
+      password: ''
+    param_schema:
+      - name: payment_request_id
+        type: string
+        description: The Xendit payment request ID, starting with pr-.
+        required: true
+    response_template: |-
+      {% if response.payment_request_id %}Payment request {{ response.payment_request_id }} · {{ response.status | replace: "_", " " | downcase }}
+      Reference: {{ response.reference_id }}
+      Amount: {{ response.request_amount }} {{ response.currency }}
+      Channel: {{ response.channel_code }}{% if response.country %} · country {{ response.country }}{% endif %}{% if response.description %}
+      Description: {{ response.description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}{% if response.failure_code %}
+      Failure reason: {{ response.failure_code | replace: "_", " " | downcase }}{% endif %}{% for action in response.actions limit: 5 %}
+      Pending step for the customer: {{ action.descriptor | replace: "_", " " | downcase }}{% if action.descriptor == "PAYMENT_CODE" or action.descriptor == "VIRTUAL_ACCOUNT_NUMBER" %} {{ action.value }}{% endif %}{% endfor %}{% if response.latest_payment_id %}
+      Latest payment ID: {{ response.latest_payment_id }}{% endif %}{% if response.customer_id %}
+      Customer ID: {{ response.customer_id }}{% endif %}
+      Created: {{ response.created | slice: 0, 10 }} · updated {{ response.updated | slice: 0, 10 }}{% else %}Xendit returned an unexpected response.{% endif %}
+
+  - id: get_payment
+    title: Get Payment
+    description: Check the status of a single Xendit payment, including amount, captures, payment channel, and failure reason. Use a payment ID starting with py-, from Get Payment Request, List Subscription Cycles, or a transaction's product ID.
+    http_method: GET
+    endpoint_url: https://api.xendit.co/v3/payments/{{ payment_id | strip | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.secret_key }}
+      password: ''
+    param_schema:
+      - name: payment_id
+        type: string
+        description: The Xendit payment ID, starting with py-.
+        required: true
+    response_template: |-
+      {% if response.payment_id %}Payment {{ response.payment_id }} · {{ response.status | replace: "_", " " | downcase }}
+      Reference: {{ response.reference_id }}
+      Amount: {{ response.request_amount }} {{ response.currency }}
+      Channel: {{ response.channel_code }}{% if response.payment_details.issuer_name %} · {{ response.payment_details.issuer_name }}{% endif %}{% if response.payment_details.payer_name %} · paid by {{ response.payment_details.payer_name | truncate: 80 }}{% endif %}{% if response.failure_code %}
+      Failure reason: {{ response.failure_code | replace: "_", " " | downcase }}{% endif %}{% if response.payment_details.authorization_data.network_response_code_descriptor %}
+      Card network response: {{ response.payment_details.authorization_data.network_response_code_descriptor | truncate: 150 }}{% endif %}{% for capture in response.captures limit: 5 %}
+      Captured: {{ capture.capture_amount }} {{ response.currency }} on {{ capture.capture_timestamp | slice: 0, 10 }}{% endfor %}{% if response.payment_details.receipt_id %}
+      Receipt ID: {{ response.payment_details.receipt_id }}{% endif %}{% if response.payment_request_id %}
+      Payment request ID: {{ response.payment_request_id }}{% endif %}{% if response.customer_id %}
+      Customer ID: {{ response.customer_id }}{% endif %}
+      Created: {{ response.created | slice: 0, 10 }} · updated {{ response.updated | slice: 0, 10 }}{% else %}Xendit returned an unexpected response.{% endif %}
+
+  - id: find_customer_by_reference
+    title: Find Customer by Reference
+    description: Find a Xendit customer by reference ID, the identifier your business assigned to the customer when creating them in Xendit. Xendit cannot search customers by email address.
+    http_method: GET
+    endpoint_url: https://api.xendit.co/customers?reference_id={{ reference_id | strip | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.secret_key }}
+      password: ''
+    param_schema:
+      - name: reference_id
+        type: string
+        description: Your business's own identifier for the customer, exactly as stored in Xendit.
+        required: true
+    response_template: |-
+      {% if response.data %}{% assign customers = response.data %}{% else %}{% assign customers = response %}{% endif %}{% if response.data or customers.first.id %}{% for customer in customers limit: 5 %}{% capture person %}{{ customer.individual_detail.given_names | default: customer.given_names }} {{ customer.individual_detail.surname | default: customer.surname }}{% endcapture %}{% assign person = person | strip %}- {{ customer.business_detail.business_name | default: person | default: "No name" }} <{{ customer.email | default: "no email" }}>
+        Customer ID: {{ customer.id }}
+        Reference ID: {{ customer.reference_id }}{% if customer.type %}
+        Type: {{ customer.type | downcase }}{% endif %}{% if customer.mobile_number %}
+        Mobile: {{ customer.mobile_number }}{% endif %}{% if customer.description %}
+        Description: {{ customer.description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}{% if customer.created %}
+        Created: {{ customer.created | slice: 0, 10 }}{% endif %}
+      {% else %}No Xendit customer found with this reference ID.
+      {% endfor %}{% else %}Xendit returned an unexpected response.{% endif %}
+
+  - id: get_subscription_plan
+    title: Get Subscription Plan
+    description: Get a Xendit subscription plan, with status, amount, billing schedule, retry settings, and items. Use a plan ID starting with repl_, which comes from your own records because Xendit cannot list a customer's plans.
+    http_method: GET
+    endpoint_url: https://api.xendit.co/recurring/plans/{{ plan_id | strip | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.secret_key }}
+      password: ''
+    param_schema:
+      - name: plan_id
+        type: string
+        description: The Xendit subscription plan ID, starting with repl_.
+        required: true
+    response_template: |-
+      {% if response.id %}Subscription plan {{ response.id }} · {{ response.status | replace: "_", " " | downcase }}
+      Reference: {{ response.reference_id }}{% if response.description %}
+      Description: {{ response.description | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      Amount: {{ response.amount }} {{ response.currency }} every {% if response.schedule.interval_count > 1 %}{{ response.schedule.interval_count }} {{ response.schedule.interval | downcase }}s{% else %}{{ response.schedule.interval | downcase }}{% endif %}{% if response.schedule.total_recurrence %}, {{ response.schedule.total_recurrence }} cycles in total{% endif %}{% if response.schedule.anchor_date %}
+      Billing anchor date: {{ response.schedule.anchor_date | slice: 0, 10 }}{% endif %}{% if response.recurring_cycle_count %}
+      Cycles created so far: {{ response.recurring_cycle_count }}{% endif %}{% if response.schedule.total_retry %}
+      Retries after a failed charge: {{ response.schedule.total_retry }}{% endif %}{% if response.failed_cycle_action %}
+      After a failed cycle: {{ response.failed_cycle_action | downcase }}{% endif %}{% if response.failure_code %}
+      Failure reason: {{ response.failure_code | replace: "_", " " | downcase }}{% endif %}{% for item in response.items limit: 10 %}
+      Item: {{ item.name | truncate: 80 }} × {{ item.quantity }} at {{ item.net_unit_amount }} {{ response.currency }}{% endfor %}{% if response.customer_id %}
+      Customer ID: {{ response.customer_id }}{% endif %}
+      Created: {{ response.created | slice: 0, 10 }} · updated {{ response.updated | slice: 0, 10 }}{% else %}Xendit returned an unexpected response.{% endif %}
+
+  - id: list_subscription_cycles
+    title: List Subscription Cycles
+    description: List up to 10 billing cycles of a Xendit subscription plan, with each cycle's scheduled date, amount, status, payment attempts, and failure reasons. Use this to see whether a subscription charge succeeded or is being retried. Use the same plan ID as Get Subscription Plan.
+    http_method: GET
+    endpoint_url: https://api.xendit.co/recurring/plans/{{ plan_id | strip | url_encode }}/cycles?limit=10
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.secret_key }}
+      password: ''
+    param_schema:
+      - name: plan_id
+        type: string
+        description: The Xendit subscription plan ID, starting with repl_.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for cycle in response.data limit: 10 %}- Cycle {{ cycle.cycle_number }} · scheduled {{ cycle.scheduled_timestamp | slice: 0, 10 }} · {{ cycle.status | downcase }} · {{ cycle.amount }} {{ cycle.currency }}
+        Cycle ID: {{ cycle.id }} · {{ cycle.attempt_count | default: 0 }} attempts{% for attempt in cycle.attempt_details limit: 5 %}
+        Attempt {{ attempt.attempt_number }} ({{ attempt.type | replace: "_", " " | downcase }}) on {{ attempt.created | slice: 0, 10 }}: {{ attempt.status | downcase }}{% if attempt.failure_code %}, {{ attempt.failure_code | replace: "_", " " | downcase }}{% endif %}{% if attempt.payment_id %} · payment ID {{ attempt.payment_id }}{% endif %}{% if attempt.next_retry_timestamp %} · next retry {{ attempt.next_retry_timestamp | slice: 0, 10 }}{% endif %}{% if attempt.payment_session.payment_link_url %}
+        Payment link: {{ attempt.payment_session.payment_link_url }}{% endif %}{% endfor %}
+      {% else %}No billing cycles found for this subscription plan.
+      {% endfor %}{% if response.has_more %}More cycles exist than the 10 shown.{% endif %}{% else %}Xendit returned an unexpected response.{% endif %}
