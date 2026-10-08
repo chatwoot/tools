@@ -1,0 +1,133 @@
+version: 0.0.1
+kind: captain_toolset
+name: Sentry
+author: chatwoot
+category: Engineering & status
+description: Search Sentry issues and look up errors by issue ID or event ID.
+
+inputs:
+  organization_slug:
+    label: Organization slug
+    placeholder: acme
+    required: true
+  region:
+    label: Data storage location
+    type: select
+    options:
+      - us
+      - de
+    required: true
+
+secrets:
+  auth_token:
+    label: Sentry auth token
+    type: password
+    required: true
+
+tools:
+  - id: search_issues
+    title: Search Issues
+    description: Search Sentry issues to check whether an error a customer reports is already known. Returns the 10 most recently seen matches. Use this first to get the issue ID the other Sentry tools need.
+    http_method: GET
+    endpoint_url: https://${{ inputs.region }}.sentry.io/api/0/organizations/${{ inputs.organization_slug }}/issues/?query={{ query | strip | url_encode }}&shortIdLookup=1&sort=date&limit=10&collapse=stats
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.auth_token }}
+    param_schema:
+      - name: query
+        type: string
+        description: Sentry search text, such as words from the error message. Add is:unresolved to skip fixed issues, or other Sentry filters such as release:1.2.0 or user.email:jane@example.com. A short ID such as WEB-1A2 also works.
+        required: true
+    response_template: |-
+      {% if response.first.id %}{% for issue in response limit: 10 %}- {{ issue.shortId }} {{ issue.title | truncate: 200 }} (issue ID {{ issue.id }})
+        Status: {{ issue.status }}{% if issue.substatus %} ({{ issue.substatus | replace: "_", " " }}){% endif %} · level {{ issue.level }}{% if issue.priority %} · {{ issue.priority }} priority{% endif %}
+        Project: {{ issue.project.slug }} · {{ issue.count }} events, {{ issue.userCount }} users affected
+        First seen: {{ issue.firstSeen }} · Last seen: {{ issue.lastSeen }}
+      {% endfor %}{% elsif response.size == 0 %}No Sentry issues match this search.{% else %}Sentry returned an unexpected response.{% endif %}
+
+  - id: get_issue
+    title: Get Issue
+    description: Check one Sentry issue, including its status, how many events and users it affects, when it was first and last seen, and the releases involved. Use the numeric issue ID from Search Issues, Find Issue by Short ID, or Find Issue by Event ID.
+    http_method: GET
+    endpoint_url: https://${{ inputs.region }}.sentry.io/api/0/organizations/${{ inputs.organization_slug }}/issues/{{ issue_id | strip | url_encode }}/?collapse=stats&collapse=tags
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.auth_token }}
+    param_schema:
+      - name: issue_id
+        type: string
+        description: The numeric Sentry issue ID, such as 4505281256. This is not the short ID.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.shortId }} {{ response.title | truncate: 300 }} (issue ID {{ response.id }})
+      Status: {{ response.status }}{% if response.substatus %} ({{ response.substatus | replace: "_", " " }}){% endif %} · level {{ response.level }}{% if response.priority %} · {{ response.priority }} priority{% endif %}{% if response.statusDetails.inRelease %}
+      Resolved in release: {{ response.statusDetails.inRelease }}{% elsif response.statusDetails.inNextRelease %}
+      Resolved in the next release{% endif %}
+      Project: {{ response.project.slug }}{% if response.culprit and response.culprit != "" %}
+      Location: {{ response.culprit | truncate: 200 }}{% endif %}
+      Events: {{ response.count }} · Users affected: {{ response.userCount }}{% if response.userReportCount %} · User reports: {{ response.userReportCount }}{% endif %}
+      First seen: {{ response.firstSeen }}{% if response.firstRelease.shortVersion %} (release {{ response.firstRelease.shortVersion }}){% endif %}
+      Last seen: {{ response.lastSeen }}{% if response.lastRelease.shortVersion %} (release {{ response.lastRelease.shortVersion }}){% endif %}{% if response.assignedTo.name %}
+      Assigned to: {{ response.assignedTo.name }}{% endif %}
+      Link: {{ response.permalink }}{% else %}Sentry returned an unexpected response.{% endif %}
+
+  - id: find_issue_by_short_id
+    title: Find Issue by Short ID
+    description: Look up a Sentry issue by its short ID, the code shown in Sentry and in alerts such as WEB-1A2. Use this when someone gives a short ID and you need the numeric issue ID or a quick summary.
+    http_method: GET
+    endpoint_url: https://${{ inputs.region }}.sentry.io/api/0/organizations/${{ inputs.organization_slug }}/shortids/{{ short_id | strip | url_encode }}/?collapse=stats
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.auth_token }}
+    param_schema:
+      - name: short_id
+        type: string
+        description: The Sentry short ID, such as WEB-1A2.
+        required: true
+    response_template: |-
+      {% if response.groupId %}{% assign issue = response.group %}{{ response.shortId }} {{ issue.title | truncate: 300 }} (issue ID {{ response.groupId }})
+      Status: {{ issue.status }}{% if issue.substatus %} ({{ issue.substatus | replace: "_", " " }}){% endif %} · level {{ issue.level }}{% if issue.priority %} · {{ issue.priority }} priority{% endif %}
+      Project: {{ response.projectSlug }}
+      Events: {{ issue.count }} · Users affected: {{ issue.userCount }}
+      First seen: {{ issue.firstSeen }} · Last seen: {{ issue.lastSeen }}
+      Link: {{ issue.permalink }}{% else %}Sentry returned an unexpected response.{% endif %}
+
+  - id: find_issue_by_event_id
+    title: Find Issue by Event ID
+    description: Find the Sentry issue behind an event ID, the 32-character code an app shows on its error screen or in a crash report. Use this when a customer shares an error ID or reference code, then call Get Issue with the issue ID.
+    http_method: GET
+    endpoint_url: 'https://${{ inputs.region }}.sentry.io/api/0/organizations/${{ inputs.organization_slug }}/eventids/{{ event_id | strip | remove: "-" | downcase | url_encode }}/'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.auth_token }}
+    param_schema:
+      - name: event_id
+        type: string
+        description: The Sentry event ID, 32 hexadecimal characters such as 9fac2ceed9344f2bbfdd1fdacb0ed9b1.
+        required: true
+    response_template: |-
+      {% if response.groupId %}{% assign keys = "environment,release,browser,os,device,url,transaction" | split: "," %}{{ response.event.title | default: "Untitled event" | truncate: 300 }}
+      Issue ID: {{ response.groupId }}
+      Project: {{ response.projectSlug }}
+      Happened: {{ response.event.dateCreated | default: response.event.dateReceived }}{% if response.event.location %}
+      Location: {{ response.event.location | truncate: 200 }}{% endif %}{% for tag in response.event.tags %}{% if keys contains tag.key %}
+      {{ tag.key }}: {{ tag.value | truncate: 150 }}{% endif %}{% endfor %}{% else %}Sentry returned an unexpected response.{% endif %}
+
+  - id: list_issue_events
+    title: List Issue Events
+    description: List 5 events recorded for a Sentry issue, with the time, environment, release, browser, and operating system of each. Use this to see when and where an issue happens. Use the numeric issue ID from Search Issues.
+    http_method: GET
+    endpoint_url: https://${{ inputs.region }}.sentry.io/api/0/organizations/${{ inputs.organization_slug }}/issues/{{ issue_id | strip | url_encode }}/events/?per_page=5
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.auth_token }}
+    param_schema:
+      - name: issue_id
+        type: string
+        description: The numeric Sentry issue ID, such as 4505281256. This is not the short ID.
+        required: true
+    response_template: |-
+      {% if response.first.eventID %}{% assign keys = "environment,release,browser,os,device,url,transaction" | split: "," %}{% for event in response limit: 5 %}- {{ event.dateCreated }} · {{ event.title | truncate: 200 }} (event ID {{ event.eventID }}){% if event.location %}
+        Location: {{ event.location | truncate: 200 }}{% endif %}{% capture tags %}{% for tag in event.tags %}{% if keys contains tag.key %}{{ tag.key }}: {{ tag.value | truncate: 100 }}; {% endif %}{% endfor %}{% endcapture %}{% if tags != "" %}
+        {{ tags | strip }}{% endif %}
+      {% endfor %}{% elsif response.size == 0 %}No events found for this issue.{% else %}Sentry returned an unexpected response.{% endif %}
