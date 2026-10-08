@@ -1,0 +1,125 @@
+version: 0.0.1
+kind: captain_toolset
+name: SavvyCal
+author: chatwoot
+category: Scheduling
+description: Look up bookings, scheduling links, and open times in SavvyCal.
+
+secrets:
+  access_token:
+    label: SavvyCal personal access token
+    type: password
+    required: true
+
+tools:
+  - id: list_upcoming_bookings
+    title: List Upcoming Bookings
+    description: List the next 50 upcoming SavvyCal bookings, soonest first, with each attendee's name and email. SavvyCal cannot search by email, so use this first when a customer asks about an upcoming meeting and match their email address in the results. Returns the booking IDs that Get Booking needs.
+    http_method: GET
+    endpoint_url: https://api.savvycal.com/v1/events?period=upcoming&state=all&attendance=any&direction=asc&limit=50
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    response_template: |-
+      {% if response.entries %}{% for event in response.entries limit: 50 %}- {{ event.summary | truncate: 120 }} (booking ID {{ event.id }})
+        State: {{ event.state | replace: "_", " " }}
+        Time: {{ event.start_at }} to {{ event.end_at }} (UTC, {{ event.duration }} minutes)
+        Attendees: {% for attendee in event.attendees limit: 6 %}{{ attendee.display_name }} <{{ attendee.email }}>{% if attendee.is_organizer %} (organizer){% endif %}{% unless forloop.last %}; {% endunless %}{% endfor %}{% if event.attendees.size > 6 %}; and {{ event.attendees.size | minus: 6 }} more{% endif %}
+      {% else %}No upcoming bookings found.
+      {% endfor %}{% if response.metadata.after %}More bookings exist beyond these 50. Use List Bookings by Date to narrow the search.{% endif %}{% else %}SavvyCal returned an unexpected response.{% endif %}
+
+  - id: list_bookings_by_date
+    title: List Bookings by Date
+    description: List up to 50 SavvyCal bookings that start within a date range, past or future, with each attendee's name and email. Use this when a customer mentions when their meeting was or will be, or when List Upcoming Bookings does not show it, then match their email address in the results.
+    http_method: GET
+    endpoint_url: https://api.savvycal.com/v1/events?period=fixed&from={{ start_date | strip | url_encode }}&until={{ end_date | strip | url_encode }}&state=all&attendance=any&direction=asc&limit=50
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: start_date
+        type: string
+        description: The first date to include, in YYYY-MM-DD format.
+        required: true
+      - name: end_date
+        type: string
+        description: The last date to include, in YYYY-MM-DD format. Keep the range short, such as one week, so the list is not cut off at 50 bookings.
+        required: true
+    response_template: |-
+      {% if response.entries %}{% for event in response.entries limit: 50 %}- {{ event.summary | truncate: 120 }} (booking ID {{ event.id }})
+        State: {{ event.state | replace: "_", " " }}
+        Time: {{ event.start_at }} to {{ event.end_at }} (UTC, {{ event.duration }} minutes)
+        Attendees: {% for attendee in event.attendees limit: 6 %}{{ attendee.display_name }} <{{ attendee.email }}>{% if attendee.is_organizer %} (organizer){% endif %}{% unless forloop.last %}; {% endunless %}{% endfor %}{% if event.attendees.size > 6 %}; and {{ event.attendees.size | minus: 6 }} more{% endif %}
+      {% else %}No bookings found in this date range.
+      {% endfor %}{% if response.metadata.after %}More bookings exist in this range than the 50 shown. Use a shorter date range.{% endif %}{% else %}SavvyCal returned an unexpected response.{% endif %}
+
+  - id: get_booking
+    title: Get Booking
+    description: Get the full details of one SavvyCal booking, including its state, time, attendees, location or video link, payment, and any cancellation or reschedule reason. Use the booking ID from List Upcoming Bookings or List Bookings by Date.
+    http_method: GET
+    endpoint_url: https://api.savvycal.com/v1/events/{{ booking_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: booking_id
+        type: string
+        description: The SavvyCal booking ID from List Upcoming Bookings or List Bookings by Date, starting with event_.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.summary | truncate: 200 }} (booking ID {{ response.id }})
+      State: {{ response.state | replace: "_", " " }}
+      Time: {{ response.start_at }} to {{ response.end_at }} (UTC, {{ response.duration }} minutes){% if response.link.name %}
+      Scheduling link: {{ response.link.name }} (link ID {{ response.link.id }}){% endif %}
+      Booked on: {{ response.created_at }}
+      Attendees:{% for attendee in response.attendees limit: 20 %}
+      - {{ attendee.display_name }} <{{ attendee.email }}>{% if attendee.is_organizer %}, organizer{% endif %}, {{ attendee.response_status }}, time zone {{ attendee.time_zone }}{% endfor %}{% if response.location and response.location != "" %}
+      Location: {{ response.location | truncate: 200 }}{% endif %}{% if response.conferencing.join_url %}
+      Join link: {{ response.conferencing.join_url }}{% endif %}{% if response.payment %}
+      Payment: {{ response.payment.state | replace: "_", " " }}{% if response.payment.amount_total %}, total {{ response.payment.amount_total }} in the smallest currency unit, such as cents{% endif %}{% endif %}{% if response.canceled_at %}
+      Canceled at: {{ response.canceled_at }}{% if response.cancel_reason and response.cancel_reason != "" %}
+      Cancellation reason: {{ response.cancel_reason | truncate: 300 }}{% endif %}{% endif %}{% if response.rescheduled_at %}
+      Rescheduled at: {{ response.rescheduled_at }}{% if response.original_start_at %}, originally {{ response.original_start_at }}{% endif %}{% if response.reschedule_reason and response.reschedule_reason != "" %}
+      Reschedule reason: {{ response.reschedule_reason | truncate: 300 }}{% endif %}{% endif %}{% if response.additional_info and response.additional_info != "" %}
+      Additional info: {{ response.additional_info | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 300 }}{% endif %}
+      Booking page: {{ response.url }}{% else %}SavvyCal returned an unexpected response.{% endif %}
+
+  - id: list_scheduling_links
+    title: List Scheduling Links
+    description: List the active SavvyCal scheduling links, with their durations and link IDs. Use this when a customer asks what kind of meeting they can book, and before Get Available Slots, which needs a link ID.
+    http_method: GET
+    endpoint_url: https://api.savvycal.com/v1/links?state=active&limit=50
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    response_template: |-
+      {% if response.entries %}{% for link in response.entries limit: 50 %}- {{ link.name }} (link ID {{ link.id }}): {{ link.durations | join: ", " }} minutes{% if link.scope.name %}, team {{ link.scope.name }}{% endif %}, slug {{ link.slug }}{% if link.description and link.description != "" %}
+        {{ link.description | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 200 }}{% endif %}
+      {% else %}No active scheduling links found.
+      {% endfor %}{% else %}SavvyCal returned an unexpected response.{% endif %}
+
+  - id: get_available_slots
+    title: Get Available Slots
+    description: Find open times on a SavvyCal scheduling link within a date range. Use this when a customer wants to book or reschedule and asks which times are available. Get the link ID from List Scheduling Links or Get Booking. Times are returned in UTC, so convert them to the customer's time zone before sharing.
+    http_method: GET
+    endpoint_url: https://api.savvycal.com/v1/links/{{ link_id | strip | url_encode }}/slots?from={{ start_date | strip | url_encode }}T00%3A00%3A00Z&until={{ end_date | strip | url_encode }}T23%3A59%3A59Z
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: link_id
+        type: string
+        description: The SavvyCal scheduling link ID from List Scheduling Links or Get Booking, starting with link_.
+        required: true
+      - name: start_date
+        type: string
+        description: The first date to check, in YYYY-MM-DD format.
+        required: true
+      - name: end_date
+        type: string
+        description: The last date to check, in YYYY-MM-DD format. Keep the range to 7 days or less.
+        required: true
+    response_template: |-
+      {% if response.size == 0 %}No open times in this date range.{% elsif response.first.start_at %}{% assign seen = "" %}{% assign current_day = "" %}Open times in UTC, with the meeting length in minutes:{% for slot in response limit: 300 %}{% capture key %}[{{ slot.start_at }}/{{ slot.duration }}]{% endcapture %}{% unless seen contains key %}{% assign seen = seen | append: key %}{% assign day = slot.start_at | slice: 0, 10 %}{% if day != current_day %}{% assign current_day = day %}
+      {{ day }}: {% else %}, {% endif %}{{ slot.start_at | slice: 11, 5 }} ({{ slot.duration }}){% endunless %}{% endfor %}{% if response.size > 300 %}
+      Only the first 300 slots were checked. Use a shorter date range to see later times.{% endif %}{% else %}SavvyCal returned an unexpected response.{% endif %}
