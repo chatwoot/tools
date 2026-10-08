@@ -1,0 +1,140 @@
+version: 0.0.1
+kind: captain_toolset
+name: Salesflare
+author: chatwoot
+category: CRM
+description: Look up contacts, accounts, opportunities, and internal notes in Salesflare, and add internal notes to accounts.
+
+secrets:
+  api_key:
+    label: Salesflare API key
+    type: password
+    required: true
+
+tools:
+  - id: find_contacts_by_email
+    title: Find Contacts by Email
+    description: Find Salesflare contacts by email address. Use this first to get the contact's account ID, which the other Salesflare tools need.
+    http_method: GET
+    endpoint_url: https://api.salesflare.com/contacts?email={{ email | strip | url_encode }}&limit=5
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    response_template: |-
+      {% if response[0].id %}{% for contact in response limit: 5 %}- {{ contact.name | default: "Unnamed contact" }}{% if contact.email %} <{{ contact.email }}>{% endif %} (contact ID {{ contact.id }}){% if contact.account.name %}
+        Account: {{ contact.account.name }} (account ID {{ contact.account.id }}){% elsif contact.account %}
+        Account ID: {{ contact.account.id | default: contact.account }}{% endif %}{% if contact.position.role or contact.position.organisation %}
+        Position: {{ contact.position.role }}{% if contact.position.role and contact.position.organisation %} at {% endif %}{{ contact.position.organisation }}{% endif %}{% if contact.phone_number or contact.mobile_phone_number %}
+        Phone: {{ contact.phone_number | default: contact.mobile_phone_number }}{% endif %}{% if contact.owner.name %}
+        Owner: {{ contact.owner.name }}{% endif %}{% if contact.tags.size > 0 %}
+        Tags: {% for tag in contact.tags limit: 10 %}{{ tag.name | default: tag }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}
+      {% endfor %}{% elsif response.size == 0 %}No Salesflare contact found with this email address.{% else %}Salesflare returned an unexpected response.{% endif %}
+
+  - id: find_accounts
+    title: Find Accounts
+    description: Search Salesflare accounts (companies) by name or website domain. Use this when you know the customer's company but not the contact, to get the account ID the other Salesflare tools need.
+    http_method: GET
+    endpoint_url: https://api.salesflare.com/accounts?search={{ query | strip | url_encode }}&limit=5
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: query
+        type: string
+        description: The company name or website domain, such as Acme or acme.com.
+        required: true
+    response_template: |-
+      {% if response[0].id %}{% for account in response limit: 5 %}- {{ account.name | default: "Unnamed account" }} (account ID {{ account.id }}){% if account.domain %} · {{ account.domain }}{% elsif account.website %} · {{ account.website }}{% endif %}{% if account.owner.name %}
+        Owner: {{ account.owner.name }}{% endif %}
+      {% endfor %}{% elsif response.size == 0 %}No Salesflare account found for this search.{% else %}Salesflare returned an unexpected response.{% endif %}
+
+  - id: get_account
+    title: Get Account
+    description: Get a Salesflare account's details, including website, size, description, owner, tags, and custom fields such as plan or tier. Use the account ID from Find Contacts by Email or Find Accounts.
+    http_method: GET
+    endpoint_url: https://api.salesflare.com/accounts/{{ account_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: account_id
+        type: string
+        description: The numeric Salesflare account ID from Find Contacts by Email or Find Accounts.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.name | default: "Unnamed account" }} (account ID {{ response.id }}){% if response.domain %}
+      Domain: {{ response.domain }}{% endif %}{% if response.website %}
+      Website: {{ response.website }}{% endif %}{% if response.email %}
+      Email: {{ response.email }}{% endif %}{% if response.phone_number %}
+      Phone: {{ response.phone_number }}{% endif %}{% if response.size %}
+      Employees: {{ response.size }}{% endif %}{% assign address = response.address | default: response.addresses.first %}{% if address.city or address.country %}
+      Location: {{ address.city }}{% if address.city and address.country %}, {% endif %}{{ address.country }}{% endif %}{% if response.description %}
+      Description: {{ response.description | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}{% if response.owner.name %}
+      Owner: {{ response.owner.name }}{% endif %}{% if response.tags.size > 0 %}
+      Tags: {% for tag in response.tags limit: 15 %}{{ tag.name | default: tag }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% for field in response.custom limit: 25 %}{% assign value = field[1].name | default: field[1] | append: "" %}{% if value != "" %}
+      - {{ field[0] | replace: "_", " " }}: {{ value | strip_newlines | truncate: 200 }}{% endif %}{% endfor %}{% else %}Salesflare returned an unexpected response.{% endif %}
+
+  - id: list_opportunities
+    title: List Opportunities
+    description: List up to 10 opportunities (deals) on a Salesflare account, with stage, value, and close date. Use the account ID from Find Contacts by Email or Find Accounts.
+    http_method: GET
+    endpoint_url: https://api.salesflare.com/opportunities?account={{ account_id | strip | url_encode }}&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: account_id
+        type: string
+        description: The numeric Salesflare account ID from Find Contacts by Email or Find Accounts.
+        required: true
+    response_template: |-
+      {% if response[0].id %}{% for opportunity in response limit: 10 %}- {{ opportunity.name | default: "Unnamed opportunity" }} (opportunity ID {{ opportunity.id }}){% if opportunity.stage.name %} · {{ opportunity.stage.name }}{% endif %}{% if opportunity.closed %} · closed{% endif %}{% if opportunity.value %}
+        Value: {{ opportunity.value }}{% if opportunity.currency.iso %} {{ opportunity.currency.iso }}{% endif %}{% endif %}{% if opportunity.close_date %}
+        Close date: {{ opportunity.close_date | slice: 0, 10 }}{% endif %}{% if opportunity.probability %}
+        Probability: {{ opportunity.probability }}%{% endif %}{% if opportunity.owner.name %}
+        Owner: {{ opportunity.owner.name }}{% endif %}
+      {% endfor %}{% elsif response.size == 0 %}No opportunities found for this account.{% else %}Salesflare returned an unexpected response.{% endif %}
+
+  - id: list_internal_notes
+    title: List Internal Notes
+    description: Read up to 10 internal notes the team has written on a Salesflare account, such as call summaries or promises made. Use the account ID from Find Contacts by Email or Find Accounts.
+    http_method: GET
+    endpoint_url: https://api.salesflare.com/accounts/{{ account_id | strip | url_encode }}/messages?limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: account_id
+        type: string
+        description: The numeric Salesflare account ID from Find Contacts by Email or Find Accounts.
+        required: true
+    response_template: |-
+      {% if response[0].id %}{% for note in response limit: 10 %}- {{ note.date | slice: 0, 10 }}{% if note.user.name %} · by {{ note.user.name }}{% endif %}: {{ note.body | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}
+      {% endfor %}{% elsif response.size == 0 %}No internal notes on this account.{% else %}Salesflare returned an unexpected response.{% endif %}
+
+  - id: add_internal_note
+    title: Add Internal Note
+    description: Add an internal note to a Salesflare account, for example a summary of this conversation or a follow-up request for the account owner. Only add a note when the conversation needs one. Use the account ID from Find Contacts by Email or Find Accounts.
+    http_method: POST
+    endpoint_url: https://api.salesflare.com/messages
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: account_id
+        type: integer
+        description: The numeric Salesflare account ID from Find Contacts by Email or Find Accounts.
+        required: true
+      - name: content
+        type: string
+        description: The note text. Plain text only.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% capture escaped_newline %}\\n{% endcapture %}{"account":{{ account_id | plus: 0 }},"body":"{{ content | strip | replace: bs, escaped_bs | replace: '"', escaped_quote | newline_to_br | strip_newlines | replace: "<br />", escaped_newline }}"}
+    response_template: |-
+      {% if response.id %}Added the internal note to the account in Salesflare (note ID {{ response.id }}).{% else %}Salesflare accepted the internal note for this account.{% endif %}
