@@ -1,0 +1,204 @@
+version: 0.0.1
+kind: captain_toolset
+name: Tito
+author: chatwoot
+category: Scheduling
+description: Look up Tito events, registrations, tickets, and ticket types.
+
+headers:
+  Accept: application/json
+
+inputs:
+  account_slug:
+    label: Tito account slug
+    placeholder: acme-events
+    required: true
+
+secrets:
+  api_token:
+    label: Tito API token
+    type: password
+    required: true
+
+tools:
+  - id: list_upcoming_events
+    title: List Upcoming Events
+    description: List the upcoming events in your Tito account, with dates, location, and the event slug. Use this first when a customer asks about an event, ticket, or order, because every other Tito tool needs the event slug.
+    http_method: GET
+    endpoint_url: https://api.tito.io/v3/${{ inputs.account_slug }}/events?page%5Bsize%5D=30
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Token token=${{ secrets.api_token }}
+    response_template: |-
+      {% if response.events %}{% for event in response.events limit: 30 %}- {{ event.title | truncate: 120 }} (event slug {{ event.slug }}){% if event.date_or_range and event.date_or_range != "" %}
+        When: {{ event.date_or_range }}{% elsif event.start_date %}
+        When: {{ event.start_date }}{% if event.end_date and event.end_date != event.start_date %} to {{ event.end_date }}{% endif %}{% endif %}{% if event.location and event.location != "" %}
+        Where: {{ event.location | truncate: 200 }}{% endif %}
+        Status: {% if event.live %}live{% else %}not live{% endif %}{% if event.private %}, private{% endif %}{% if event.test_mode %}, test mode{% endif %}
+        Page: {{ event.url }}
+      {% else %}No upcoming events found.
+      {% endfor %}{% if response.meta.next_page %}More events exist than the {{ response.events.size }} shown.{% endif %}{% else %}Tito returned an unexpected response.{% endif %}
+
+  - id: list_past_events
+    title: List Past Events
+    description: List past events in your Tito account, with dates and the event slug. Use this when a customer asks about an event that has already happened and List Upcoming Events does not show it.
+    http_method: GET
+    endpoint_url: https://api.tito.io/v3/${{ inputs.account_slug }}/events/past?page%5Bsize%5D=30
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Token token=${{ secrets.api_token }}
+    response_template: |-
+      {% if response.events %}{% for event in response.events limit: 30 %}- {{ event.title | truncate: 120 }} (event slug {{ event.slug }}){% if event.date_or_range and event.date_or_range != "" %}
+        When: {{ event.date_or_range }}{% elsif event.start_date %}
+        When: {{ event.start_date }}{% if event.end_date and event.end_date != event.start_date %} to {{ event.end_date }}{% endif %}{% endif %}{% if event.location and event.location != "" %}
+        Where: {{ event.location | truncate: 200 }}{% endif %}
+        Page: {{ event.url }}
+      {% else %}No past events found.
+      {% endfor %}{% if response.meta.next_page %}More events exist than the {{ response.events.size }} shown.{% endif %}{% else %}Tito returned an unexpected response.{% endif %}
+
+  - id: get_event
+    title: Get Event
+    description: Get the details of one Tito event, including dates, time zone, location, currency, contact email, description, and event page link. Use the event slug from List Upcoming Events or List Past Events.
+    http_method: GET
+    endpoint_url: https://api.tito.io/v3/${{ inputs.account_slug }}/{{ event_slug | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Token token=${{ secrets.api_token }}
+    param_schema:
+      - name: event_slug
+        type: string
+        description: The event slug from List Upcoming Events or List Past Events. It is also the last part of the event's ti.to URL.
+        required: true
+    response_template: |-
+      {% if response.event.slug %}{% assign event = response.event %}{{ event.title | truncate: 200 }} (event slug {{ event.slug }}){% if event.start_at %}
+      Starts: {{ event.start_at }}{% elsif event.start_date %}
+      Starts: {{ event.start_date }}{% endif %}{% if event.end_at %}
+      Ends: {{ event.end_at }}{% elsif event.end_date %}
+      Ends: {{ event.end_date }}{% endif %}{% if event.timezone %}
+      Time zone: {{ event.timezone }}{% endif %}{% if event.location and event.location != "" %}
+      Where: {{ event.location | truncate: 300 }}{% endif %}
+      Status: {% if event.live %}live{% else %}not live{% endif %}{% if event.private %}, private{% endif %}{% if event.test_mode %}, test mode{% endif %}
+      Currency: {{ event.currency }}{% if event.email_address and event.email_address != "" %}
+      Contact email: {{ event.email_address }}{% endif %}{% if event.description and event.description != "" %}
+      Description: {{ event.description | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 500 }}{% endif %}
+      Page: {{ event.url }}{% else %}Tito returned an unexpected response.{% endif %}
+
+  - id: find_registrations
+    title: Find Registrations
+    description: Find registrations (orders) for one Tito event by the buyer's email address, name, or 4-character order reference, including cancelled ones. Use this when a customer asks about their order, payment, or refund. Needs the event slug from List Upcoming Events or List Past Events. Returns the registration slug that Get Registration needs.
+    http_method: GET
+    endpoint_url: https://api.tito.io/v3/${{ inputs.account_slug }}/{{ event_slug | strip | url_encode }}/registrations?q={{ query | strip | url_encode }}&search%5Bstates%5D%5B%5D=paid&search%5Bstates%5D%5B%5D=unpaid&search%5Bstates%5D%5B%5D=complete&search%5Bstates%5D%5B%5D=confirmed&search%5Bstates%5D%5B%5D=incomplete&search%5Bstates%5D%5B%5D=cancelled&page%5Bsize%5D=10
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Token token=${{ secrets.api_token }}
+    param_schema:
+      - name: event_slug
+        type: string
+        description: The event slug from List Upcoming Events or List Past Events.
+        required: true
+      - name: query
+        type: string
+        description: The buyer's email address. Their name or the order reference, such as ZBRE, also works.
+        required: true
+    response_template: |-
+      {% if response.registrations %}{% for registration in response.registrations limit: 10 %}- Order {{ registration.reference }}: {{ registration.name | default: "No name" }} <{{ registration.email }}> (registration slug {{ registration.slug }})
+        State: {{ registration.state | replace: "_", " " }}{% if registration.refunded %}, refunded{% endif %}{% if registration.test_mode %}, test mode{% endif %}
+        Tickets: {{ registration.tickets_count }}{% for item in registration.quantities %}{% if forloop.first %} ({% endif %}{{ item[1].quantity }} x {{ item[1].release }}{% if forloop.last %}){% else %}, {% endif %}{% endfor %}
+        Total: {{ registration.total }}{% if registration.discount_code and registration.discount_code != "" %}, discount code {{ registration.discount_code }}{% endif %}
+        Completed: {{ registration.completed_at | default: "not completed" }}
+      {% else %}No registrations found for this search in this event.
+      {% endfor %}{% if response.meta.total_count > 10 %}Showing 10 of {{ response.meta.total_count }} matching registrations.{% endif %}{% else %}Tito returned an unexpected response.{% endif %}
+
+  - id: get_registration
+    title: Get Registration
+    description: Get one Tito registration (order) with its state, totals, refund status, and the tickets it contains. Use the event slug and the registration slug from Find Registrations or Find Tickets.
+    http_method: GET
+    endpoint_url: https://api.tito.io/v3/${{ inputs.account_slug }}/{{ event_slug | strip | url_encode }}/registrations/{{ registration_slug | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Token token=${{ secrets.api_token }}
+    param_schema:
+      - name: event_slug
+        type: string
+        description: The event slug from List Upcoming Events or List Past Events.
+        required: true
+      - name: registration_slug
+        type: string
+        description: The registration slug from Find Registrations or Find Tickets, starting with reg_.
+        required: true
+    response_template: |-
+      {% if response.registration.slug %}{% assign registration = response.registration %}Order {{ registration.reference }}: {{ registration.name | default: "No name" }} <{{ registration.email }}> (registration slug {{ registration.slug }})
+      State: {{ registration.state | replace: "_", " " }}{% if registration.refunded %}, refunded{% endif %}{% if registration.test_mode %}, test mode{% endif %}
+      Created: {{ registration.created_at }}
+      Completed: {{ registration.completed_at | default: "not completed" }}{% if registration.company_name and registration.company_name != "" %}
+      Company: {{ registration.company_name }}{% endif %}{% if registration.phone_number and registration.phone_number != "" %}
+      Phone: {{ registration.phone_number }}{% endif %}
+      Total: {{ registration.total }} (before tax: {{ registration.total_less_tax }}){% if registration.discount_code and registration.discount_code != "" %}
+      Discount code: {{ registration.discount_code }}{% endif %}{% if registration.payment_reference and registration.payment_reference != "" %}
+      Purchase order number: {{ registration.payment_reference }}{% endif %}{% if registration.refunds.size > 0 %}
+      Refunds recorded: {{ registration.refunds.size }}{% endif %}
+      Tickets: {{ registration.tickets_count }}{% for ticket in registration.tickets limit: 20 %}
+      - {{ ticket.reference }} {{ ticket.release_title }}: {% if ticket.email and ticket.email != "" %}{{ ticket.name | default: "No name" }} <{{ ticket.email }}>{% else %}unassigned{% endif %}, {{ ticket.state }} (ticket slug {{ ticket.slug }}){% endfor %}{% else %}Tito returned an unexpected response.{% endif %}
+
+  - id: find_tickets
+    title: Find Tickets
+    description: Find tickets for one Tito event by the ticket holder's email address, name, or ticket reference, including void tickets. Use this when a customer was assigned a ticket someone else bought, or asks whether their ticket is valid. Needs the event slug from List Upcoming Events or List Past Events.
+    http_method: GET
+    endpoint_url: https://api.tito.io/v3/${{ inputs.account_slug }}/{{ event_slug | strip | url_encode }}/tickets?q={{ query | strip | url_encode }}&search%5Bstates%5D%5B%5D=complete&search%5Bstates%5D%5B%5D=incomplete&search%5Bstates%5D%5B%5D=unassigned&search%5Bstates%5D%5B%5D=void&page%5Bsize%5D=10
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Token token=${{ secrets.api_token }}
+    param_schema:
+      - name: event_slug
+        type: string
+        description: The event slug from List Upcoming Events or List Past Events.
+        required: true
+      - name: query
+        type: string
+        description: The ticket holder's email address. Their name or the ticket reference, such as ZBRE-1, also works.
+        required: true
+    response_template: |-
+      {% if response.tickets %}{% for ticket in response.tickets limit: 10 %}- Ticket {{ ticket.reference }}: {{ ticket.release_title }} (ticket slug {{ ticket.slug }})
+        Holder: {% if ticket.email and ticket.email != "" %}{{ ticket.name | default: "No name" }} <{{ ticket.email }}>{% else %}unassigned{% endif %}
+        State: {{ ticket.state }}{% if ticket.test_mode %}, test mode{% endif %}
+        Price: {{ ticket.price }}{% if ticket.discount_code_used and ticket.discount_code_used != "" %}, discount code {{ ticket.discount_code_used }}{% endif %}
+        Order: registration slug {{ ticket.registration_slug }}
+      {% else %}No tickets found for this search in this event.
+      {% endfor %}{% if response.meta.total_count > 10 %}Showing 10 of {{ response.meta.total_count }} matching tickets.{% endif %}{% else %}Tito returned an unexpected response.{% endif %}
+
+  - id: list_ticket_types
+    title: List Ticket Types
+    description: List the ticket types (Tito calls them releases) for one event, with price, whether each is on sale or sold out, and sale dates. Use this when a customer asks what tickets are available or what they cost. Needs the event slug from List Upcoming Events or List Past Events.
+    http_method: GET
+    endpoint_url: https://api.tito.io/v3/${{ inputs.account_slug }}/{{ event_slug | strip | url_encode }}/releases?page%5Bsize%5D=30
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: Token token=${{ secrets.api_token }}
+    param_schema:
+      - name: event_slug
+        type: string
+        description: The event slug from List Upcoming Events or List Past Events.
+        required: true
+    response_template: |-
+      {% if response.releases %}{% for release in response.releases limit: 30 %}- {{ release.title | truncate: 120 }}: {% if release.donation %}donation{% else %}{{ release.price | default: "free" }}{% endif %}, {% if release.sold_out %}sold out{% elsif release.expired %}sales ended{% elsif release.upcoming %}not on sale yet{% elsif release.off_sale %}off sale{% else %}on sale{% endif %}{% if release.secret %}, secret (only by direct link){% endif %}{% if release.waiting_list %}, waiting list open{% endif %}{% if release.start_at or release.end_at %}
+        Sales: {{ release.start_at | default: "open" }} to {{ release.end_at | default: "no end date" }}{% endif %}{% if release.quantity %}
+        Sold: {{ release.tickets_count }} of {{ release.quantity }}{% endif %}{% if release.max_tickets_per_person %}
+        Maximum per person: {{ release.max_tickets_per_person }}{% endif %}{% if release.description and release.description != "" %}
+        {{ release.description | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 200 }}{% endif %}{% unless release.secret %}
+        Buy link: {{ release.share_url }}{% endunless %}
+      {% else %}No ticket types found for this event.
+      {% endfor %}{% else %}Tito returned an unexpected response.{% endif %}
