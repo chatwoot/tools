@@ -1,0 +1,138 @@
+version: 0.0.1
+kind: captain_toolset
+name: Statuspage
+author: chatwoot
+category: Engineering & status
+description: Check Atlassian Statuspage incidents, component status, and planned maintenance.
+
+inputs:
+  page_id:
+    label: Page ID
+    placeholder: gytm4qzbx9t6
+    required: true
+
+secrets:
+  api_key:
+    label: Statuspage API key
+    type: password
+    required: true
+
+tools:
+  - id: list_unresolved_incidents
+    title: List Unresolved Incidents
+    description: List incidents on the status page that are not resolved yet, with affected components and the latest update. Use this first when a customer reports that something is down, slow, or broken.
+    http_method: GET
+    endpoint_url: https://api.statuspage.io/v1/pages/${{ inputs.page_id }}/incidents/unresolved?per_page=10
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: OAuth ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.first.id %}{% for incident in response limit: 10 %}{% assign updates = incident.incident_updates | sort: "created_at" | reverse %}- {{ incident.name }} (ID {{ incident.id }}): {{ incident.status | replace: "_", " " }}, impact {{ incident.impact | default: "unknown" }}
+        Started: {{ incident.created_at }}{% if incident.components.size > 0 %}
+        Affected: {% for component in incident.components limit: 10 %}{{ component.name }} ({{ component.status | replace: "_", " " }}){% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if updates.first.body %}
+        Latest update ({{ updates.first.created_at }}): {{ updates.first.body | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}{% endif %}{% if incident.shortlink %}
+        Link: {{ incident.shortlink }}{% endif %}
+      {% endfor %}{% elsif response.size == 0 %}No unresolved incidents.{% else %}Statuspage returned an unexpected response.{% endif %}
+
+  - id: list_components
+    title: List Components
+    description: Check the current status of each component on the status page, such as API or Dashboard. Use this when a customer asks whether a specific part of the product is working.
+    http_method: GET
+    endpoint_url: https://api.statuspage.io/v1/pages/${{ inputs.page_id }}/components?per_page=100
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: OAuth ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.first.id %}{% assign affected = 0 %}{% for component in response %}{% unless component.status == "operational" %}{% assign affected = affected | plus: 1 %}{% endunless %}{% endfor %}Components not operational: {{ affected }} of {{ response.size }}
+      {% for component in response %}- {{ component.name }}{% if component.group %} (group){% endif %}: {{ component.status | default: "unknown" | replace: "_", " " }}
+      {% endfor %}{% if response.size == 100 %}Only the first 100 components are shown.{% endif %}{% elsif response.size == 0 %}No components found on this status page.{% else %}Statuspage returned an unexpected response.{% endif %}
+
+  - id: search_incidents
+    title: Search Incidents
+    description: Search current and past incidents and maintenance on the status page by keyword, newest first. Use this when a customer asks about an earlier outage or whether a problem is a known issue.
+    http_method: GET
+    endpoint_url: https://api.statuspage.io/v1/pages/${{ inputs.page_id }}/incidents?q={{ query | url_encode }}&limit=10
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: OAuth ${{ secrets.api_key }}
+    param_schema:
+      - name: query
+        type: string
+        description: Words to look for in the incident name, status, updates, or postmortem, such as "login" or "API".
+        required: true
+    response_template: |-
+      {% if response.first.id %}{% for incident in response limit: 10 %}{% assign updates = incident.incident_updates | sort: "created_at" | reverse %}- {{ incident.name }} (ID {{ incident.id }}): {{ incident.status | replace: "_", " " }}, impact {{ incident.impact | default: "unknown" }}
+        Started: {{ incident.scheduled_for | default: incident.created_at }}{% if incident.resolved_at %} · Resolved: {{ incident.resolved_at }}{% endif %}{% if updates.first.body %}
+        Latest update ({{ updates.first.created_at }}): {{ updates.first.body | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 400 }}{% endif %}{% if incident.shortlink %}
+        Link: {{ incident.shortlink }}{% endif %}
+      {% endfor %}{% elsif response.size == 0 %}No incidents match this search.{% else %}Statuspage returned an unexpected response.{% endif %}
+
+  - id: list_upcoming_maintenance
+    title: List Upcoming Maintenance
+    description: List scheduled maintenance that has not started yet, with its time window and affected components. Use this when a customer asks about planned downtime.
+    http_method: GET
+    endpoint_url: https://api.statuspage.io/v1/pages/${{ inputs.page_id }}/incidents/upcoming?per_page=10
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: OAuth ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.first.id %}{% for incident in response limit: 10 %}{% assign updates = incident.incident_updates | sort: "created_at" | reverse %}- {{ incident.name }} (ID {{ incident.id }}): {{ incident.status | replace: "_", " " }}
+        Scheduled: {{ incident.scheduled_for | default: "unknown" }} to {{ incident.scheduled_until | default: "unknown" }}{% if incident.components.size > 0 %}
+        Affected: {% for component in incident.components limit: 10 %}{{ component.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if updates.first.body %}
+        Details: {{ updates.first.body | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 400 }}{% endif %}{% if incident.shortlink %}
+        Link: {{ incident.shortlink }}{% endif %}
+      {% endfor %}{% elsif response.size == 0 %}No upcoming maintenance is scheduled.{% else %}Statuspage returned an unexpected response.{% endif %}
+
+  - id: list_active_maintenance
+    title: List Active Maintenance
+    description: List scheduled maintenance that is in progress right now, with its time window and affected components. Use this when List Unresolved Incidents shows nothing but a customer reports a problem.
+    http_method: GET
+    endpoint_url: https://api.statuspage.io/v1/pages/${{ inputs.page_id }}/incidents/active_maintenance?per_page=10
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: OAuth ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.first.id %}{% for incident in response limit: 10 %}{% assign updates = incident.incident_updates | sort: "created_at" | reverse %}- {{ incident.name }} (ID {{ incident.id }}): {{ incident.status | replace: "_", " " }}
+        Scheduled: {{ incident.scheduled_for | default: "unknown" }} to {{ incident.scheduled_until | default: "unknown" }}{% if incident.components.size > 0 %}
+        Affected: {% for component in incident.components limit: 10 %}{{ component.name }} ({{ component.status | replace: "_", " " }}){% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if updates.first.body %}
+        Latest update ({{ updates.first.created_at }}): {{ updates.first.body | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 400 }}{% endif %}{% if incident.shortlink %}
+        Link: {{ incident.shortlink }}{% endif %}
+      {% endfor %}{% elsif response.size == 0 %}No maintenance is in progress.{% else %}Statuspage returned an unexpected response.{% endif %}
+
+  - id: get_incident
+    title: Get Incident
+    description: Read one incident or maintenance with its full timeline of updates and its postmortem. Use the incident ID from List Unresolved Incidents, Search Incidents, or the maintenance tools.
+    http_method: GET
+    endpoint_url: https://api.statuspage.io/v1/pages/${{ inputs.page_id }}/incidents/{{ incident_id | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: OAuth ${{ secrets.api_key }}
+    param_schema:
+      - name: incident_id
+        type: string
+        description: The Statuspage incident ID from one of the list or search tools, such as p31zjtct2jer.
+        required: true
+    response_template: |-
+      {% if response.id %}{% assign updates = response.incident_updates | sort: "created_at" | reverse %}{{ response.name }} (ID {{ response.id }})
+      Status: {{ response.status | replace: "_", " " }}, impact {{ response.impact | default: "unknown" }}
+      Started: {{ response.created_at }}{% if response.scheduled_for %}
+      Scheduled: {{ response.scheduled_for }} to {{ response.scheduled_until | default: "unknown" }}{% endif %}{% if response.resolved_at %}
+      Resolved: {{ response.resolved_at }}{% endif %}{% if response.components.size > 0 %}
+      Affected: {% for component in response.components limit: 10 %}{{ component.name }} ({{ component.status | replace: "_", " " }}){% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if response.shortlink %}
+      Link: {{ response.shortlink }}{% endif %}
+      Updates, newest first:
+      {% for update in updates limit: 10 %}- {{ update.created_at }} · {{ update.status | replace: "_", " " }}: {{ update.body | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}
+      {% else %}No updates posted yet.
+      {% endfor %}{% if response.postmortem_body and response.postmortem_body != "" %}Postmortem: {{ response.postmortem_body | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 1000 }}{% endif %}{% else %}Statuspage returned an unexpected response.{% endif %}
