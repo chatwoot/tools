@@ -1,0 +1,160 @@
+version: 0.0.1
+kind: captain_toolset
+name: Webflow
+author: chatwoot
+category: Commerce
+description: Look up e-commerce orders, products, and published CMS items on a Webflow site.
+
+inputs:
+  site_id:
+    label: Site ID
+    placeholder: 580e63e98c9a982ac9b8b741
+    required: true
+
+secrets:
+  api_token:
+    label: Webflow site API token
+    type: password
+    required: true
+
+tools:
+  - id: get_order
+    title: Get Order
+    description: Get one Webflow e-commerce order by its order ID, with status, items, totals, shipping address, tracking, and refund or dispute dates. Ask the customer for the order ID from their order confirmation email, or take it from List Recent Orders. Check that the order's email matches the customer before sharing details.
+    http_method: GET
+    endpoint_url: 'https://api.webflow.com/v2/sites/${{ inputs.site_id }}/orders/{{ order_id | strip | remove: "#" | url_encode }}'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: order_id
+        type: string
+        description: The Webflow order ID, usually 6 hexadecimal characters such as fc7-128.
+        required: true
+    response_template: |-
+      {% if response.orderId %}{% assign order = response %}Order {{ order.orderId }} · {{ order.status | default: "unknown" }}
+      Customer: {{ order.customerInfo.fullName | default: "No name" }} <{{ order.customerInfo.email | default: "no email" }}>
+      Placed: {{ order.acceptedOn | slice: 0, 10 | default: "unknown" }}{% if order.fulfilledOn %}
+      Fulfilled: {{ order.fulfilledOn | slice: 0, 10 }}{% endif %}{% if order.refundedOn %}
+      Refunded: {{ order.refundedOn | slice: 0, 10 }}{% endif %}{% if order.disputedOn %}
+      Disputed: {{ order.disputedOn | slice: 0, 10 }}{% if order.disputeLastStatus %} ({{ order.disputeLastStatus | replace: "_", " " }}){% endif %}{% endif %}
+      Paid: {{ order.customerPaid.string | default: "unknown" }}{% if order.stripeCard.last4 %} · {{ order.stripeCard.brand }} ending {{ order.stripeCard.last4 }}{% elsif order.paymentProcessor %} · {{ order.paymentProcessor }}{% endif %}
+      Subtotal: {{ order.totals.subtotal.string | default: "unknown" }}{% for extra in order.totals.extras limit: 10 %}
+      {{ extra.name | default: extra.type }}: {{ extra.price.string }}{% endfor %}
+      Total: {{ order.totals.total.string | default: "unknown" }}
+      Items:{% for line in order.purchasedItems limit: 20 %}
+      - {{ line.count | default: 1 | round }} x {{ line.productName | default: "Unnamed product" }}{% if line.variantName and line.variantName != line.productName %} ({{ line.variantName }}){% endif %}{% if line.variantSKU and line.variantSKU != "" %} · SKU {{ line.variantSKU }}{% endif %} · {{ line.rowTotal.string }}{% endfor %}{% if order.isShippingRequired %}{% assign address = order.shippingAddress %}{% capture place %}{{ address.line1 }} {{ address.line2 }} {{ address.city }} {{ address.state }} {{ address.postalCode }} {{ address.country }}{% endcapture %}
+      Ship to: {{ address.addressee | default: "No name" }}, {{ place | split: " " | join: " " }}
+      Tracking: {% if order.shippingTracking and order.shippingTracking != "" %}{{ order.shippingProvider | default: "carrier not set" }} {{ order.shippingTracking }}{% if order.shippingTrackingURL and order.shippingTrackingURL != "" %} · {{ order.shippingTrackingURL }}{% endif %}{% else %}none recorded{% endif %}{% else %}
+      Shipping: not required{% endif %}{% if order.hasDownloads %}
+      Downloads: {% for file in order.downloadFiles limit: 10 %}{{ file.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if order.orderComment and order.orderComment != "" %}
+      Customer comment: {{ order.orderComment | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 300 }}{% endif %}{% if order.comment and order.comment != "" %}
+      Internal comment: {{ order.comment | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 300 }}{% endif %}{% else %}Webflow returned an unexpected response.{% endif %}
+
+  - id: list_recent_orders
+    title: List Recent Orders
+    description: List 10 orders from the Webflow site with order ID, status, date, total, and customer name and email. Webflow cannot search orders by email, so use this only to scan recent orders for the customer's email, starting at offset 0; prefer Get Order when the customer knows their order ID.
+    http_method: GET
+    endpoint_url: 'https://api.webflow.com/v2/sites/${{ inputs.site_id }}/orders?limit=10&offset={{ offset | default: 0 | plus: 0 }}'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: offset
+        type: integer
+        description: Number of orders to skip. Start at 0, then add 10 to see the next page.
+        required: true
+    response_template: |-
+      {% if response.orders %}{% for order in response.orders limit: 10 %}- {{ order.orderId }} · {{ order.status | default: "unknown" }}{% if order.acceptedOn %} · placed {{ order.acceptedOn | slice: 0, 10 }}{% endif %} · {{ order.customerPaid.string | default: order.totals.total.string | default: "amount unknown" }} · {{ order.customerInfo.fullName | default: "No name" }} <{{ order.customerInfo.email | default: "no email" }}> · {{ order.purchasedItemsCount | default: 0 | round }} item(s)
+      {% else %}No orders found.{% endfor %}{% if response.pagination.total > 10 %}Showing 10 of {{ response.pagination.total }} orders.{% endif %}{% else %}Webflow returned an unexpected response.{% endif %}
+
+  - id: list_orders_by_status
+    title: List Orders by Status
+    description: List 10 Webflow orders in one status, such as unfulfilled or refunded, with order ID, date, total, and customer name and email. Use this to find a customer's order when they do not know the order ID but you know what state it should be in.
+    http_method: GET
+    endpoint_url: 'https://api.webflow.com/v2/sites/${{ inputs.site_id }}/orders?status={{ status | strip | downcase | url_encode }}&limit=10&offset={{ offset | default: 0 | plus: 0 }}'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: status
+        type: string
+        description: 'The order status. One of: pending, unfulfilled, fulfilled, disputed, dispute-lost, refunded.'
+        required: true
+      - name: offset
+        type: integer
+        description: Number of orders to skip. Start at 0, then add 10 to see the next page.
+        required: true
+    response_template: |-
+      {% if response.orders %}{% for order in response.orders limit: 10 %}- {{ order.orderId }} · {{ order.status | default: "unknown" }}{% if order.acceptedOn %} · placed {{ order.acceptedOn | slice: 0, 10 }}{% endif %} · {{ order.customerPaid.string | default: order.totals.total.string | default: "amount unknown" }} · {{ order.customerInfo.fullName | default: "No name" }} <{{ order.customerInfo.email | default: "no email" }}> · {{ order.purchasedItemsCount | default: 0 | round }} item(s)
+      {% else %}No orders found with this status.{% endfor %}{% if response.pagination.total > 10 %}Showing 10 of {{ response.pagination.total }} orders.{% endif %}{% else %}Webflow returned an unexpected response.{% endif %}
+
+  - id: list_products
+    title: List Products
+    description: List 20 products in the Webflow store with product ID, type, and each SKU's price. Use this when a customer asks about a product, a variant, or its price. Start at offset 0.
+    http_method: GET
+    endpoint_url: 'https://api.webflow.com/v2/sites/${{ inputs.site_id }}/products?limit=20&offset={{ offset | default: 0 | plus: 0 }}'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: offset
+        type: integer
+        description: Number of products to skip. Start at 0, then add 20 to see the next page.
+        required: true
+    response_template: |-
+      {% if response.items %}{% for entry in response.items limit: 20 %}{% assign product = entry.product %}- {{ product.fieldData.name | default: "Unnamed product" }} (product ID {{ product.id }}, slug {{ product.fieldData.slug }}){% if product.isArchived %} · archived{% endif %}{% if product.isDraft %} · draft{% endif %}{% if product.fieldData.shippable == false %} · not shippable{% endif %}{% for sku in entry.skus limit: 8 %}
+        {{ sku.fieldData.name | default: "SKU" }}{% if sku.fieldData.sku and sku.fieldData.sku != "" %} [{{ sku.fieldData.sku }}]{% endif %}: {{ sku.fieldData.price.value | divided_by: 100.0 }} {{ sku.fieldData.price.unit | default: sku.fieldData.price.currency }}{% if sku.fieldData["ec-sku-billing-method"] == "subscription" %} · subscription{% endif %}{% endfor %}{% if entry.skus.size > 8 %}
+        Only the first 8 of {{ entry.skus.size }} SKUs are shown.{% endif %}
+      {% else %}No products found.{% endfor %}{% if response.pagination.total > 20 %}Showing 20 of {{ response.pagination.total }} products.{% endif %}{% else %}Webflow returned an unexpected response.{% endif %}
+
+  - id: list_collections
+    title: List Collections
+    description: List the CMS collections on the Webflow site, such as blog posts, help articles, or events, with their collection IDs. Use this first to get the collection ID that List Collection Items and Find Collection Item by Slug need.
+    http_method: GET
+    endpoint_url: https://api.webflow.com/v2/sites/${{ inputs.site_id }}/collections
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    response_template: |-
+      {% if response.collections %}{% for collection in response.collections limit: 40 %}- {{ collection.displayName | default: "Unnamed collection" }} (collection ID {{ collection.id }}, slug {{ collection.slug }})
+      {% else %}This site has no CMS collections.{% endfor %}{% else %}Webflow returned an unexpected response.{% endif %}
+
+  - id: list_collection_items
+    title: List Collection Items
+    description: List the 20 most recently published items in a Webflow CMS collection, with name, slug, and publish date. Use the collection ID from List Collections. Then use Find Collection Item by Slug to read one item's fields.
+    http_method: GET
+    endpoint_url: https://api.webflow.com/v2/collections/{{ collection_id | strip | url_encode }}/items/live?limit=20&sortBy=lastPublished&sortOrder=desc
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: collection_id
+        type: string
+        description: The Webflow collection ID from List Collections.
+        required: true
+    response_template: |-
+      {% if response.items %}{% for item in response.items limit: 20 %}- {{ item.fieldData.name | default: "Unnamed item" | truncate: 120 }} (slug {{ item.fieldData.slug }}, item ID {{ item.id }}){% if item.lastPublished %} · published {{ item.lastPublished | slice: 0, 10 }}{% endif %}
+      {% else %}This collection has no published items.{% endfor %}{% if response.pagination.total > 20 %}Showing 20 of {{ response.pagination.total }} published items.{% endif %}{% else %}Webflow returned an unexpected response.{% endif %}
+
+  - id: find_collection_item_by_slug
+    title: Find Collection Item by Slug
+    description: Read one published Webflow CMS item and its fields by its exact slug, the last part of the page URL. Use the collection ID from List Collections and a slug from List Collection Items or from a link the customer shared.
+    http_method: GET
+    endpoint_url: https://api.webflow.com/v2/collections/{{ collection_id | strip | url_encode }}/items/live?slug={{ slug | strip | downcase | url_encode }}&limit=3
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_token }}
+    param_schema:
+      - name: collection_id
+        type: string
+        description: The Webflow collection ID from List Collections.
+        required: true
+      - name: slug
+        type: string
+        description: The item's exact slug, such as getting-started.
+        required: true
+    response_template: |-
+      {% if response.items %}{% for item in response.items limit: 3 %}{{ item.fieldData.name | default: "Unnamed item" }} (item ID {{ item.id }}){% if item.lastPublished %} · published {{ item.lastPublished | slice: 0, 10 }}{% endif %}{% for field in item.fieldData limit: 30 %}{% if field[1] != nil and field[1] != "" %}{% if field[1].url %}{% assign shown = field[1].url %}{% else %}{% assign shown = field[1] | newline_to_br | strip_newlines | replace: "<br />", " " | replace: "</p>", " " | strip_html | truncate: 300 %}{% endif %}
+        {{ field[0] }}: {{ shown }}{% endif %}{% endfor %}
+      {% else %}No published item found with this slug.{% endfor %}{% else %}Webflow returned an unexpected response.{% endif %}
