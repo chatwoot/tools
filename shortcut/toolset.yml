@@ -1,0 +1,144 @@
+version: 0.0.1
+kind: captain_toolset
+name: Shortcut
+author: chatwoot
+category: Engineering & status
+description: Search Shortcut stories and epics, check their status and comments, and add comments to stories.
+
+secrets:
+  api_token:
+    label: Shortcut API token
+    type: password
+    required: true
+
+tools:
+  - id: search_stories
+    title: Search Stories
+    description: Search Shortcut stories by keyword, such as a bug or feature request a customer mentions. Use this first to find the story ID the other tools need. Supports Shortcut search operators such as type:bug, state:"In Progress", label:name, and is:done.
+    http_method: GET
+    endpoint_url: https://api.app.shortcut.com/api/v3/search/stories?query={{ query | strip | url_encode }}&page_size=10&detail=slim
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Shortcut-Token
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: query
+        type: string
+        description: Keywords or Shortcut search operators to search for. Keep it to a few distinctive words.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for story in response.data limit: 10 %}- {{ story.name | truncate: 150 }} (story ID {{ story.id }}) · {{ story.story_type }} · {% if story.archived %}archived{% elsif story.completed %}done{% elsif story.started %}in progress{% else %}not started{% endif %}{% if story.blocked %} · blocked{% endif %}
+        Workflow state ID: {{ story.workflow_state_id }}{% if story.deadline %} · Due {{ story.deadline | slice: 0, 10 }}{% endif %} · Updated {{ story.updated_at | slice: 0, 10 }}
+        {{ story.app_url }}
+      {% else %}No stories found matching this search.
+      {% endfor %}{% if response.total > 10 %}Showing 10 of {{ response.total }} matching stories.{% endif %}{% else %}Shortcut returned an unexpected response.{% endif %}
+
+  - id: get_story
+    title: Get Story
+    description: Get one Shortcut story's details, including its type, progress, workflow state ID, deadline, labels, tasks, and description. Use a story ID from Search Stories, or the number in a story link such as sc-123. Call List Workflow States to turn the workflow state ID into a name.
+    http_method: GET
+    endpoint_url: https://api.app.shortcut.com/api/v3/stories/{{ story_id | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Shortcut-Token
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: story_id
+        type: integer
+        description: The numeric Shortcut story ID, without the sc- prefix.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.name }} (story ID {{ response.id }}) · {{ response.story_type }} · {% if response.archived %}archived{% elsif response.completed %}done{% elsif response.started %}in progress{% else %}not started{% endif %}{% if response.blocked %} · blocked{% endif %}
+      Workflow state ID: {{ response.workflow_state_id }}{% if response.epic_id %}
+      Epic ID: {{ response.epic_id }}{% endif %}{% if response.estimate %}
+      Estimate: {{ response.estimate }} points{% endif %}{% if response.deadline %}
+      Due: {{ response.deadline | slice: 0, 10 }}{% endif %}
+      Created: {{ response.created_at | slice: 0, 10 }} · Updated: {{ response.updated_at | slice: 0, 10 }}{% if response.started_at %} · Started: {{ response.started_at | slice: 0, 10 }}{% endif %}{% if response.completed_at %} · Completed: {{ response.completed_at | slice: 0, 10 }}{% endif %}{% if response.labels.size > 0 %}
+      Labels: {% for label in response.labels limit: 10 %}{{ label.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if response.tasks.size > 0 %}
+      Tasks:{% for task in response.tasks limit: 10 %}
+      - [{% if task.complete %}done{% else %}open{% endif %}] {{ task.description | truncate: 120 }}{% endfor %}{% endif %}
+      Comments: {{ response.comments.size | default: 0 }}
+      Link: {{ response.app_url }}{% if response.description and response.description != "" %}
+      Description: {{ response.description | truncate: 1500 }}{% endif %}{% else %}Shortcut returned an unexpected response.{% endif %}
+
+  - id: list_story_comments
+    title: List Story Comments
+    description: Read the 10 most recent comments on a Shortcut story, such as progress updates from the team. Use a story ID from Search Stories.
+    http_method: GET
+    endpoint_url: https://api.app.shortcut.com/api/v3/stories/{{ story_id | url_encode }}/comments
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Shortcut-Token
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: story_id
+        type: integer
+        description: The numeric Shortcut story ID, without the sc- prefix.
+        required: true
+    response_template: |-
+      {% if response.size == 0 %}No comments on this story.{% elsif response[0].id %}{% assign comments = response | sort: "created_at" | reverse %}{% assign shown = 0 %}{% for comment in comments %}{% if shown < 10 and comment.deleted != true and comment.text %}{% assign shown = shown | plus: 1 %}- {{ comment.created_at | slice: 0, 10 }}: {{ comment.text | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}
+      {% endif %}{% endfor %}{% if shown == 0 %}No comments on this story.{% endif %}{% else %}Shortcut returned an unexpected response.{% endif %}
+
+  - id: search_epics
+    title: Search Epics
+    description: Search Shortcut epics by keyword to check progress on a larger feature or project a customer asks about. Returns up to 10 epics with story counts.
+    http_method: GET
+    endpoint_url: https://api.app.shortcut.com/api/v3/search/epics?query={{ query | strip | url_encode }}&page_size=10&detail=slim
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Shortcut-Token
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: query
+        type: string
+        description: Keywords to search for in epics, such as a feature name.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for epic in response.data limit: 10 %}- {{ epic.name | truncate: 150 }} (epic ID {{ epic.id }}) · {% if epic.archived %}archived{% elsif epic.completed %}done{% elsif epic.started %}in progress{% else %}not started{% endif %}
+        Stories: {{ epic.stats.num_stories_done | default: 0 }} done, {{ epic.stats.num_stories_started | default: 0 }} in progress, {{ epic.stats.num_stories_total | default: 0 }} total{% if epic.deadline %} · Due {{ epic.deadline | slice: 0, 10 }}{% endif %} · Updated {{ epic.updated_at | slice: 0, 10 }}
+        {{ epic.app_url }}
+      {% else %}No epics found matching this search.
+      {% endfor %}{% else %}Shortcut returned an unexpected response.{% endif %}
+
+  - id: list_workflow_states
+    title: List Workflow States
+    description: List the workflows in the Shortcut workspace and the name of each workflow state ID. Use this to turn the workflow state ID from Search Stories or Get Story into a name such as In Review.
+    http_method: GET
+    endpoint_url: https://api.app.shortcut.com/api/v3/workflows
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Shortcut-Token
+      key: ${{ secrets.api_token }}
+    response_template: |-
+      {% if response.size == 0 %}No workflows found.{% elsif response[0].id %}{% for workflow in response limit: 10 %}{{ workflow.name }}:
+      {% for state in workflow.states limit: 25 %}- {{ state.name }} (workflow state ID {{ state.id }}, {{ state.type }})
+      {% endfor %}{% endfor %}{% else %}Shortcut returned an unexpected response.{% endif %}
+
+  - id: add_story_comment
+    title: Add Story Comment
+    description: Add a comment to a Shortcut story, for example to note that another customer reported the same issue, with a short summary. Use a story ID from Search Stories. Only add a comment when the conversation needs one.
+    http_method: POST
+    endpoint_url: https://api.app.shortcut.com/api/v3/stories/{{ story_id | url_encode }}/comments
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Shortcut-Token
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: story_id
+        type: integer
+        description: The numeric Shortcut story ID, without the sc- prefix.
+        required: true
+      - name: text
+        type: string
+        description: The comment text. Shortcut renders Markdown.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% capture escaped_newline %}\\n{% endcapture %}{"text":"{{ text | strip | replace: bs, escaped_bs | replace: '"', escaped_quote | newline_to_br | strip_newlines | replace: "<br />", escaped_newline }}"}
+    response_template: |-
+      {% if response.id %}Added the comment to story {{ response.story_id }}.{% else %}Shortcut returned an unexpected response.{% endif %}
