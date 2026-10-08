@@ -1,0 +1,124 @@
+version: 0.0.1
+kind: captain_toolset
+name: RevenueCat
+author: chatwoot
+category: Payments & billing
+description: Check customer subscriptions, purchases, and entitlements in RevenueCat.
+
+inputs:
+  project_id:
+    label: RevenueCat project ID
+    placeholder: proj1ab2c3d4
+    required: true
+
+secrets:
+  api_key:
+    label: RevenueCat secret API key (v2)
+    type: password
+    required: true
+
+tools:
+  - id: find_customers
+    title: Find Customers
+    description: Find RevenueCat customers by email address, app user ID, or store transaction ID. Use this first to get the customer ID the other RevenueCat tools need. Email only matches customers whose $email attribute is set in RevenueCat, so try the app user ID or a store order ID from the customer's receipt if email finds nothing.
+    http_method: GET
+    endpoint_url: https://api.revenuecat.com/v2/projects/${{ inputs.project_id }}/customers?search={{ query | strip | url_encode }}&limit=5
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: query
+        type: string
+        description: The customer's email address, app user ID, store transaction ID, or Apple order ID. Matches must be exact.
+        required: true
+    response_template: |-
+      {% if response.object == "list" %}{% for customer in response.items %}- Customer ID: {{ customer.id }}{% if customer.first_seen_at %}
+        First seen: {{ customer.first_seen_at | divided_by: 1000 | date: "%Y-%m-%d" }}{% endif %}{% if customer.last_seen_at %}
+        Last seen: {{ customer.last_seen_at | divided_by: 1000 | date: "%Y-%m-%d" }}{% if customer.last_seen_platform %} on {{ customer.last_seen_platform }}{% endif %}{% if customer.last_seen_country %} in {{ customer.last_seen_country }}{% endif %}{% endif %}
+        Active entitlements: {{ customer.active_entitlements.items.size | default: 0 }}
+      {% else %}No RevenueCat customer found for this search.
+      {% endfor %}{% else %}RevenueCat returned an unexpected response.{% endif %}
+
+  - id: get_customer
+    title: Get Customer
+    description: Get a RevenueCat customer's profile, including when and on which platform and app version they were last seen, their active entitlements, and their attributes such as email and display name. Use the customer ID from Find Customers, or the app user ID if it is already known.
+    http_method: GET
+    endpoint_url: 'https://api.revenuecat.com/v2/projects/${{ inputs.project_id }}/customers/{{ customer_id | strip | url_encode | replace: "+", "%20" }}?expand=attributes'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The RevenueCat customer ID from Find Customers. This is the customer's app user ID.
+        required: true
+    response_template: |-
+      {% if response.object == "customer" %}Customer {{ response.id }}{% if response.first_seen_at %}
+      First seen: {{ response.first_seen_at | divided_by: 1000 | date: "%Y-%m-%d" }}{% endif %}{% if response.last_seen_at %}
+      Last seen: {{ response.last_seen_at | divided_by: 1000 | date: "%Y-%m-%d" }}{% if response.last_seen_platform %} on {{ response.last_seen_platform }}{% if response.last_seen_platform_version %} {{ response.last_seen_platform_version }}{% endif %}{% endif %}{% if response.last_seen_app_version %}, app version {{ response.last_seen_app_version }}{% endif %}{% if response.last_seen_country %}, in {{ response.last_seen_country }}{% endif %}{% endif %}
+      Active entitlements: {% for entitlement in response.active_entitlements.items limit: 10 %}{{ entitlement.entitlement_id }}{% if entitlement.expires_at %} (expires {{ entitlement.expires_at | divided_by: 1000 | date: "%Y-%m-%d" }}){% else %} (no expiry){% endif %}{% unless forloop.last %}, {% endunless %}{% else %}none{% endfor %}
+      Attributes:
+      {% for attribute in response.attributes.items limit: 15 %}- {{ attribute.name }}: {{ attribute.value | strip_newlines | truncate: 100 }}
+      {% else %}- none
+      {% endfor %}{% else %}RevenueCat returned an unexpected response.{% endif %}
+
+  - id: list_active_entitlements
+    title: List Active Entitlements
+    description: List the entitlements a RevenueCat customer currently has access to, with expiry dates. Use this to answer whether a customer should have access to a paid feature right now. Entitlements are shown by ID. List Subscriptions shows their names. Use the customer ID from Find Customers.
+    http_method: GET
+    endpoint_url: 'https://api.revenuecat.com/v2/projects/${{ inputs.project_id }}/customers/{{ customer_id | strip | url_encode | replace: "+", "%20" }}/active_entitlements?limit=20'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The RevenueCat customer ID from Find Customers. This is the customer's app user ID.
+        required: true
+    response_template: |-
+      {% if response.object == "list" %}{% for entitlement in response.items %}- Entitlement {{ entitlement.entitlement_id }} · {% if entitlement.expires_at %}expires {{ entitlement.expires_at | divided_by: 1000 | date: "%Y-%m-%d" }}{% else %}no expiry{% endif %}
+      {% else %}This customer has no active entitlements.
+      {% endfor %}{% else %}RevenueCat returned an unexpected response.{% endif %}
+
+  - id: list_subscriptions
+    title: List Subscriptions
+    description: Check a RevenueCat customer's 10 most recent production subscriptions, with status, store, entitlements, current period end, renewal status, pending payment, and the link where the customer manages the subscription. Use this for questions about renewals, cancellations, or billing problems. Use the customer ID from Find Customers.
+    http_method: GET
+    endpoint_url: 'https://api.revenuecat.com/v2/projects/${{ inputs.project_id }}/customers/{{ customer_id | strip | url_encode | replace: "+", "%20" }}/subscriptions?environment=production&limit=10'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The RevenueCat customer ID from Find Customers. This is the customer's app user ID.
+        required: true
+    response_template: |-
+      {% if response.object == "list" %}{% for subscription in response.items %}- Subscription {{ subscription.id }} · {{ subscription.status | replace: "_", " " }} · {{ subscription.store | replace: "_", " " }}
+        Product ID: {{ subscription.product_id | default: "none" }} · gives access: {% if subscription.gives_access %}yes{% else %}no{% endif %}
+        Entitlements: {% for entitlement in subscription.entitlements.items limit: 5 %}{{ entitlement.display_name | default: entitlement.lookup_key }}{% unless forloop.last %}, {% endunless %}{% else %}none{% endfor %}
+        Started: {{ subscription.starts_at | divided_by: 1000 | date: "%Y-%m-%d" }}{% if subscription.current_period_ends_at %} · current period ends {{ subscription.current_period_ends_at | divided_by: 1000 | date: "%Y-%m-%d" }}{% endif %}
+        Renewal: {{ subscription.auto_renewal_status | replace: "_", " " }}{% if subscription.pending_payment %} · payment pending{% endif %}{% if subscription.management_url %}
+        Manage: {{ subscription.management_url }}{% endif %}
+      {% else %}No subscriptions found for this customer.
+      {% endfor %}{% else %}RevenueCat returned an unexpected response.{% endif %}
+
+  - id: list_purchases
+    title: List Purchases
+    description: Check a RevenueCat customer's 10 most recent production purchases, with date, status, store, product, quantity, and the entitlements they unlock. RevenueCat lists subscriptions separately, so use List Subscriptions for those. Use this when a customer asks about a purchase that is missing or was refunded. Use the customer ID from Find Customers.
+    http_method: GET
+    endpoint_url: 'https://api.revenuecat.com/v2/projects/${{ inputs.project_id }}/customers/{{ customer_id | strip | url_encode | replace: "+", "%20" }}/purchases?environment=production&limit=10'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The RevenueCat customer ID from Find Customers. This is the customer's app user ID.
+        required: true
+    response_template: |-
+      {% if response.object == "list" %}{% for purchase in response.items %}- Purchase {{ purchase.id }} · {{ purchase.purchased_at | divided_by: 1000 | date: "%Y-%m-%d" }} · {{ purchase.status }} · {{ purchase.store | replace: "_", " " }}
+        Product ID: {{ purchase.product_id }}{% if purchase.quantity > 1 %} × {{ purchase.quantity }}{% endif %}{% if purchase.store_purchase_identifier %} · store purchase ID {{ purchase.store_purchase_identifier }}{% endif %}
+        Entitlements: {% for entitlement in purchase.entitlements.items limit: 5 %}{{ entitlement.display_name | default: entitlement.lookup_key }}{% unless forloop.last %}, {% endunless %}{% else %}none{% endfor %}
+      {% else %}No purchases found for this customer.
+      {% endfor %}{% else %}RevenueCat returned an unexpected response.{% endif %}
