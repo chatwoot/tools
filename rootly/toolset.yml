@@ -1,0 +1,147 @@
+version: 0.0.1
+kind: captain_toolset
+name: Rootly
+author: chatwoot
+category: Engineering & status
+description: Check active and recent Rootly incidents, their timelines, and status page updates.
+
+secrets:
+  api_key:
+    label: Rootly API key
+    type: password
+    required: true
+
+tools:
+  - id: list_active_incidents
+    title: List Active Incidents
+    description: Find Rootly incidents that are still open among the 25 most recently created. Use this first when a customer reports that something is down or broken. Returns incident IDs for the other Rootly tools.
+    http_method: GET
+    endpoint_url: https://api.rootly.com/v1/incidents?sort=-created_at&page%5Bsize%5D=25
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.data %}{% assign inactive = "resolved closed cancelled completed scheduled" | split: " " %}{% assign shown = 0 %}{% for incident in response.data %}{% assign a = incident.attributes %}{% unless inactive contains a.status %}{% assign shown = shown | plus: 1 %}- {% if a.sequential_id %}#{{ a.sequential_id }} {% endif %}{{ a.title | truncate: 100 }} (incident ID {{ incident.id }}): {{ a.status | default: "unknown" | replace: "_", " " }}{% if a.severity.data.attributes.name %} · severity {{ a.severity.data.attributes.name }}{% endif %} · started {{ a.started_at | default: a.created_at }}{% if a.private %} · private incident, do not share details with customers{% endif %}{% if a.services.size > 0 %}
+        Services: {% for service in a.services limit: 5 %}{{ service.data.attributes.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}
+      {% endunless %}{% endfor %}{% if shown == 0 %}No active incidents among the {{ response.data.size }} most recent incidents.{% endif %}{% else %}Rootly returned an unexpected response.{% endif %}
+
+  - id: list_recent_incidents
+    title: List Recent Incidents
+    description: List the 10 most recently created Rootly incidents, including resolved ones. Use this when a customer asks about a past outage or whether a recent problem was a known incident.
+    http_method: GET
+    endpoint_url: https://api.rootly.com/v1/incidents?sort=-created_at&page%5Bsize%5D=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.data %}{% for incident in response.data %}{% assign a = incident.attributes %}- {% if a.sequential_id %}#{{ a.sequential_id }} {% endif %}{{ a.title | truncate: 100 }} (incident ID {{ incident.id }}): {{ a.status | default: "unknown" | replace: "_", " " }}{% if a.severity.data.attributes.name %} · severity {{ a.severity.data.attributes.name }}{% endif %} · started {{ a.started_at | default: a.created_at }}{% if a.resolved_at %} · resolved {{ a.resolved_at }}{% endif %}{% if a.private %} · private incident, do not share details with customers{% endif %}
+      {% else %}No incidents found.
+      {% endfor %}{% else %}Rootly returned an unexpected response.{% endif %}
+
+  - id: list_incidents_by_status
+    title: List Incidents by Status
+    description: List the 10 most recently created Rootly incidents in one status, such as started, mitigated, or resolved. Use this to find open incidents older than the ones List Active Incidents covers.
+    http_method: GET
+    endpoint_url: https://api.rootly.com/v1/incidents?filter%5Bstatus%5D={{ status | strip | downcase | url_encode }}&sort=-created_at&page%5Bsize%5D=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: status
+        type: string
+        description: 'One incident status: in_triage, started, detected, acknowledged, mitigated, resolved, closed, cancelled, scheduled, in_progress, or completed.'
+        required: true
+    response_template: |-
+      {% if response.data %}{% for incident in response.data %}{% assign a = incident.attributes %}- {% if a.sequential_id %}#{{ a.sequential_id }} {% endif %}{{ a.title | truncate: 100 }} (incident ID {{ incident.id }}): {{ a.status | default: "unknown" | replace: "_", " " }}{% if a.severity.data.attributes.name %} · severity {{ a.severity.data.attributes.name }}{% endif %} · started {{ a.started_at | default: a.created_at }}{% if a.resolved_at %} · resolved {{ a.resolved_at }}{% endif %}{% if a.private %} · private incident, do not share details with customers{% endif %}
+      {% else %}No incidents found with this status.
+      {% endfor %}{% else %}Rootly returned an unexpected response.{% endif %}
+
+  - id: search_incidents
+    title: Search Incidents
+    description: Search Rootly incidents by keyword, such as a product area or error name, and get the 10 most recently created matches. Use this when a customer describes a problem and you need to find the matching incident.
+    http_method: GET
+    endpoint_url: https://api.rootly.com/v1/incidents?filter%5Bsearch%5D={{ query | strip | url_encode }}&sort=-created_at&page%5Bsize%5D=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: query
+        type: string
+        description: Keywords to search for, such as checkout or login errors.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for incident in response.data %}{% assign a = incident.attributes %}- {% if a.sequential_id %}#{{ a.sequential_id }} {% endif %}{{ a.title | truncate: 100 }} (incident ID {{ incident.id }}): {{ a.status | default: "unknown" | replace: "_", " " }}{% if a.severity.data.attributes.name %} · severity {{ a.severity.data.attributes.name }}{% endif %} · started {{ a.started_at | default: a.created_at }}{% if a.resolved_at %} · resolved {{ a.resolved_at }}{% endif %}{% if a.private %} · private incident, do not share details with customers{% endif %}
+      {% else %}No incidents matched this search.
+      {% endfor %}{% else %}Rootly returned an unexpected response.{% endif %}
+
+  - id: get_incident
+    title: Get Incident
+    description: Read one Rootly incident, including its status, severity, summary, affected services, and how it was mitigated or resolved. Use an incident ID from the Rootly list or search tools.
+    http_method: GET
+    endpoint_url: https://api.rootly.com/v1/incidents/{{ incident_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: incident_id
+        type: string
+        description: The Rootly incident ID, a UUID from the list or search tools. The incident slug also works.
+        required: true
+    response_template: |-
+      {% if response.data.attributes %}{% assign a = response.data.attributes %}{% if a.sequential_id %}#{{ a.sequential_id }} {% endif %}{{ a.title | truncate: 150 }} (incident ID {{ response.data.id }}){% if a.private %}
+      Private incident: do not share details with customers.{% endif %}
+      Status: {{ a.status | default: "unknown" | replace: "_", " " }}{% if a.severity.data.attributes.name %}
+      Severity: {{ a.severity.data.attributes.name }}{% endif %}{% if a.kind and a.kind != "normal" %}
+      Kind: {{ a.kind | replace: "_", " " }}{% endif %}{% if a.public_title and a.public_title != "" %}
+      Public title: {{ a.public_title | truncate: 150 }}{% endif %}{% if a.summary and a.summary != "" %}
+      Summary: {{ a.summary | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 600 }}{% endif %}
+      Started: {{ a.started_at | default: a.created_at }}{% if a.detected_at %}
+      Detected: {{ a.detected_at }}{% endif %}{% if a.acknowledged_at %}
+      Acknowledged: {{ a.acknowledged_at }}{% endif %}{% if a.mitigated_at %}
+      Mitigated: {{ a.mitigated_at }}{% endif %}{% if a.resolved_at %}
+      Resolved: {{ a.resolved_at }}{% endif %}{% if a.cancelled_at %}
+      Cancelled: {{ a.cancelled_at }}{% endif %}{% if a.scheduled_for %}
+      Scheduled: {{ a.scheduled_for }} to {{ a.scheduled_until }}{% endif %}{% if a.services.size > 0 %}
+      Services: {% for service in a.services limit: 10 %}{{ service.data.attributes.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if a.functionalities.size > 0 %}
+      Functionalities: {% for functionality in a.functionalities limit: 10 %}{{ functionality.data.attributes.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if a.environments.size > 0 %}
+      Environments: {% for environment in a.environments limit: 10 %}{{ environment.data.attributes.name }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% if a.mitigation_message and a.mitigation_message != "" %}
+      Mitigation: {{ a.mitigation_message | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 400 }}{% endif %}{% if a.resolution_message and a.resolution_message != "" %}
+      Resolution: {{ a.resolution_message | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 400 }}{% endif %}{% if a.cancellation_message and a.cancellation_message != "" %}
+      Cancellation reason: {{ a.cancellation_message | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 400 }}{% endif %}{% if a.url %}
+      Open in Rootly: {{ a.url }}{% endif %}{% else %}Rootly returned an unexpected response.{% endif %}
+
+  - id: list_incident_timeline
+    title: List Incident Timeline
+    description: Read up to 20 timeline events of a Rootly incident. Events marked internal are for the support team only; events marked external can be shared with customers. Use an incident ID from the list or search tools.
+    http_method: GET
+    endpoint_url: https://api.rootly.com/v1/incidents/{{ incident_id | strip | url_encode }}/events?page%5Bsize%5D=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: incident_id
+        type: string
+        description: The Rootly incident ID, a UUID from the list or search tools.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for event in response.data %}- {{ event.attributes.occurred_at }} ({{ event.attributes.visibility | default: "internal" }}): {{ event.attributes.event | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}
+      {% else %}No timeline events recorded for this incident.
+      {% endfor %}{% if response.meta.total_count > 20 %}Showing 20 of {{ response.meta.total_count }} events.{% endif %}{% else %}Rootly returned an unexpected response.{% endif %}
+
+  - id: list_incident_status_updates
+    title: List Incident Status Updates
+    description: Read up to 10 status page updates published for a Rootly incident. These are the customer-facing messages, so use them when telling a customer what is known about an incident.
+    http_method: GET
+    endpoint_url: https://api.rootly.com/v1/incidents/{{ incident_id | strip | url_encode }}/status-page-events?page%5Bsize%5D=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: incident_id
+        type: string
+        description: The Rootly incident ID, a UUID from the list or search tools.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for event in response.data %}- {{ event.attributes.started_at | default: event.attributes.created_at }}{% if event.attributes.status %} · {{ event.attributes.status | replace: "_", " " }}{% endif %}: {{ event.attributes.event | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 400 }}
+      {% else %}No status page updates have been published for this incident.
+      {% endfor %}{% if response.meta.total_count > 10 %}Showing 10 of {{ response.meta.total_count }} updates.{% endif %}{% else %}Rootly returned an unexpected response.{% endif %}
