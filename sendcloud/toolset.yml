@@ -1,0 +1,217 @@
+version: 0.0.1
+kind: captain_toolset
+name: Sendcloud
+author: chatwoot
+category: Shipping
+description: Track parcels, look up orders and shipments, get return portal links, and validate addresses in Sendcloud.
+
+secrets:
+  public_key:
+    label: Sendcloud public key
+    type: password
+    required: true
+  secret_key:
+    label: Sendcloud secret key
+    type: password
+    required: true
+
+tools:
+  - id: track_parcel
+    title: Track Parcel
+    description: Get a parcel's expected delivery date, carrier tracking link, and the 8 most recent tracking events by tracking number. Use this when a customer asks where their parcel is. If they only have an order number, call Find Shipments by Order Number first to get the tracking number.
+    http_method: GET
+    endpoint_url: 'https://panel.sendcloud.sc/api/v3/parcels/tracking/{{ tracking_number | strip | remove: " " | url_encode }}'
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.public_key }}
+      password: ${{ secrets.secret_key }}
+    param_schema:
+      - name: tracking_number
+        type: string
+        description: The parcel's tracking number, from the customer or from a Find Shipments tool.
+        required: true
+    response_template: |-
+      {% if response.events or response.tracking_numbers %}{% assign events = response.events | sort: "event_at" | reverse %}{% assign latest = events | first %}{% for number in response.tracking_numbers limit: 3 %}Tracking {{ number.tracking_number }}{% if number.carrier_code %} ({{ number.carrier_code }}){% endif %}{% if number.tracking_url %} · {{ number.tracking_url }}{% endif %}
+      {% endfor %}{% if latest %}Latest status: {{ latest.description | default: "Status update" | truncate: 200 }}{% if latest.phase %} (phase: {{ latest.phase | replace: "_", " " }}){% endif %} · {{ latest.event_at }}
+      {% else %}Latest status: no tracking events yet.
+      {% endif %}{% if response.details.expected_delivery_date %}Expected delivery: {{ response.details.expected_delivery_date }}
+      {% endif %}{% if response.announced_at %}Label created: {{ response.announced_at }}
+      {% endif %}{% if response.details.is_return %}This is a return parcel.
+      {% endif %}{% if response.details.is_to_service_point %}Delivery is to a service point for pickup.
+      {% endif %}{% if response.to_address.city %}Destination: {{ response.to_address.city }} {{ response.to_address.postal_code }} {{ response.to_address.country_code }}
+      {% endif %}{% if events.size > 0 %}Recent events:
+      {% for event in events limit: 8 %}- {{ event.event_at }} · {% if event.description and event.description != "" %}{{ event.description | truncate: 140 }}{% else %}{{ event.phase | default: "status update" | replace: "_", " " }}{% endif %}{% if event.exception and event.exception != "none" %} · exception: {{ event.exception | replace: "_", " " }}{% endif %}
+      {% endfor %}{% endif %}{% else %}Sendcloud returned an unexpected response.{% endif %}
+
+  - id: find_orders_by_order_number
+    title: Find Orders by Order Number
+    description: Find orders that a connected shop synced into Sendcloud, by order number. Use this when a customer asks about an order's status, items, or delivery address. To check whether it has shipped and get tracking, also call Find Shipments by Order Number.
+    http_method: GET
+    endpoint_url: https://panel.sendcloud.sc/api/v3/orders?order_number={{ order_number | strip | url_encode }}&page_size=5
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.public_key }}
+      password: ${{ secrets.secret_key }}
+    param_schema:
+      - name: order_number
+        type: string
+        description: The order number exactly as shown to the customer, such as ORDER_284565.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for order in response.data limit: 5 %}{% assign details = order.order_details %}{% assign to = order.shipping_address %}- Order {{ order.order_number }} · {{ details.status.message | default: details.status.code | default: "unknown status" }} · placed {{ details.order_created_at | default: order.created_at }}
+        Customer: {{ order.customer_details.name | default: to.name | default: "No name" }}{% if order.customer_details.email %} <{{ order.customer_details.email }}>{% endif %}
+        Ship to: {{ to.address_line_1 }}{% if to.house_number %} {{ to.house_number }}{% endif %}{% if to.address_line_2 and to.address_line_2 != "" %}, {{ to.address_line_2 }}{% endif %}, {{ to.postal_code }} {{ to.city }} {{ to.country_code }}{% if order.payment_details.total_price.value %}
+        Total: {{ order.payment_details.total_price.value }} {{ order.payment_details.total_price.currency }}{% if order.payment_details.status.message %} · payment {{ order.payment_details.status.message }}{% endif %}{% endif %}{% if details.order_items.size > 0 %}
+        Items: {% for item in details.order_items limit: 8 %}{{ item.quantity }} × {{ item.name | truncate: 60 }}{% unless forloop.last %}; {% endunless %}{% endfor %}{% if details.order_items.size > 8 %}; and {{ details.order_items.size | minus: 8 }} more{% endif %}{% endif %}{% if details.notes and details.notes != "" %}
+        Notes: {{ details.notes | truncate: 200 }}{% endif %}
+      {% else %}No Sendcloud order found with this order number.
+      {% endfor %}{% elsif response.data == nil %}Sendcloud returned an unexpected response.{% endif %}
+
+  - id: find_shipments_by_order_number
+    title: Find Shipments by Order Number
+    description: Find Sendcloud shipments by order number, with carrier, parcel status, tracking number, and tracking link. Use this first when a customer asks whether an order has shipped or where it is and gives an order number. Returns the shipment ID that Get Shipment and Get Return Portal Link need.
+    http_method: GET
+    endpoint_url: https://panel.sendcloud.sc/api/v3/shipments?order_number={{ order_number | strip | url_encode }}&page_size=5
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.public_key }}
+      password: ${{ secrets.secret_key }}
+    param_schema:
+      - name: order_number
+        type: string
+        description: The order number exactly as shown to the customer.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for shipment in response.data limit: 5 %}- Shipment {{ shipment.id }}{% if shipment.order_number and shipment.order_number != "" %} · order {{ shipment.order_number }}{% endif %}{% if shipment.carrier.name %} · {{ shipment.carrier.name }} (carrier code: {{ shipment.carrier.code }}){% endif %}
+        To: {{ shipment.to_address.name | default: "No name" }} · {{ shipment.to_address.postal_code }} {{ shipment.to_address.city }} {{ shipment.to_address.country_code }}{% if shipment.delivery_dates.deliver_at %}
+        Expected delivery: {{ shipment.delivery_dates.deliver_at }}{% endif %}{% for parcel in shipment.parcels limit: 5 %}
+        Parcel {{ parcel.id }}: {{ parcel.status.message | default: parcel.status.code | default: "unknown status" }}{% if parcel.tracking_number and parcel.tracking_number != "" %} · tracking {{ parcel.tracking_number }}{% endif %}{% if parcel.announced_at %} · label created {{ parcel.announced_at }}{% endif %}{% if parcel.tracking_url %}
+        Track: {{ parcel.tracking_url }}{% endif %}{% endfor %}{% for error in shipment.errors limit: 2 %}
+        Error: {{ error.detail | default: error.title | truncate: 200 }}{% endfor %}
+      {% else %}No Sendcloud shipment found with this order number, so it may not have shipped yet.
+      {% endfor %}{% elsif response.data == nil %}Sendcloud returned an unexpected response.{% endif %}
+
+  - id: find_shipments_by_tracking_number
+    title: Find Shipments by Tracking Number
+    description: Find the Sendcloud shipment a tracking number belongs to, with its order number, recipient, carrier, and parcel status. Use this when a customer gives only a tracking number and you need the order or the shipment ID.
+    http_method: GET
+    endpoint_url: 'https://panel.sendcloud.sc/api/v3/shipments?tracking_number={{ tracking_number | strip | remove: " " | url_encode }}&page_size=5'
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.public_key }}
+      password: ${{ secrets.secret_key }}
+    param_schema:
+      - name: tracking_number
+        type: string
+        description: The parcel's tracking number.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for shipment in response.data limit: 5 %}- Shipment {{ shipment.id }}{% if shipment.order_number and shipment.order_number != "" %} · order {{ shipment.order_number }}{% endif %}{% if shipment.carrier.name %} · {{ shipment.carrier.name }} (carrier code: {{ shipment.carrier.code }}){% endif %}
+        To: {{ shipment.to_address.name | default: "No name" }} · {{ shipment.to_address.postal_code }} {{ shipment.to_address.city }} {{ shipment.to_address.country_code }}{% if shipment.delivery_dates.deliver_at %}
+        Expected delivery: {{ shipment.delivery_dates.deliver_at }}{% endif %}{% for parcel in shipment.parcels limit: 5 %}
+        Parcel {{ parcel.id }}: {{ parcel.status.message | default: parcel.status.code | default: "unknown status" }}{% if parcel.tracking_number and parcel.tracking_number != "" %} · tracking {{ parcel.tracking_number }}{% endif %}{% if parcel.announced_at %} · label created {{ parcel.announced_at }}{% endif %}{% if parcel.tracking_url %}
+        Track: {{ parcel.tracking_url }}{% endif %}{% endfor %}
+      {% else %}No Sendcloud shipment found with this tracking number.
+      {% endfor %}{% elsif response.data == nil %}Sendcloud returned an unexpected response.{% endif %}
+
+  - id: get_shipment
+    title: Get Shipment
+    description: Get one Sendcloud shipment with its full delivery address, carrier, shipping option, delivery dates, parcels, items, and any label errors. Use this after a Find Shipments tool when the customer asks about the delivery address or what was in the parcel.
+    http_method: GET
+    endpoint_url: https://panel.sendcloud.sc/api/v3/shipments/{{ shipment_id | strip | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.public_key }}
+      password: ${{ secrets.secret_key }}
+    param_schema:
+      - name: shipment_id
+        type: string
+        description: The Sendcloud shipment ID from a Find Shipments tool.
+        required: true
+    response_template: |-
+      {% if response.data.id %}{% assign shipment = response.data %}{% assign to = shipment.to_address %}Shipment {{ shipment.id }}{% if shipment.order_number and shipment.order_number != "" %} · order {{ shipment.order_number }}{% endif %}{% if shipment.reference and shipment.reference != "" %} · reference {{ shipment.reference }}{% endif %}
+      Carrier: {{ shipment.carrier.name | default: "not assigned" }}{% if shipment.carrier.code %} (carrier code: {{ shipment.carrier.code }}){% endif %}{% if shipment.ship_with.properties.shipping_option_code %} · {{ shipment.ship_with.properties.shipping_option_code }}{% endif %}
+      To: {{ to.name | default: "No name" }}{% if to.company_name and to.company_name != "" %}, {{ to.company_name }}{% endif %}{% if to.email and to.email != "" %} <{{ to.email }}>{% endif %}
+      Address: {{ to.address_line_1 }}{% if to.house_number %} {{ to.house_number }}{% endif %}{% if to.address_line_2 and to.address_line_2 != "" %}, {{ to.address_line_2 }}{% endif %}, {{ to.postal_code }} {{ to.city }} {{ to.country_code }}
+      {% if shipment.to_service_point.id %}Delivered to a service point for pickup (service point ID {{ shipment.to_service_point.id }}).
+      {% endif %}{% if shipment.delivery_dates.handover_at %}Handed to carrier: {{ shipment.delivery_dates.handover_at }}
+      {% endif %}{% if shipment.delivery_dates.deliver_at %}Expected delivery: {{ shipment.delivery_dates.deliver_at }}
+      {% endif %}{% if shipment.total_order_price.value %}Order total: {{ shipment.total_order_price.value }} {{ shipment.total_order_price.currency }}
+      {% endif %}Parcels:
+      {% for parcel in shipment.parcels limit: 10 %}- Parcel {{ parcel.id }}: {{ parcel.status.message | default: parcel.status.code | default: "unknown status" }}{% if parcel.tracking_number and parcel.tracking_number != "" %} · tracking {{ parcel.tracking_number }}{% endif %}{% if parcel.announced_at %} · label created {{ parcel.announced_at }}{% endif %}{% if parcel.tracking_url %}
+        Track: {{ parcel.tracking_url }}{% endif %}{% if parcel.parcel_items.size > 0 %}
+        Items: {% for item in parcel.parcel_items limit: 8 %}{{ item.quantity }} × {{ item.description | truncate: 60 }}{% unless forloop.last %}; {% endunless %}{% endfor %}{% endif %}
+      {% else %}- No parcels on this shipment.
+      {% endfor %}{% for error in shipment.errors limit: 3 %}Error: {{ error.detail | default: error.title | truncate: 200 }}
+      {% endfor %}{% else %}Sendcloud returned an unexpected response.{% endif %}
+
+  - id: get_return_portal_link
+    title: Get Return Portal Link
+    description: Get the Sendcloud return portal link for a shipment, where the customer can start a return themselves. Use this when a customer wants to return an order. Needs the shipment ID from a Find Shipments tool. It fails if the business has no return portal set up for that shipment's brand.
+    http_method: GET
+    endpoint_url: https://panel.sendcloud.sc/api/v3/shipments/{{ shipment_id | strip | url_encode }}/return-portal-url
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.public_key }}
+      password: ${{ secrets.secret_key }}
+    param_schema:
+      - name: shipment_id
+        type: string
+        description: The Sendcloud shipment ID from a Find Shipments tool.
+        required: true
+    response_template: |-
+      {% if response.data.url %}Return portal link for this shipment: {{ response.data.url }}{% elsif response.data %}No return portal link is available for this shipment.{% else %}Sendcloud returned an unexpected response.{% endif %}
+
+  - id: validate_address
+    title: Validate Address
+    description: Check whether a delivery address is valid for a carrier and get Sendcloud's recommended correction. Use this when a customer gives or changes a delivery address, or when a parcel was returned as undeliverable. Needs a carrier code; use the one a Find Shipments tool returned for the customer's shipment.
+    http_method: POST
+    endpoint_url: https://panel.sendcloud.sc/api/v3/addresses/validate
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.public_key }}
+      password: ${{ secrets.secret_key }}
+    param_schema:
+      - name: carrier_code
+        type: string
+        description: The Sendcloud carrier code to validate for, such as postnl, dhl, dpd, or ups. It must be a carrier enabled in the Sendcloud account.
+        required: true
+      - name: address_line_1
+        type: string
+        description: The street name, without the house number where the country uses separate house numbers.
+        required: true
+      - name: house_number
+        type: string
+        description: The house number, if the address has one.
+        required: false
+      - name: address_line_2
+        type: string
+        description: Apartment, floor, or other extra address detail, if any.
+        required: false
+      - name: postal_code
+        type: string
+        description: The postal code.
+        required: true
+      - name: city
+        type: string
+        description: The city.
+        required: true
+      - name: state_province_code
+        type: string
+        description: The ISO 3166-2 state or province code, such as IT-RM or US-CA. Only needed for countries that require it.
+        required: false
+      - name: country_code
+        type: string
+        description: The two-letter ISO country code, such as NL.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% assign carrier_code = carrier_code | strip_newlines | strip | downcase | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign address_line_1 = address_line_1 | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign house_number = house_number | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign address_line_2 = address_line_2 | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign postal_code = postal_code | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign city = city | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign state_province_code = state_province_code | strip_newlines | strip | upcase | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign country_code = country_code | strip_newlines | strip | upcase | replace: bs, escaped_bs | replace: '"', escaped_quote %}{"address":{"address_line_1":"{{ address_line_1 }}"{% if house_number != "" %},"house_number":"{{ house_number }}"{% endif %}{% if address_line_2 != "" %},"address_line_2":"{{ address_line_2 }}"{% endif %},"postal_code":"{{ postal_code }}","city":"{{ city }}"{% if state_province_code != "" %},"state_province_code":"{{ state_province_code }}"{% endif %},"country_code":"{{ country_code }}"},"carrier_code":"{{ carrier_code }}"}
+    response_template: |-
+      {% if response.results %}{% if response.input_address_is_valid == true %}The address is valid as entered.
+      {% elsif response.input_address_is_valid == false %}The address as entered is not valid.
+      {% else %}Sendcloud could not determine whether the address is valid.
+      {% endif %}{% for result in response.results limit: 3 %}{% if result.address %}{% assign a = result.address %}{% if result.recommended %}Recommended address{% else %}Checked address{% endif %}: {{ a.address_line_1 }}{% if a.house_number and a.house_number != "" %} {{ a.house_number }}{% endif %}{% if a.address_line_2 and a.address_line_2 != "" %}, {{ a.address_line_2 }}{% endif %}, {{ a.postal_code }} {{ a.city }}{% if a.state_province_code and a.state_province_code != "" %} {{ a.state_province_code }}{% endif %} {{ a.country_code }}
+      {% endif %}{% if result.analysis.validation_result.reasons.size > 0 %}Reasons: {{ result.analysis.validation_result.reasons | join: ", " | replace: "_", " " | downcase | truncate: 300 }}
+      {% endif %}{% if result.analysis.changed_attributes.size > 0 %}Changed fields: {{ result.analysis.changed_attributes | join: ", " | replace: "_", " " }}
+      {% endif %}{% if result.analysis.invalid_attributes.size > 0 %}Invalid fields: {{ result.analysis.invalid_attributes | join: ", " | replace: "_", " " }}
+      {% endif %}{% endfor %}{% else %}Sendcloud returned an unexpected response.{% endif %}
