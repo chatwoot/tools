@@ -1,0 +1,130 @@
+version: 0.0.1
+kind: captain_toolset
+name: Typeform
+author: chatwoot
+category: Others
+description: Find Typeform forms and look up what a customer submitted.
+
+inputs:
+  api_host:
+    label: Typeform API host
+    type: select
+    options:
+      - api.typeform.com
+      - api.eu.typeform.com
+      - api.typeform.eu
+    placeholder: api.typeform.com
+    required: true
+
+secrets:
+  access_token:
+    label: Typeform personal access token
+    type: password
+    required: true
+
+tools:
+  - id: list_forms
+    title: List Forms
+    description: List Typeform forms, most recently updated first, with their form IDs. Use this first to get the form ID the other Typeform tools need. Pass part of the form title to narrow the list.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/forms?search={{ search | strip | url_encode }}&page_size=20&sort_by=last_updated_at&order_by=desc
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: search
+        type: string
+        description: Optional text the form title should contain, such as "feedback". Leave empty to list the most recently updated forms.
+        required: false
+    response_template: |-
+      {% if response.items %}{% for form in response.items limit: 20 %}- {{ form.title | default: "Untitled form" }} (form ID {{ form.id }}) · updated {{ form.last_updated_at | slice: 0, 10 }}{% if form.settings.is_public == false %} · private{% endif %}{% if form._links.display %}
+        Link: {{ form._links.display }}{% endif %}
+      {% else %}No Typeform forms found.{% endfor %}{% if response.total_items > 20 %}{{ response.total_items }} forms match. Only the first 20 are shown, so search by title to narrow the list.{% endif %}{% else %}Typeform returned an unexpected response.{% endif %}
+
+  - id: get_form
+    title: Get Form
+    description: Get a Typeform form's title, link, and questions with their field IDs. Use this to turn the field IDs shown by the response tools into question titles, or to tell a customer what a form asks.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/forms/{{ form_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: form_id
+        type: string
+        description: The Typeform form ID from List Forms, or from the form URL. In https://example.typeform.com/to/u6nXL7 the form ID is u6nXL7.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.title | default: "Untitled form" }} (form ID {{ response.id }}){% if response._links.display %}
+      Link: {{ response._links.display }}{% endif %}{% if response.settings.is_public == false %}
+      This form is private.{% endif %}
+      Questions:{% for field in response.fields limit: 60 %}
+      - {{ field.title | strip_newlines | truncate: 150 }} ({{ field.type | replace: "_", " " }}, field {{ field.id | default: field.ref }}){% for child in field.properties.fields limit: 20 %}
+        - {{ child.title | strip_newlines | truncate: 150 }} ({{ child.type | replace: "_", " " }}, field {{ child.id | default: child.ref }}){% endfor %}{% else %}
+      This form has no questions.{% endfor %}{% if response.hidden.size > 0 %}
+      Hidden fields: {{ response.hidden | join: ", " }}{% endif %}{% else %}Typeform returned an unexpected response.{% endif %}
+
+  - id: search_responses
+    title: Search Responses
+    description: Find a person's completed responses to a Typeform form by an exact phrase, such as their email address or name. Matches answers, hidden fields, and variables. Returns the 10 most recent matches with their answers. Get the form ID from List Forms first.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/forms/{{ form_id | strip | url_encode }}/responses?query={{ query | strip | url_encode }}&page_size=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: form_id
+        type: string
+        description: The Typeform form ID from List Forms, or from the form URL. In https://example.typeform.com/to/u6nXL7 the form ID is u6nXL7.
+        required: true
+      - name: query
+        type: string
+        description: The exact phrase to look for, usually the customer's email address.
+        required: true
+    response_template: |-
+      {% if response.items %}{% for item in response.items limit: 10 %}- Response {{ item.response_id | default: item.token }} · submitted {{ item.submitted_at | default: "not submitted" }}{% if item.calculated.score %} · score {{ item.calculated.score }}{% endif %}{% for answer in item.answers limit: 20 %}
+        - {{ answer.field.type | replace: "_", " " }} (field {{ answer.field.id }}): {% capture value %}{% case answer.type %}{% when "text" %}{{ answer.text }}{% when "email" %}{{ answer.email }}{% when "number" %}{{ answer.number }}{% when "boolean" %}{% if answer.boolean %}yes{% else %}no{% endif %}{% when "date" %}{{ answer.date | slice: 0, 10 }}{% when "choice" %}{{ answer.choice.label | default: answer.choice.other }}{% when "choices" %}{{ answer.choices.labels | join: ", " }}{% if answer.choices.other %} {{ answer.choices.other }}{% endif %}{% when "url" %}{{ answer.url }}{% when "file_url" %}{{ answer.file_url }}{% when "phone_number" %}{{ answer.phone_number }}{% when "payment" %}{{ answer.payment.amount }}{% else %}({{ answer.type }} answer){% endcase %}{% endcapture %}{{ value | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endfor %}{% for hidden in item.hidden limit: 10 %}
+        - hidden field {{ hidden[0] }}: {{ hidden[1] | truncate: 150 }}{% endfor %}
+      {% else %}No responses to this form contain that phrase.{% endfor %}{% if response.total_items > 10 %}{{ response.total_items }} responses in total. Only the 10 most recent are shown.{% endif %}{% else %}Typeform returned an unexpected response.{% endif %}
+
+  - id: list_responses
+    title: List Responses
+    description: List the 10 most recent completed responses to a Typeform form with their answers. Use Search Responses instead when you know the customer's email or name. Responses from the last 30 minutes may be missing.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/forms/{{ form_id | strip | url_encode }}/responses?page_size=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: form_id
+        type: string
+        description: The Typeform form ID from List Forms, or from the form URL. In https://example.typeform.com/to/u6nXL7 the form ID is u6nXL7.
+        required: true
+    response_template: |-
+      {% if response.items %}{% for item in response.items limit: 10 %}- Response {{ item.response_id | default: item.token }} · submitted {{ item.submitted_at | default: "not submitted" }}{% if item.calculated.score %} · score {{ item.calculated.score }}{% endif %}{% for answer in item.answers limit: 20 %}
+        - {{ answer.field.type | replace: "_", " " }} (field {{ answer.field.id }}): {% capture value %}{% case answer.type %}{% when "text" %}{{ answer.text }}{% when "email" %}{{ answer.email }}{% when "number" %}{{ answer.number }}{% when "boolean" %}{% if answer.boolean %}yes{% else %}no{% endif %}{% when "date" %}{{ answer.date | slice: 0, 10 }}{% when "choice" %}{{ answer.choice.label | default: answer.choice.other }}{% when "choices" %}{{ answer.choices.labels | join: ", " }}{% if answer.choices.other %} {{ answer.choices.other }}{% endif %}{% when "url" %}{{ answer.url }}{% when "file_url" %}{{ answer.file_url }}{% when "phone_number" %}{{ answer.phone_number }}{% when "payment" %}{{ answer.payment.amount }}{% else %}({{ answer.type }} answer){% endcase %}{% endcapture %}{{ value | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endfor %}{% for hidden in item.hidden limit: 10 %}
+        - hidden field {{ hidden[0] }}: {{ hidden[1] | truncate: 150 }}{% endfor %}
+      {% else %}This form has no completed responses yet.{% endfor %}{% if response.total_items > 10 %}{{ response.total_items }} responses in total. Only the 10 most recent are shown.{% endif %}{% else %}Typeform returned an unexpected response.{% endif %}
+
+  - id: get_response
+    title: Get Response
+    description: Read one Typeform response in full, with every answer and hidden field. Use the response ID from Search Responses or List Responses, with the same form ID.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/forms/{{ form_id | strip | url_encode }}/responses?included_response_ids={{ response_id | strip | url_encode }}&page_size=1
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: form_id
+        type: string
+        description: The Typeform form ID from List Forms, or from the form URL. In https://example.typeform.com/to/u6nXL7 the form ID is u6nXL7.
+        required: true
+      - name: response_id
+        type: string
+        description: The response ID from Search Responses or List Responses.
+        required: true
+    response_template: |-
+      {% if response.items %}{% for item in response.items limit: 10 %}- Response {{ item.response_id | default: item.token }} · submitted {{ item.submitted_at | default: "not submitted" }}{% if item.calculated.score %} · score {{ item.calculated.score }}{% endif %}{% for answer in item.answers limit: 100 %}
+        - {{ answer.field.type | replace: "_", " " }} (field {{ answer.field.id }}): {% capture value %}{% case answer.type %}{% when "text" %}{{ answer.text }}{% when "email" %}{{ answer.email }}{% when "number" %}{{ answer.number }}{% when "boolean" %}{% if answer.boolean %}yes{% else %}no{% endif %}{% when "date" %}{{ answer.date | slice: 0, 10 }}{% when "choice" %}{{ answer.choice.label | default: answer.choice.other }}{% when "choices" %}{{ answer.choices.labels | join: ", " }}{% if answer.choices.other %} {{ answer.choices.other }}{% endif %}{% when "url" %}{{ answer.url }}{% when "file_url" %}{{ answer.file_url }}{% when "phone_number" %}{{ answer.phone_number }}{% when "payment" %}{{ answer.payment.amount }}{% else %}({{ answer.type }} answer){% endcase %}{% endcapture %}{{ value | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 1000 }}{% endfor %}{% for hidden in item.hidden limit: 10 %}
+        - hidden field {{ hidden[0] }}: {{ hidden[1] | truncate: 150 }}{% endfor %}
+      {% else %}No completed response found with this ID on this form.{% endfor %}{% else %}Typeform returned an unexpected response.{% endif %}
