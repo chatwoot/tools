@@ -1,0 +1,162 @@
+version: 0.0.1
+kind: captain_toolset
+name: Square
+author: chatwoot
+category: Payments & billing
+description: Check customer orders, payments, refunds, invoices, and subscriptions in Square.
+
+headers:
+  Square-Version: '2026-09-16'
+
+inputs:
+  location_id:
+    label: Square location ID
+    placeholder: L88917AVBK2S5
+    required: true
+
+secrets:
+  access_token:
+    label: Square access token
+    type: password
+    required: true
+
+tools:
+  - id: find_customers_by_email
+    title: Find Customers by Email
+    description: Find Square customer profiles by their exact email address. Use this first to get the customer ID the other Square tools need.
+    http_method: POST
+    endpoint_url: https://connect.squareup.com/v2/customers/search
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"query":{"filter":{"email_address":{"exact":"{{ email | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}"}}},"limit":10}
+    response_template: |-
+      {% if response.customers %}{% for customer in response.customers limit: 10 %}{% capture name %}{{ customer.given_name }} {{ customer.family_name }}{% endcapture %}{% assign name = name | strip %}- {{ name | default: customer.company_name | default: "No name" }} <{{ customer.email_address }}>{% if customer.company_name and name != "" %} · {{ customer.company_name }}{% endif %}
+        Customer ID: {{ customer.id }}
+        Customer since: {{ customer.created_at | date: "%Y-%m-%d" }}{% if customer.phone_number %} · phone {{ customer.phone_number }}{% endif %}
+      {% else %}No Square customer found with this email address.
+      {% endfor %}{% elsif response == empty %}No Square customer found with this email address.{% else %}Square returned an unexpected response.{% endif %}
+
+  - id: list_orders
+    title: List Orders
+    description: Check a customer's 10 most recent orders at the configured location, with items, totals, refunds, and the payment ID of each payment. Use the customer ID from Find Customers by Email. Pass a payment ID to Get Payment for card, failure, and receipt details.
+    http_method: POST
+    endpoint_url: https://connect.squareup.com/v2/orders/search
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Square customer ID from Find Customers by Email.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"location_ids":["${{ inputs.location_id }}"],"query":{"filter":{"customer_filter":{"customer_ids":["{{ customer_id | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}"]}},"sort":{"sort_field":"CREATED_AT","sort_order":"DESC"}},"limit":10}
+    response_template: |-
+      {% if response.orders %}{% assign zero_decimal = "bif clp djf gnf jpy kmf krw mga pyg rwf vnd vuv xaf xof xpf" | split: " " %}{% assign three_decimal = "bhd jod kwd omr tnd" | split: " " %}{% for order in response.orders limit: 10 %}{% assign currency = order.total_money.currency | downcase %}{% if zero_decimal contains currency %}{% assign divisor = 1 %}{% elsif three_decimal contains currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}- Order {{ order.id }} · {{ order.created_at | date: "%Y-%m-%d" }} · {{ order.state | downcase }}{% if order.total_money %} · total {{ order.total_money.amount | divided_by: divisor }} {{ order.total_money.currency }}{% endif %}{% if order.line_items %}
+        Items: {% for item in order.line_items limit: 5 %}{{ item.quantity }} × {{ item.name | default: "Unnamed item" | truncate: 60 }}{% unless forloop.last %}, {% endunless %}{% endfor %}{% if order.line_items.size > 5 %}, and {{ order.line_items.size | minus: 5 }} more{% endif %}{% endif %}{% for tender in order.tenders limit: 5 %}
+        Payment {{ tender.payment_id | default: tender.id }}: {{ tender.amount_money.amount | divided_by: divisor }} {{ tender.amount_money.currency }} by {{ tender.type | downcase | replace: "_", " " }}{% if tender.card_details.card.last_4 %} ({{ tender.card_details.card.card_brand | downcase | replace: "_", " " }} ending {{ tender.card_details.card.last_4 }}){% endif %}{% endfor %}{% for refund in order.refunds limit: 5 %}
+        Refund {{ refund.id }}: {{ refund.amount_money.amount | divided_by: divisor }} {{ refund.amount_money.currency }} · {{ refund.status | downcase }}{% if refund.reason and refund.reason != "" %} · {{ refund.reason | truncate: 100 }}{% endif %}{% endfor %}{% if order.net_amount_due_money.amount > 0 %}
+        Still due: {{ order.net_amount_due_money.amount | divided_by: divisor }} {{ order.net_amount_due_money.currency }}{% endif %}
+      {% else %}No orders found for this customer at this location.
+      {% endfor %}{% elsif response == empty %}No orders found for this customer at this location.{% else %}Square returned an unexpected response.{% endif %}
+
+  - id: get_payment
+    title: Get Payment
+    description: Check one Square payment, including status, amount, card, failure reasons, refunded amount, refund IDs, and the receipt link. Use a payment ID from List Orders or from the customer's receipt.
+    http_method: GET
+    endpoint_url: https://connect.squareup.com/v2/payments/{{ payment_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: payment_id
+        type: string
+        description: The Square payment ID from List Orders.
+        required: true
+    response_template: |-
+      {% if response.payment.id %}{% assign payment = response.payment %}{% assign zero_decimal = "bif clp djf gnf jpy kmf krw mga pyg rwf vnd vuv xaf xof xpf" | split: " " %}{% assign three_decimal = "bhd jod kwd omr tnd" | split: " " %}{% assign money = payment.total_money | default: payment.amount_money %}{% assign currency = money.currency | downcase %}{% if zero_decimal contains currency %}{% assign divisor = 1 %}{% elsif three_decimal contains currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}Payment {{ payment.id }} · {{ payment.created_at | date: "%Y-%m-%d" }} · {{ payment.status | downcase }} · {{ money.amount | divided_by: divisor }} {{ money.currency }}{% if payment.tip_money.amount > 0 %}
+      Includes tip: {{ payment.tip_money.amount | divided_by: divisor }} {{ payment.tip_money.currency }}{% endif %}{% if payment.source_type %}
+      Paid by: {{ payment.source_type | downcase | replace: "_", " " }}{% if payment.card_details.card.last_4 %} ({{ payment.card_details.card.card_brand | downcase | replace: "_", " " }} ending {{ payment.card_details.card.last_4 }}){% endif %}{% endif %}{% if payment.card_details.status %}
+      Card status: {{ payment.card_details.status | downcase }}{% endif %}{% for error in payment.card_details.errors limit: 3 %}
+      Failure: {{ error.code | downcase | replace: "_", " " }}{% if error.detail %} ({{ error.detail | truncate: 200 }}){% endif %}{% endfor %}{% if payment.refunded_money.amount > 0 %}
+      Refunded so far: {{ payment.refunded_money.amount | divided_by: divisor }} {{ payment.refunded_money.currency }}{% endif %}{% if payment.refund_ids.size > 0 %}
+      Refund IDs: {{ payment.refund_ids | slice: 0, 5 | join: ", " }}{% endif %}{% if payment.order_id %}
+      Order ID: {{ payment.order_id }}{% endif %}{% if payment.customer_id %}
+      Customer ID: {{ payment.customer_id }}{% endif %}{% if payment.note and payment.note != "" %}
+      Note: {{ payment.note | truncate: 200 }}{% endif %}{% if payment.receipt_url %}
+      Receipt: {{ payment.receipt_url }}{% endif %}{% else %}Square returned an unexpected response.{% endif %}
+
+  - id: get_refund
+    title: Get Refund
+    description: Check the status of one Square refund, including amount, reason, and when it was created and last updated. Use a refund ID from Get Payment or List Orders.
+    http_method: GET
+    endpoint_url: https://connect.squareup.com/v2/refunds/{{ refund_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: refund_id
+        type: string
+        description: The Square refund ID from Get Payment or List Orders.
+        required: true
+    response_template: |-
+      {% if response.refund.id %}{% assign refund = response.refund %}{% assign zero_decimal = "bif clp djf gnf jpy kmf krw mga pyg rwf vnd vuv xaf xof xpf" | split: " " %}{% assign three_decimal = "bhd jod kwd omr tnd" | split: " " %}{% assign currency = refund.amount_money.currency | downcase %}{% if zero_decimal contains currency %}{% assign divisor = 1 %}{% elsif three_decimal contains currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}Refund {{ refund.id }} · {{ refund.status | downcase }} · {{ refund.amount_money.amount | divided_by: divisor }} {{ refund.amount_money.currency }}
+      Created: {{ refund.created_at | date: "%Y-%m-%d" }}{% if refund.updated_at %} · last updated {{ refund.updated_at | date: "%Y-%m-%d" }}{% endif %}{% if refund.destination_type %}
+      Refunded to: {{ refund.destination_type | downcase | replace: "_", " " }}{% endif %}{% if refund.reason and refund.reason != "" %}
+      Reason: {{ refund.reason | truncate: 200 }}{% endif %}{% if refund.payment_id %}
+      Payment ID: {{ refund.payment_id }}{% endif %}{% else %}Square returned an unexpected response.{% endif %}
+
+  - id: list_invoices
+    title: List Invoices
+    description: Check a customer's 10 most recent Square invoices at the configured location, with status, amounts requested and paid, due dates, and the payment page link. Use the customer ID from Find Customers by Email.
+    http_method: POST
+    endpoint_url: https://connect.squareup.com/v2/invoices/search
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Square customer ID from Find Customers by Email.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"query":{"filter":{"location_ids":["${{ inputs.location_id }}"],"customer_ids":["{{ customer_id | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}"]},"sort":{"field":"INVOICE_SORT_DATE","order":"DESC"}},"limit":30}
+    response_template: |-
+      {% if response.invoices %}{% assign zero_decimal = "bif clp djf gnf jpy kmf krw mga pyg rwf vnd vuv xaf xof xpf" | split: " " %}{% assign three_decimal = "bhd jod kwd omr tnd" | split: " " %}{% assign shown = 0 %}{% for invoice in response.invoices %}{% if shown >= 10 %}{% break %}{% endif %}{% unless invoice.status == "DRAFT" %}{% assign shown = shown | plus: 1 %}- Invoice {{ invoice.invoice_number | default: invoice.id }}{% if invoice.title and invoice.title != "" %} · {{ invoice.title | truncate: 80 }}{% endif %} · {{ invoice.created_at | date: "%Y-%m-%d" }} · {{ invoice.status | downcase | replace: "_", " " }}{% for request in invoice.payment_requests limit: 4 %}{% assign currency = request.computed_amount_money.currency | downcase %}{% if zero_decimal contains currency %}{% assign divisor = 1 %}{% elsif three_decimal contains currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}
+        {{ request.request_type | default: "payment" | downcase | capitalize }}: {{ request.computed_amount_money.amount | divided_by: divisor }} {{ request.computed_amount_money.currency }}{% if request.due_date %}, due {{ request.due_date }}{% endif %}{% if request.total_completed_amount_money %}, paid {{ request.total_completed_amount_money.amount | divided_by: divisor }} {{ request.total_completed_amount_money.currency }}{% endif %}{% endfor %}{% if invoice.subscription_id %}
+        Subscription ID: {{ invoice.subscription_id }}{% endif %}{% if invoice.public_url %}
+        View or pay: {{ invoice.public_url }}{% endif %}
+      {% endunless %}{% endfor %}{% if shown == 0 %}No published invoices found for this customer at this location.{% endif %}{% elsif response == empty %}No published invoices found for this customer at this location.{% else %}Square returned an unexpected response.{% endif %}
+
+  - id: list_subscriptions
+    title: List Subscriptions
+    description: Check a customer's Square subscriptions, including canceled ones, with status, start date, the date they are paid through, and any scheduled cancellation. Use the customer ID from Find Customers by Email.
+    http_method: POST
+    endpoint_url: https://connect.squareup.com/v2/subscriptions/search
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Square customer ID from Find Customers by Email.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{"query":{"filter":{"customer_ids":["{{ customer_id | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote }}"]}},"limit":10}
+    response_template: |-
+      {% if response.subscriptions %}{% assign zero_decimal = "bif clp djf gnf jpy kmf krw mga pyg rwf vnd vuv xaf xof xpf" | split: " " %}{% assign three_decimal = "bhd jod kwd omr tnd" | split: " " %}{% for subscription in response.subscriptions limit: 10 %}- Subscription {{ subscription.id }} · {{ subscription.status | downcase }}{% if subscription.start_date %} · started {{ subscription.start_date }}{% endif %}
+        Plan variation ID: {{ subscription.plan_variation_id }}{% if subscription.price_override_money %}{% assign currency = subscription.price_override_money.currency | downcase %}{% if zero_decimal contains currency %}{% assign divisor = 1 %}{% elsif three_decimal contains currency %}{% assign divisor = 1000.0 %}{% else %}{% assign divisor = 100.0 %}{% endif %}
+        Custom price: {{ subscription.price_override_money.amount | divided_by: divisor }} {{ subscription.price_override_money.currency }}{% endif %}{% if subscription.charged_through_date %}
+        Paid through: {{ subscription.charged_through_date }}{% endif %}{% if subscription.canceled_date %}
+        {% if subscription.status == "CANCELED" %}Canceled on{% else %}Scheduled to cancel on{% endif %}: {{ subscription.canceled_date }}{% endif %}{% if subscription.completed_date %}
+        Completed on: {{ subscription.completed_date }}{% endif %}{% if subscription.invoice_ids.size > 0 %}
+        Invoices so far: {{ subscription.invoice_ids.size }}{% endif %}
+      {% else %}No subscriptions found for this customer.
+      {% endfor %}{% elsif response == empty %}No subscriptions found for this customer.{% else %}Square returned an unexpected response.{% endif %}
