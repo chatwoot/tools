@@ -1,0 +1,137 @@
+version: 0.0.1
+kind: captain_toolset
+name: Tally
+author: chatwoot
+category: Others
+description: Find Tally forms and look up what a customer submitted.
+
+secrets:
+  api_key:
+    label: Tally API key
+    type: password
+    required: true
+
+tools:
+  - id: list_forms
+    title: List Forms
+    description: List the Tally forms this API key can access, 50 per page, with form IDs, status, and submission counts. Use this first to get the form ID the other Tally tools need. Start with page 1.
+    http_method: GET
+    endpoint_url: https://api.tally.so/forms?page={{ page | url_encode }}&limit=50
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: page
+        type: integer
+        description: Page number, starting at 1.
+        required: true
+    response_template: |-
+      {% assign forms = response.items | default: response %}{% if forms.first.id or forms.size == 0 %}{% for form in forms limit: 50 %}- {{ form.name | default: "Untitled form" }} (form ID {{ form.id }}) · {{ form.status | downcase }}{% if form.isClosed %} · closed{% endif %} · {{ form.numberOfSubmissions }} submissions · updated {{ form.updatedAt | slice: 0, 10 }}
+      {% else %}No Tally forms found on this page.{% endfor %}{% if response.hasMore %}More forms exist. Ask for the next page.{% endif %}{% else %}Tally returned an unexpected response.{% endif %}
+
+  - id: get_form
+    title: Get Form
+    description: Get a Tally form's name, status, submission count, and closing settings. Use this to check whether a form is published, closed, or has reached its submission limit.
+    http_method: GET
+    endpoint_url: https://api.tally.so/forms/{{ form_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: form_id
+        type: string
+        description: The Tally form ID from List Forms, or the code at the end of the form URL.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.name | default: "Untitled form" }} (form ID {{ response.id }})
+      Status: {{ response.status | downcase }}{% if response.isClosed or response.settings.isClosed %} · closed to new submissions{% endif %}
+      Submissions: {{ response.numberOfSubmissions }}{% if response.settings.submissionsLimit %} of a limit of {{ response.settings.submissionsLimit }}{% endif %}{% if response.settings.closeDate %}
+      Closes on: {{ response.settings.closeDate }}{% if response.settings.closeTime %} {{ response.settings.closeTime }}{% endif %}{% if response.settings.closeTimezone %} ({{ response.settings.closeTimezone }}){% endif %}{% endif %}{% if response.settings.language %}
+      Language: {{ response.settings.language }}{% endif %}
+      Created: {{ response.createdAt | slice: 0, 10 }} · Updated: {{ response.updatedAt | slice: 0, 10 }}{% else %}Tally returned an unexpected response.{% endif %}
+
+  - id: list_form_questions
+    title: List Form Questions
+    description: List the questions on a Tally form with their types and how many answers each has. Use this to tell a customer what a form asks.
+    http_method: GET
+    endpoint_url: https://api.tally.so/forms/{{ form_id | strip | url_encode }}/questions
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: form_id
+        type: string
+        description: The Tally form ID from List Forms, or the code at the end of the form URL.
+        required: true
+    response_template: |-
+      {% if response.questions %}{% for question in response.questions limit: 80 %}- {{ question.title | default: "Untitled question" | strip_newlines | truncate: 150 }} ({{ question.type | downcase | replace: "_", " " }}, question ID {{ question.id }}){% if question.numberOfResponses %} · {{ question.numberOfResponses }} answers{% endif %}
+      {% else %}This form has no questions.{% endfor %}{% else %}Tally returned an unexpected response.{% endif %}
+
+  - id: list_submissions
+    title: List Submissions
+    description: List submissions to a Tally form, newest first, 20 per page, with their answers. Tally cannot search by person, so read the answers to find the customer's email or name. Get the form ID from List Forms first and start with page 1.
+    http_method: GET
+    endpoint_url: https://api.tally.so/forms/{{ form_id | strip | url_encode }}/submissions?page={{ page | url_encode }}&limit=20&filter=all
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: form_id
+        type: string
+        description: The Tally form ID from List Forms, or the code at the end of the form URL.
+        required: true
+      - name: page
+        type: integer
+        description: Page number, starting at 1.
+        required: true
+    response_template: |-
+      {% if response.submissions %}{% for submission in response.submissions limit: 20 %}- Submission {{ submission.id }} · {% if submission.isCompleted %}completed{% else %}partial{% endif %} · submitted {{ submission.submittedAt }}{% for r in submission.responses limit: 12 %}{% assign question = response.questions | where: "id", r.questionId | first %}{% capture value %}{% if r.formattedAnswer and r.formattedAnswer != "" %}{{ r.formattedAnswer }}{% else %}{% for part in r.answer %}{% if part[1] %}{{ part[0] }}: {{ part[1] | join: "/" }}{% else %}{{ part.url | default: part.name | default: part }}{% endif %}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% endcapture %}{% assign value = value | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}{% if value == "" %}{% assign value = r.answer %}{% endif %}
+        - {{ question.title | default: r.questionId | strip_newlines | truncate: 100 }}: {{ value | truncate: 150 }}{% endfor %}
+      {% else %}No submissions found on this page.{% endfor %}{% if response.hasMore %}More submissions exist. Ask for the next page.{% endif %}{% else %}Tally returned an unexpected response.{% endif %}
+
+  - id: list_submissions_by_date
+    title: List Submissions by Date
+    description: List up to 20 submissions a Tally form received between two dates, with their answers. Use this when the customer says roughly when they filled in the form, then match their email or name in the answers. Dates are in UTC.
+    http_method: GET
+    endpoint_url: https://api.tally.so/forms/{{ form_id | strip | url_encode }}/submissions?startDate={{ start_date | strip | url_encode }}T00%3A00%3A00.000Z&endDate={{ end_date | strip | url_encode }}T23%3A59%3A59.999Z&limit=20&filter=all
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: form_id
+        type: string
+        description: The Tally form ID from List Forms, or the code at the end of the form URL.
+        required: true
+      - name: start_date
+        type: string
+        description: The first date to include, in YYYY-MM-DD format.
+        required: true
+      - name: end_date
+        type: string
+        description: The last date to include, in YYYY-MM-DD format.
+        required: true
+    response_template: |-
+      {% if response.submissions %}{% for submission in response.submissions limit: 20 %}- Submission {{ submission.id }} · {% if submission.isCompleted %}completed{% else %}partial{% endif %} · submitted {{ submission.submittedAt }}{% for r in submission.responses limit: 12 %}{% assign question = response.questions | where: "id", r.questionId | first %}{% capture value %}{% if r.formattedAnswer and r.formattedAnswer != "" %}{{ r.formattedAnswer }}{% else %}{% for part in r.answer %}{% if part[1] %}{{ part[0] }}: {{ part[1] | join: "/" }}{% else %}{{ part.url | default: part.name | default: part }}{% endif %}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% endcapture %}{% assign value = value | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}{% if value == "" %}{% assign value = r.answer %}{% endif %}
+        - {{ question.title | default: r.questionId | strip_newlines | truncate: 100 }}: {{ value | truncate: 150 }}{% endfor %}
+      {% else %}No submissions found in this date range.{% endfor %}{% if response.hasMore %}More submissions exist. Use a shorter date range to see the rest.{% endif %}{% else %}Tally returned an unexpected response.{% endif %}
+
+  - id: get_submission
+    title: Get Submission
+    description: Read one Tally submission in full, with every answer. Use the submission ID from List Submissions or List Submissions by Date, with the same form ID.
+    http_method: GET
+    endpoint_url: https://api.tally.so/forms/{{ form_id | strip | url_encode }}/submissions/{{ submission_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: form_id
+        type: string
+        description: The Tally form ID from List Forms, or the code at the end of the form URL.
+        required: true
+      - name: submission_id
+        type: string
+        description: The Tally submission ID from List Submissions or List Submissions by Date.
+        required: true
+    response_template: |-
+      {% if response.submission.id %}{% assign submission = response.submission %}Submission {{ submission.id }} · {% if submission.isCompleted %}completed{% else %}partial{% endif %} · submitted {{ submission.submittedAt }}{% for r in submission.responses limit: 100 %}{% assign question = response.questions | where: "id", r.questionId | first %}{% capture value %}{% if r.formattedAnswer and r.formattedAnswer != "" %}{{ r.formattedAnswer }}{% else %}{% for part in r.answer %}{% if part[1] %}{{ part[0] }}: {{ part[1] | join: "/" }}{% else %}{{ part.url | default: part.name | default: part }}{% endif %}{% unless forloop.last %}, {% endunless %}{% endfor %}{% endif %}{% endcapture %}{% assign value = value | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}{% if value == "" %}{% assign value = r.answer %}{% endif %}
+        - {{ question.title | default: r.questionId | strip_newlines | truncate: 100 }}: {{ value | truncate: 1000 }}{% endfor %}{% else %}Tally returned an unexpected response.{% endif %}
