@@ -1,0 +1,167 @@
+version: 0.0.1
+kind: captain_toolset
+name: Recurly
+author: chatwoot
+category: Payments & billing
+description: Check customer accounts, subscriptions, invoices, and transactions in Recurly.
+
+headers:
+  Accept: application/vnd.recurly.v2021-02-25
+
+inputs:
+  api_host:
+    label: Recurly API host
+    type: select
+    options:
+      - v3.recurly.com
+      - v3.eu.recurly.com
+    required: true
+
+secrets:
+  api_key:
+    label: Recurly private API key
+    type: password
+    required: true
+
+tools:
+  - id: find_accounts_by_email
+    title: Find Accounts by Email
+    description: Find Recurly accounts by their exact email address. Use this first to get the account ID the other Recurly tools need. Several accounts can share one email address.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/accounts?email={{ email | strip | url_encode }}&limit=10
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    response_template: |-
+      {% assign kind = response.object | downcase %}{% if kind == "list" %}{% for account in response.data limit: 10 %}{% capture name %}{{ account.first_name }} {{ account.last_name }}{% endcapture %}{% assign name = name | strip %}- {{ name | default: account.company | default: "No name" }} <{{ account.email }}>{% if account.company and account.company != "" and name != "" %} · {{ account.company }}{% endif %}
+        Account ID: {{ account.id }} · account code {{ account.code }}
+        State: {{ account.state }} · customer since {{ account.created_at | date: "%Y-%m-%d" }}{% if account.has_active_subscription %}
+        Has an active subscription{% endif %}{% if account.has_paused_subscription %}
+        Has a paused subscription{% endif %}{% if account.has_past_due_invoice %}
+        Has a past due invoice{% endif %}
+      {% else %}No Recurly account found with this email address.
+      {% endfor %}{% else %}Recurly returned an unexpected response.{% endif %}
+
+  - id: list_subscriptions
+    title: List Subscriptions
+    description: Check an account's 10 most recent subscriptions, including canceled and expired ones, with plan, price, renewal date, trial, pause, and cancellation details. Use the account ID from Find Accounts by Email.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/accounts/{{ account_id | strip | url_encode }}/subscriptions?limit=10&order=desc&sort=created_at
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: account_id
+        type: string
+        description: The Recurly account ID from Find Accounts by Email.
+        required: true
+    response_template: |-
+      {% assign kind = response.object | downcase %}{% if kind == "list" %}{% for subscription in response.data limit: 10 %}- Subscription {{ subscription.id }} · {{ subscription.plan.name | default: subscription.plan.code }} · {{ subscription.state }}{% if subscription.activated_at %} · started {{ subscription.activated_at | date: "%Y-%m-%d" }}{% endif %}
+        Price: {{ subscription.unit_amount }} {{ subscription.currency }}{% if subscription.quantity > 1 %} × {{ subscription.quantity }}{% endif %}{% if subscription.total %} · estimated total per period {{ subscription.total }} {{ subscription.currency }}{% endif %}{% for add_on in subscription.add_ons limit: 5 %}
+        Add-on: {{ add_on.add_on.name | default: add_on.add_on.code }}{% if add_on.unit_amount %} · {{ add_on.unit_amount }} {{ subscription.currency }}{% endif %}{% if add_on.quantity > 1 %} × {{ add_on.quantity }}{% endif %}{% endfor %}{% if subscription.state == "active" or subscription.state == "canceled" %}{% if subscription.current_period_ends_at %}
+        Current period ends: {{ subscription.current_period_ends_at | date: "%Y-%m-%d" }}{% if subscription.state == "active" %}{% if subscription.auto_renew == false %} · does not renew automatically{% endif %}{% endif %}{% endif %}{% endif %}{% if subscription.trial_ends_at %}
+        Trial ends: {{ subscription.trial_ends_at | date: "%Y-%m-%d" }}{% endif %}{% if subscription.paused_at %}
+        Paused on: {{ subscription.paused_at | date: "%Y-%m-%d" }}{% if subscription.resume_at %}, resumes {{ subscription.resume_at | date: "%Y-%m-%d" }}{% endif %}{% endif %}{% if subscription.pending_change %}
+        Pending change{% if subscription.pending_change.plan.name %} to {{ subscription.pending_change.plan.name }}{% endif %}{% if subscription.pending_change.activate_at %} on {{ subscription.pending_change.activate_at | date: "%Y-%m-%d" }}{% endif %}{% endif %}{% if subscription.canceled_at %}
+        Canceled on: {{ subscription.canceled_at | date: "%Y-%m-%d" }}{% endif %}{% if subscription.expires_at %}
+        {% if subscription.state == "expired" %}Expired on{% else %}Expires on{% endif %}: {{ subscription.expires_at | date: "%Y-%m-%d" }}{% if subscription.expiration_reason %} ({{ subscription.expiration_reason | replace: "_", " " }}){% endif %}{% endif %}{% if subscription.collection_method == "manual" %}
+        Billed by manual invoice{% endif %}
+      {% else %}No subscriptions found for this account.
+      {% endfor %}{% else %}Recurly returned an unexpected response.{% endif %}
+
+  - id: list_invoices
+    title: List Invoices
+    description: Check an account's 10 most recent invoices and credit invoices, with number, state, total, amount paid, balance due, and due date. Use the account ID from Find Accounts by Email. Pass an invoice number to Get Invoice for line items and payment attempts.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/accounts/{{ account_id | strip | url_encode }}/invoices?limit=10&order=desc&sort=created_at
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: account_id
+        type: string
+        description: The Recurly account ID from Find Accounts by Email.
+        required: true
+    response_template: |-
+      {% assign kind = response.object | downcase %}{% if kind == "list" %}{% for invoice in response.data limit: 10 %}- Invoice {{ invoice.number }} · {{ invoice.created_at | date: "%Y-%m-%d" }} · {{ invoice.type }} · {{ invoice.state | replace: "_", " " }} · total {{ invoice.total }} {{ invoice.currency }}{% if invoice.type == "charge" %}
+        Paid: {{ invoice.paid | default: 0 }} {{ invoice.currency }} · balance due {{ invoice.balance | default: 0 }} {{ invoice.currency }}{% if invoice.due_at %}{% if invoice.balance > 0 %} · due {{ invoice.due_at | date: "%Y-%m-%d" }}{% endif %}{% endif %}{% endif %}{% if invoice.origin %}
+        Origin: {{ invoice.origin | replace: "_", " " }}{% endif %}{% if invoice.collection_method == "manual" %} · manual collection{% endif %}
+      {% else %}No invoices found for this account.
+      {% endfor %}{% else %}Recurly returned an unexpected response.{% endif %}
+
+  - id: get_invoice
+    title: Get Invoice
+    description: Check one Recurly invoice by its invoice number, including line items, payment attempts with decline messages, and the balance due. Use an invoice number from List Invoices or from the customer.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/invoices/number-{{ invoice_number | strip | url_encode }}
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: invoice_number
+        type: string
+        description: The invoice number from List Invoices, such as 1042, without a leading hash sign. Include any prefix that is part of the number.
+        required: true
+    response_template: |-
+      {% if response.object == "invoice" %}Invoice {{ response.number }} · {{ response.created_at | date: "%Y-%m-%d" }} · {{ response.type }} · {{ response.state | replace: "_", " " }}
+      Total: {{ response.total }} {{ response.currency }} (subtotal {{ response.subtotal }}{% if response.discount > 0 %}, discount {{ response.discount }}{% endif %}{% if response.tax > 0 %}, tax {{ response.tax }}{% endif %}){% if response.type == "charge" %}
+      Paid: {{ response.paid | default: 0 }} {{ response.currency }} · balance due {{ response.balance | default: 0 }} {{ response.currency }}{% if response.refundable_amount %} · refundable {{ response.refundable_amount }} {{ response.currency }}{% endif %}{% endif %}{% if response.due_at %}
+      Due: {{ response.due_at | date: "%Y-%m-%d" }}{% endif %}{% if response.closed_at %}
+      Closed: {{ response.closed_at | date: "%Y-%m-%d" }}{% endif %}{% if response.account.email %}
+      Account: {{ response.account.email }} (account ID {{ response.account.id }}){% endif %}{% for item in response.line_items limit: 10 %}
+      - {{ item.description | default: item.product_code | default: "Line item" | truncate: 120 }}{% if item.quantity > 1 %} × {{ item.quantity }}{% endif %}: {{ item.amount }} {{ item.currency }}{% if item.start_date and item.end_date %} ({{ item.start_date | date: "%Y-%m-%d" }} to {{ item.end_date | date: "%Y-%m-%d" }}){% endif %}{% endfor %}{% if response.has_more_line_items %}
+      More line items are not shown.{% endif %}{% for transaction in response.transactions limit: 5 %}
+      Payment attempt {{ transaction.created_at | date: "%Y-%m-%d" }}: {{ transaction.type }} {{ transaction.amount }} {{ transaction.currency }} · {{ transaction.status }}{% if transaction.payment_method.last_four %} · {{ transaction.payment_method.card_type | default: "account" }} ending {{ transaction.payment_method.last_four }}{% endif %}{% if transaction.success == false %}{% if transaction.customer_message %} · {{ transaction.customer_message | truncate: 200 }}{% endif %}{% endif %}{% endfor %}{% for credit in response.credit_payments limit: 5 %}
+      Credit applied {{ credit.created_at | date: "%Y-%m-%d" }}: {{ credit.amount }} {{ credit.currency }} ({{ credit.action | replace: "_", " " }}){% endfor %}{% else %}Recurly returned an unexpected response.{% endif %}
+
+  - id: list_transactions
+    title: List Transactions
+    description: Check an account's 10 most recent payment transactions, including purchases, refunds, and declines, with amount, status, payment method, decline message, and invoice number. Use the account ID from Find Accounts by Email.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/accounts/{{ account_id | strip | url_encode }}/transactions?limit=10&order=desc&sort=created_at
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: account_id
+        type: string
+        description: The Recurly account ID from Find Accounts by Email.
+        required: true
+    response_template: |-
+      {% assign kind = response.object | downcase %}{% if kind == "list" %}{% for transaction in response.data limit: 10 %}- {{ transaction.created_at | date: "%Y-%m-%d" }} · {{ transaction.type }} · {{ transaction.amount }} {{ transaction.currency }} · {{ transaction.status }}{% if transaction.refunded %} · refunded in part or in full{% endif %}{% if transaction.payment_method.last_four %}
+        Paid with: {{ transaction.payment_method.card_type | default: transaction.payment_method.object | replace: "_", " " }} ending {{ transaction.payment_method.last_four }}{% elsif transaction.payment_method.object %}
+        Paid with: {{ transaction.payment_method.object | replace: "_", " " }}{% endif %}{% if transaction.success == false %}{% if transaction.customer_message %}
+        Decline message: {{ transaction.customer_message | truncate: 200 }}{% endif %}{% if transaction.status_message %}
+        Decline detail: {{ transaction.status_message | truncate: 200 }}{% endif %}{% endif %}{% if transaction.invoice.number %}
+        Invoice: {{ transaction.invoice.number }} ({{ transaction.invoice.state | replace: "_", " " }}){% endif %}
+      {% else %}No transactions found for this account.
+      {% endfor %}{% else %}Recurly returned an unexpected response.{% endif %}
+
+  - id: get_account_balance
+    title: Get Account Balance
+    description: Check an account's outstanding balance per currency and whether it is past due. Use this when a customer asks what they owe or why their service was restricted. Use the account ID from Find Accounts by Email.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/accounts/{{ account_id | strip | url_encode }}/balance
+    auth_type: basic
+    auth_config:
+      username: ${{ secrets.api_key }}
+      password: ''
+    param_schema:
+      - name: account_id
+        type: string
+        description: The Recurly account ID from Find Accounts by Email.
+        required: true
+    response_template: |-
+      {% if response.balances %}Past due: {% if response.past_due %}yes{% else %}no{% endif %}{% for balance in response.balances limit: 10 %}
+      - Balance: {{ balance.amount }} {{ balance.currency }}{% if balance.available_credit_amount > 0 %} · available credit {{ balance.available_credit_amount }} {{ balance.currency }}{% endif %}{% else %}
+      No outstanding balance in any currency.{% endfor %}{% else %}Recurly returned an unexpected response.{% endif %}
