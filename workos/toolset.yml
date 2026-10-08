@@ -1,0 +1,164 @@
+version: 0.0.1
+kind: captain_toolset
+name: WorkOS
+author: chatwoot
+category: Identity & access
+description: Look up WorkOS AuthKit users, their sessions, MFA factors, organizations, invitations, and SSO connections.
+
+secrets:
+  api_key:
+    label: WorkOS API key
+    type: password
+    placeholder: sk_live_...
+    required: true
+
+tools:
+  - id: find_user_by_email
+    title: Find User by Email
+    description: Find a WorkOS user by email address. Use this first when a customer has trouble signing in or asks about their account, to get the user ID the other WorkOS tools need. Shows whether the email is verified and when the user last signed in.
+    http_method: GET
+    endpoint_url: https://api.workos.com/user_management/users?email={{ email | strip | url_encode }}&limit=5
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The user's email address.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for user in response.data limit: 5 %}{% capture name %}{{ user.first_name }} {{ user.last_name }}{% endcapture %}{% assign name = name | strip %}- {{ name | default: "No name" }} <{{ user.email }}>
+        User ID: {{ user.id }}
+        Email verified: {% if user.email_verified %}yes{% else %}no{% endif %}
+        Created: {{ user.created_at | slice: 0, 10 }}
+        Last sign-in: {{ user.last_sign_in_at | default: "never" }}{% if user.external_id %}
+        External ID: {{ user.external_id }}{% endif %}{% for item in user.metadata limit: 10 %}{% if forloop.first %}
+        Metadata:{% endif %} {{ item[0] }}={{ item[1] | truncate: 100 }}{% unless forloop.last %};{% endunless %}{% endfor %}
+      {% else %}No WorkOS user found with this email address.
+      {% endfor %}{% else %}WorkOS returned an unexpected response.{% endif %}
+
+  - id: list_user_organizations
+    title: List User Organizations
+    description: List the organizations a WorkOS user belongs to, with their role and whether each membership is active, inactive, or pending. Use the user ID from Find User by Email. The organization IDs it returns are what Get Organization and List Organization SSO Connections need.
+    http_method: GET
+    endpoint_url: https://api.workos.com/user_management/organization_memberships?user_id={{ user_id | strip | url_encode }}&statuses=active,inactive,pending&limit=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: user_id
+        type: string
+        description: The WorkOS user ID from Find User by Email, starting with user_.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for membership in response.data limit: 20 %}- {{ membership.organization_name | default: "Unnamed organization" }} (organization ID {{ membership.organization_id }})
+        Membership: {{ membership.status }}{% if membership.directory_managed %}, managed by directory sync{% endif %}
+        Role: {% if membership.roles.size > 0 %}{{ membership.roles | map: "slug" | join: ", " }}{% else %}{{ membership.role.slug | default: "none" }}{% endif %}
+        Member since: {{ membership.created_at | slice: 0, 10 }}
+      {% else %}This user does not belong to any organization.
+      {% endfor %}{% if response.data.size >= 20 %}Only the first 20 memberships are shown.{% endif %}{% else %}WorkOS returned an unexpected response.{% endif %}
+
+  - id: list_user_sessions
+    title: List User Sessions
+    description: List up to 10 of a WorkOS user's sessions, with sign-in method, status, IP address, and browser. Use this when a customer asks where they are signed in or reports unexpected account activity. Use the user ID from Find User by Email.
+    http_method: GET
+    endpoint_url: https://api.workos.com/user_management/users/{{ user_id | strip | url_encode }}/sessions?limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: user_id
+        type: string
+        description: The WorkOS user ID from Find User by Email, starting with user_.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for session in response.data limit: 10 %}- Session {{ session.id }} · {{ session.status }} · signed in with {{ session.auth_method | replace: "_", " " }}
+        Started: {{ session.created_at }} · expires {{ session.expires_at }}{% if session.ended_at %} · ended {{ session.ended_at }}{% endif %}{% if session.ip_address %}
+        IP address: {{ session.ip_address }}{% endif %}{% if session.user_agent %}
+        Browser: {{ session.user_agent | truncate: 120 }}{% endif %}{% if session.organization_id %}
+        Organization ID: {{ session.organization_id }}{% endif %}{% if session.impersonator %}
+        Started by a team member impersonating the user{% endif %}
+      {% else %}This user has no sessions.
+      {% endfor %}{% else %}WorkOS returned an unexpected response.{% endif %}
+
+  - id: list_user_mfa_factors
+    title: List User MFA Factors
+    description: Check whether a WorkOS user has multi-factor authentication set up, and which factors are enrolled. Use this when a customer cannot complete MFA or asks whether it is enabled. Use the user ID from Find User by Email.
+    http_method: GET
+    endpoint_url: https://api.workos.com/user_management/users/{{ user_id | strip | url_encode }}/auth_factors?limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: user_id
+        type: string
+        description: The WorkOS user ID from Find User by Email, starting with user_.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for factor in response.data limit: 10 %}- {% case factor.type %}{% when "totp" %}Authenticator app{% when "sms" %}SMS{% when "webauthn" %}Passkey or security key{% else %}{{ factor.type }}{% endcase %} (factor ID {{ factor.id }}) · enrolled {{ factor.created_at | slice: 0, 10 }}
+      {% else %}This user has no MFA factors enrolled.
+      {% endfor %}{% else %}WorkOS returned an unexpected response.{% endif %}
+
+  - id: list_invitations_by_email
+    title: List Invitations by Email
+    description: List the 10 most recent WorkOS invitations sent to an email address, with their state and expiry. Use this when a customer says they did not receive an invite or their invite link no longer works.
+    http_method: GET
+    endpoint_url: https://api.workos.com/user_management/invitations?email={{ email | strip | url_encode }}&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address the invitation was sent to.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for invitation in response.data limit: 10 %}- Invitation {{ invitation.id }} · {{ invitation.state }} · sent {{ invitation.created_at | slice: 0, 10 }} · expires {{ invitation.expires_at | slice: 0, 10 }}{% if invitation.organization_id %}
+        Organization ID: {{ invitation.organization_id }}{% endif %}{% if invitation.role_slug %}
+        Role: {{ invitation.role_slug }}{% endif %}{% if invitation.accepted_at %}
+        Accepted: {{ invitation.accepted_at | slice: 0, 10 }}{% endif %}{% if invitation.revoked_at %}
+        Revoked: {{ invitation.revoked_at | slice: 0, 10 }}{% endif %}
+      {% else %}No invitations found for this email address.
+      {% endfor %}{% else %}WorkOS returned an unexpected response.{% endif %}
+
+  - id: get_organization
+    title: Get Organization
+    description: Get a WorkOS organization's name, domains with their verification state, and metadata. Use the organization ID from List User Organizations.
+    http_method: GET
+    endpoint_url: https://api.workos.com/organizations/{{ organization_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: organization_id
+        type: string
+        description: The WorkOS organization ID from List User Organizations, starting with org_.
+        required: true
+    response_template: |-
+      {% if response.object == "organization" %}{{ response.name }} (organization ID {{ response.id }})
+      Created: {{ response.created_at | slice: 0, 10 }}{% if response.external_id %}
+      External ID: {{ response.external_id }}{% endif %}
+      Domains:{% for domain in response.domains limit: 10 %}
+      - {{ domain.domain }} · {{ domain.state | replace: "_", " " }}{% else %} none{% endfor %}{% for item in response.metadata limit: 10 %}{% if forloop.first %}
+      Metadata:{% endif %}
+      - {{ item[0] }}: {{ item[1] | truncate: 150 }}{% endfor %}{% else %}WorkOS returned an unexpected response.{% endif %}
+
+  - id: list_organization_sso_connections
+    title: List Organization SSO Connections
+    description: List the SSO connections set up for a WorkOS organization, with the identity provider type and whether each connection is active. Use this when a customer has trouble signing in with SSO. Use the organization ID from List User Organizations.
+    http_method: GET
+    endpoint_url: https://api.workos.com/connections?organization_id={{ organization_id | strip | url_encode }}&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: organization_id
+        type: string
+        description: The WorkOS organization ID from List User Organizations, starting with org_.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for connection in response.data limit: 10 %}- {{ connection.name }} (connection ID {{ connection.id }}) · {{ connection.connection_type }} · {{ connection.state | replace: "_", " " }}{% if connection.domains.size > 0 %}
+        Domains: {{ connection.domains | map: "domain" | join: ", " | truncate: 200 }}{% endif %}
+        Created: {{ connection.created_at | slice: 0, 10 }}
+      {% else %}This organization has no SSO connections.
+      {% endfor %}{% else %}WorkOS returned an unexpected response.{% endif %}
