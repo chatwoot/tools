@@ -1,0 +1,151 @@
+version: 0.0.1
+kind: captain_toolset
+name: Shopify
+author: chatwoot
+category: Commerce
+description: Look up Shopify customers, orders, and shipment tracking.
+
+inputs:
+  shop_domain:
+    label: Shopify store domain
+    placeholder: your-store.myshopify.com
+    required: true
+
+secrets:
+  access_token:
+    label: Admin API access token
+    type: password
+    required: true
+
+tools:
+  - id: find_customers_by_email
+    title: Find Customers by Email
+    description: Find Shopify customers by email address. Use this first to get the customer ID that List Customer Orders needs. If no customer is found, the customer may have checked out as a guest; try Find Orders by Email.
+    http_method: POST
+    endpoint_url: https://${{ inputs.shop_domain }}/admin/api/2026-10/graphql.json
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Shopify-Access-Token
+      key: ${{ secrets.access_token }}
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{"query":"query($q: String!) { customers(first: 5, query: $q) { nodes { legacyResourceId displayName defaultEmailAddress { emailAddress } defaultPhoneNumber { phoneNumber } numberOfOrders amountSpent { amount currencyCode } createdAt tags note } } }","variables":{"q":"email:\"{{ email | strip_newlines | strip | remove: '"' | remove: bs }}\""}}
+    response_template: |-
+      {% if response.data.customers.nodes %}{% for customer in response.data.customers.nodes %}- {{ customer.displayName | default: "No name" }}{% if customer.defaultEmailAddress.emailAddress %} <{{ customer.defaultEmailAddress.emailAddress }}>{% endif %}
+        Customer ID: {{ customer.legacyResourceId }}
+        Customer since: {{ customer.createdAt | slice: 0, 10 }} · Orders: {{ customer.numberOfOrders }} · Total spent: {{ customer.amountSpent.amount }} {{ customer.amountSpent.currencyCode }}{% if customer.defaultPhoneNumber.phoneNumber %}
+        Phone: {{ customer.defaultPhoneNumber.phoneNumber }}{% endif %}{% if customer.tags.size > 0 %}
+        Tags: {{ customer.tags | join: ", " | truncate: 200 }}{% endif %}{% if customer.note and customer.note != "" %}
+        Note: {{ customer.note | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}
+      {% else %}No Shopify customer found with this email address.
+      {% endfor %}{% else %}Shopify returned an unexpected response.{% endif %}
+
+  - id: list_customer_orders
+    title: List Customer Orders
+    description: Check a customer's 10 most recent Shopify orders, with payment status, fulfillment status, and tracking numbers. Use the customer ID from Find Customers by Email.
+    http_method: POST
+    endpoint_url: https://${{ inputs.shop_domain }}/admin/api/2026-10/graphql.json
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Shopify-Access-Token
+      key: ${{ secrets.access_token }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The numeric Shopify customer ID from Find Customers by Email.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{"query":"query($q: String!) { orders(first: 10, reverse: true, query: $q) { nodes { legacyResourceId name createdAt displayFinancialStatus displayFulfillmentStatus cancelledAt currentTotalPriceSet { shopMoney { amount currencyCode } } fulfillments(first: 3) { displayStatus trackingInfo(first: 2) { company number url } } } } }","variables":{"q":"customer_id:{{ customer_id | strip_newlines | strip | remove: '"' | remove: bs | remove: " " }}"}}
+    response_template: |-
+      {% if response.data.orders.nodes %}{% for order in response.data.orders.nodes %}- Order {{ order.name }} (order ID {{ order.legacyResourceId }}) · {{ order.createdAt | slice: 0, 10 }} · {{ order.currentTotalPriceSet.shopMoney.amount }} {{ order.currentTotalPriceSet.shopMoney.currencyCode }}
+        Payment: {{ order.displayFinancialStatus | default: "unknown" | replace: "_", " " | downcase }} · Fulfillment: {{ order.displayFulfillmentStatus | replace: "_", " " | downcase }}{% if order.cancelledAt %} · Cancelled on {{ order.cancelledAt | slice: 0, 10 }}{% endif %}{% for fulfillment in order.fulfillments %}{% for tracking in fulfillment.trackingInfo %}{% if tracking.number %}
+        Tracking: {{ tracking.company | default: "Carrier unknown" }} {{ tracking.number }}{% if tracking.url %} · {{ tracking.url }}{% endif %}{% endif %}{% endfor %}{% endfor %}
+      {% else %}No orders found for this customer.
+      {% endfor %}{% else %}Shopify returned an unexpected response.{% endif %}
+
+  - id: find_orders_by_email
+    title: Find Orders by Email
+    description: Find the 10 most recent Shopify orders placed with an email address, including guest checkouts. Use this when Find Customers by Email finds no customer or the customer has no orders.
+    http_method: POST
+    endpoint_url: https://${{ inputs.shop_domain }}/admin/api/2026-10/graphql.json
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Shopify-Access-Token
+      key: ${{ secrets.access_token }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address used at checkout.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{"query":"query($q: String!) { orders(first: 10, reverse: true, query: $q) { nodes { legacyResourceId name createdAt displayFinancialStatus displayFulfillmentStatus cancelledAt currentTotalPriceSet { shopMoney { amount currencyCode } } fulfillments(first: 3) { displayStatus trackingInfo(first: 2) { company number url } } } } }","variables":{"q":"email:\"{{ email | strip_newlines | strip | remove: '"' | remove: bs }}\""}}
+    response_template: |-
+      {% if response.data.orders.nodes %}{% for order in response.data.orders.nodes %}- Order {{ order.name }} (order ID {{ order.legacyResourceId }}) · {{ order.createdAt | slice: 0, 10 }} · {{ order.currentTotalPriceSet.shopMoney.amount }} {{ order.currentTotalPriceSet.shopMoney.currencyCode }}
+        Payment: {{ order.displayFinancialStatus | default: "unknown" | replace: "_", " " | downcase }} · Fulfillment: {{ order.displayFulfillmentStatus | replace: "_", " " | downcase }}{% if order.cancelledAt %} · Cancelled on {{ order.cancelledAt | slice: 0, 10 }}{% endif %}{% for fulfillment in order.fulfillments %}{% for tracking in fulfillment.trackingInfo %}{% if tracking.number %}
+        Tracking: {{ tracking.company | default: "Carrier unknown" }} {{ tracking.number }}{% if tracking.url %} · {{ tracking.url }}{% endif %}{% endif %}{% endfor %}{% endfor %}
+      {% else %}No orders found for this email address.
+      {% endfor %}{% else %}Shopify returned an unexpected response.{% endif %}
+
+  - id: find_order_by_number
+    title: Find Order by Number
+    description: Find a Shopify order by the order number the customer sees, such as #1001. Returns the order ID that Get Order needs.
+    http_method: POST
+    endpoint_url: https://${{ inputs.shop_domain }}/admin/api/2026-10/graphql.json
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Shopify-Access-Token
+      key: ${{ secrets.access_token }}
+    param_schema:
+      - name: order_number
+        type: string
+        description: The order number from the confirmation email, such as 1001 or #1001.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{"query":"query($q: String!) { orders(first: 10, reverse: true, query: $q) { nodes { legacyResourceId name createdAt displayFinancialStatus displayFulfillmentStatus cancelledAt currentTotalPriceSet { shopMoney { amount currencyCode } } fulfillments(first: 3) { displayStatus trackingInfo(first: 2) { company number url } } } } }","variables":{"q":"name:{{ order_number | strip_newlines | strip | remove: '#' | remove: '"' | remove: bs | remove: " " }}"}}
+    response_template: |-
+      {% if response.data.orders.nodes %}{% for order in response.data.orders.nodes %}- Order {{ order.name }} (order ID {{ order.legacyResourceId }}) · {{ order.createdAt | slice: 0, 10 }} · {{ order.currentTotalPriceSet.shopMoney.amount }} {{ order.currentTotalPriceSet.shopMoney.currencyCode }}
+        Payment: {{ order.displayFinancialStatus | default: "unknown" | replace: "_", " " | downcase }} · Fulfillment: {{ order.displayFulfillmentStatus | replace: "_", " " | downcase }}{% if order.cancelledAt %} · Cancelled on {{ order.cancelledAt | slice: 0, 10 }}{% endif %}{% for fulfillment in order.fulfillments %}{% for tracking in fulfillment.trackingInfo %}{% if tracking.number %}
+        Tracking: {{ tracking.company | default: "Carrier unknown" }} {{ tracking.number }}{% if tracking.url %} · {{ tracking.url }}{% endif %}{% endif %}{% endfor %}{% endfor %}
+      {% else %}No order found with this order number.
+      {% endfor %}{% else %}Shopify returned an unexpected response.{% endif %}
+
+  - id: get_order
+    title: Get Order
+    description: Get full details of one Shopify order, including line items, shipping destination, shipments with tracking, refunds, and the order status page link. Use the order ID from List Customer Orders, Find Orders by Email, or Find Order by Number.
+    http_method: POST
+    endpoint_url: https://${{ inputs.shop_domain }}/admin/api/2026-10/graphql.json
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: X-Shopify-Access-Token
+      key: ${{ secrets.access_token }}
+    param_schema:
+      - name: order_id
+        type: string
+        description: The numeric Shopify order ID from the other Shopify tools. This is not the order number the customer sees.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{"query":"query($id: ID!) { order(id: $id) { legacyResourceId name createdAt email displayFinancialStatus displayFulfillmentStatus returnStatus cancelledAt cancelReason note statusPageUrl currentTotalPriceSet { shopMoney { amount currencyCode } } totalRefundedSet { shopMoney { amount currencyCode } } shippingAddress { city provinceCode countryCodeV2 zip } lineItems(first: 20) { nodes { name quantity sku } } fulfillments(first: 5) { displayStatus createdAt estimatedDeliveryAt deliveredAt trackingInfo(first: 3) { company number url } } } }","variables":{"id":"gid://shopify/Order/{{ order_id | strip_newlines | strip | remove: '"' | remove: bs | remove: " " }}"}}
+    response_template: |-
+      {% if response.data.order %}{% assign order = response.data.order %}Order {{ order.name }} (order ID {{ order.legacyResourceId }})
+      Placed: {{ order.createdAt | slice: 0, 10 }}{% if order.email %} · {{ order.email }}{% endif %}
+      Total: {{ order.currentTotalPriceSet.shopMoney.amount }} {{ order.currentTotalPriceSet.shopMoney.currencyCode }}{% assign refunded = order.totalRefundedSet.shopMoney.amount | plus: 0 %}{% if refunded > 0 %} · Refunded: {{ order.totalRefundedSet.shopMoney.amount }} {{ order.totalRefundedSet.shopMoney.currencyCode }}{% endif %}
+      Payment: {{ order.displayFinancialStatus | default: "unknown" | replace: "_", " " | downcase }} · Fulfillment: {{ order.displayFulfillmentStatus | replace: "_", " " | downcase }} · Returns: {{ order.returnStatus | replace: "_", " " | downcase }}{% if order.cancelledAt %}
+      Cancelled on {{ order.cancelledAt | slice: 0, 10 }}{% if order.cancelReason %} ({{ order.cancelReason | replace: "_", " " | downcase }}){% endif %}{% endif %}{% if order.shippingAddress %}
+      Ships to: {{ order.shippingAddress.city }} {{ order.shippingAddress.provinceCode }} {{ order.shippingAddress.zip }} {{ order.shippingAddress.countryCodeV2 }}{% endif %}
+      Items:{% for item in order.lineItems.nodes %}
+      - {{ item.quantity }} × {{ item.name }}{% if item.sku and item.sku != "" %} (SKU {{ item.sku }}){% endif %}{% endfor %}
+      Shipments:{% for fulfillment in order.fulfillments %}
+      - {{ fulfillment.displayStatus | default: "status unknown" | replace: "_", " " | downcase }} · created {{ fulfillment.createdAt | slice: 0, 10 }}{% if fulfillment.deliveredAt %} · delivered {{ fulfillment.deliveredAt | slice: 0, 10 }}{% elsif fulfillment.estimatedDeliveryAt %} · estimated delivery {{ fulfillment.estimatedDeliveryAt | slice: 0, 10 }}{% endif %}{% for tracking in fulfillment.trackingInfo %}{% if tracking.number %}
+        Tracking: {{ tracking.company | default: "Carrier unknown" }} {{ tracking.number }}{% if tracking.url %} · {{ tracking.url }}{% endif %}{% endif %}{% endfor %}{% else %}
+      - Nothing has shipped yet.{% endfor %}{% if order.note and order.note != "" %}
+      Order note: {{ order.note | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 300 }}{% endif %}
+      Order status page: {{ order.statusPageUrl }}{% elsif response.data %}No Shopify order found with this ID.{% else %}Shopify returned an unexpected response.{% endif %}
