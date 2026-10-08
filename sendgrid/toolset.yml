@@ -1,0 +1,220 @@
+version: 0.0.1
+kind: captain_toolset
+name: SendGrid
+author: chatwoot
+category: Others
+description: Check email delivery activity, bounces, blocks, spam reports, unsubscribes, and authenticated domains in SendGrid.
+
+headers:
+  Accept: application/json
+
+inputs:
+  api_host:
+    label: SendGrid API host (global or EU region)
+    type: select
+    options:
+      - api.sendgrid.com
+      - api.eu.sendgrid.com
+    required: true
+
+secrets:
+  api_key:
+    label: SendGrid API key
+    type: password
+    required: true
+
+tools:
+  - id: find_messages_by_recipient
+    title: Find Messages by Recipient
+    description: Find the 10 most recently active emails sent to an address, with delivery status and open and click counts. Use this first when a customer says an email did not arrive. Returns the message ID that Get Message needs. Needs SendGrid's Email Activity History add-on.
+    http_method: GET
+    endpoint_url: 'https://${{ inputs.api_host }}/v3/messages?query=to_email%3D%22{{ email | strip | remove: ''"'' | url_encode }}%22&limit=10'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The recipient's email address.
+        required: true
+    response_template: |-
+      {% if response.messages %}{% for message in response.messages limit: 10 %}- {{ message.last_event_time }} · {{ message.status | replace: "_", " " }} · {{ message.subject | default: "No subject" | truncate: 80 }}
+        From: {{ message.from_email }} · To: {{ message.to_email }} · Opens: {{ message.opens_count }} · Clicks: {{ message.clicks_count }}
+        Message ID: {{ message.msg_id }}
+      {% else %}No email activity found for this recipient.
+      {% endfor %}{% else %}SendGrid returned an unexpected response.{% endif %}
+
+  - id: get_message
+    title: Get Message
+    description: Get one email's delivery events, such as processed, delivered, deferred, bounced, dropped, opened, or clicked, with the mail server's reason for failures. Use the message ID from Find Messages by Recipient. Needs SendGrid's Email Activity History add-on.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v3/messages/{{ message_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: message_id
+        type: string
+        description: The SendGrid message ID from Find Messages by Recipient.
+        required: true
+    response_template: |-
+      {% if response.msg_id %}{{ response.subject | default: "No subject" | truncate: 120 }}
+      From: {{ response.from_email }} · To: {{ response.to_email }}
+      Status: {{ response.status | replace: "_", " " }}
+      Events:{% for event in response.events limit: 20 %}
+      - {{ event.processed }} · {{ event.event_name | replace: "_", " " }}{% if event.bounce_type and event.bounce_type != "" %} ({{ event.bounce_type }}){% endif %}{% if event.attempt_num %} · attempt {{ event.attempt_num }}{% endif %}{% if event.reason and event.reason != "" %}
+        Reason: {{ event.reason | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 250 }}{% endif %}{% if event.url and event.url != "" %}
+        Link: {{ event.url | truncate: 150 }}{% endif %}{% else %}
+      No events recorded for this message yet.{% endfor %}{% else %}SendGrid returned an unexpected response.{% endif %}
+
+  - id: check_bounce
+    title: Check Bounce
+    description: Check whether an email address is on the SendGrid bounce list, which makes SendGrid drop emails to it. Returns the bounce reason from the receiving mail server.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v3/suppression/bounces/{{ email | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address to check.
+        required: true
+    response_template: |-
+      {% if response.size == 0 %}This address is not on the bounce list.{% elsif response.first.email %}{% for bounce in response limit: 3 %}{{ bounce.email }} is on the bounce list, so SendGrid drops emails to it.
+      Bounced: {{ bounce.created | date: "%Y-%m-%d %H:%M UTC" }}{% if bounce.status and bounce.status != "" %}
+      Status code: {{ bounce.status }}{% endif %}
+      Reason: {{ bounce.reason | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 300 }}
+      {% endfor %}{% else %}SendGrid returned an unexpected response.{% endif %}
+
+  - id: check_block
+    title: Check Block
+    description: Check whether an email address is on the SendGrid block list, which records emails a receiving server rejected for reasons such as sender reputation or content. Returns the block reason.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v3/suppression/blocks/{{ email | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address to check.
+        required: true
+    response_template: |-
+      {% if response.size == 0 %}This address is not on the block list.{% elsif response.first.email %}{% for block in response limit: 3 %}{{ block.email }} is on the block list.
+      Blocked: {{ block.created | date: "%Y-%m-%d %H:%M UTC" }}{% if block.status and block.status != "" %}
+      Status code: {{ block.status }}{% endif %}
+      Reason: {{ block.reason | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 300 }}
+      {% endfor %}{% else %}SendGrid returned an unexpected response.{% endif %}
+
+  - id: check_spam_report
+    title: Check Spam Report
+    description: Check whether an email address is on the SendGrid spam report list, which means the recipient marked an email as spam and SendGrid drops emails to it.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v3/suppression/spam_reports/{{ email | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address to check.
+        required: true
+    response_template: |-
+      {% if response.size == 0 %}This address is not on the spam report list.{% elsif response.first.email %}{% for report in response limit: 3 %}{{ report.email }} is on the spam report list, so SendGrid drops emails to it.
+      Reported: {{ report.created | date: "%Y-%m-%d %H:%M UTC" }}
+      {% endfor %}{% else %}SendGrid returned an unexpected response.{% endif %}
+
+  - id: check_invalid_email
+    title: Check Invalid Email
+    description: Check whether an email address is on the SendGrid invalid emails list, which means the address is malformed or its domain cannot receive mail and SendGrid drops emails to it.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v3/suppression/invalid_emails/{{ email | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address to check.
+        required: true
+    response_template: |-
+      {% if response.size == 0 %}This address is not on the invalid emails list.{% elsif response.first.email %}{% for invalid in response limit: 3 %}{{ invalid.email }} is on the invalid emails list, so SendGrid drops emails to it.
+      Added: {{ invalid.created | date: "%Y-%m-%d %H:%M UTC" }}
+      Reason: {{ invalid.reason | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 300 }}
+      {% endfor %}{% else %}SendGrid returned an unexpected response.{% endif %}
+
+  - id: check_group_unsubscribes
+    title: Check Group Unsubscribes
+    description: Check which SendGrid unsubscribe groups an email address has unsubscribed from. Use this when a customer stopped receiving one kind of email, such as newsletters, but still gets others.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v3/asm/suppressions/{{ email | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address to check.
+        required: true
+    response_template: |-
+      {% if response.suppressions %}{% assign count = 0 %}{% for group in response.suppressions %}{% if group.suppressed and count < 20 %}{% assign count = count | plus: 1 %}- Unsubscribed from {{ group.name }}{% if group.description and group.description != "" %}: {{ group.description | truncate: 120 }}{% endif %}
+      {% endif %}{% endfor %}{% if count == 0 %}This address has not unsubscribed from any unsubscribe group.{% endif %}{% else %}SendGrid returned an unexpected response.{% endif %}
+
+  - id: check_global_unsubscribe
+    title: Check Global Unsubscribe
+    description: Check whether an email address is globally unsubscribed in SendGrid, which stops all emails that honor unsubscribes from reaching it.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v3/asm/suppressions/global/{{ email | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address to check.
+        required: true
+    response_template: |-
+      {% if response.recipient_email %}{{ response.recipient_email }} is globally unsubscribed.{% elsif response.size == 0 %}This address is not globally unsubscribed.{% else %}SendGrid returned an unexpected response.{% endif %}
+
+  - id: list_recent_bounces
+    title: List Recent Bounces
+    description: List the 10 most recent bounces from the last 7 days, with address and reason. Use this to check whether a delivery problem affects many recipients rather than one customer.
+    http_method: GET
+    endpoint_url: 'https://${{ inputs.api_host }}/v3/suppression/bounces?start_time={{ "now" | date: "%s" | minus: 604800 }}&limit=500'
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.size == 0 %}No bounces recorded in the last 7 days.{% elsif response.first.email %}{% assign bounces = response | sort: "created" | reverse %}{% for bounce in bounces limit: 10 %}- {{ bounce.created | date: "%Y-%m-%d %H:%M UTC" }} · {{ bounce.email }}{% if bounce.status and bounce.status != "" %} · {{ bounce.status }}{% endif %}
+        Reason: {{ bounce.reason | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 200 }}
+      {% endfor %}{% else %}SendGrid returned an unexpected response.{% endif %}
+
+  - id: list_authenticated_domains
+    title: List Authenticated Domains
+    description: List the sending domains authenticated in SendGrid and whether their DNS records are valid. Use this when emails from a domain fail or land in spam for many recipients.
+    http_method: GET
+    endpoint_url: https://${{ inputs.api_host }}/v3/whitelabel/domains?limit=50
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.size == 0 %}No authenticated domains found.{% elsif response.first.domain %}{% for domain in response limit: 20 %}- {{ domain.domain }}{% if domain.subdomain and domain.subdomain != "" %} (subdomain {{ domain.subdomain }}){% endif %} · {% if domain.valid %}valid{% else %}not valid{% endif %}{% if domain.default %} · default{% endif %}{% if domain.legacy %} · legacy{% endif %}{% if domain.dns.mail_cname %}
+        DNS: mail CNAME {% if domain.dns.mail_cname.valid %}valid{% else %}not valid{% endif %}, DKIM 1 {% if domain.dns.dkim1.valid %}valid{% else %}not valid{% endif %}, DKIM 2 {% if domain.dns.dkim2.valid %}valid{% else %}not valid{% endif %}{% endif %}
+      {% endfor %}{% else %}SendGrid returned an unexpected response.{% endif %}
+
+  - id: remove_bounce
+    title: Remove Bounce
+    description: Remove an email address from the SendGrid bounce list so SendGrid delivers to it again. Only use this after Check Bounce shows the address is listed and the customer confirms the mailbox now works.
+    http_method: DELETE
+    endpoint_url: https://${{ inputs.api_host }}/v3/suppression/bounces/{{ email | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address to remove from the bounce list.
+        required: true
+    response_template: |-
+      {% if response.errors %}SendGrid returned an unexpected response.{% else %}Removed the address from the bounce list. SendGrid will deliver to it again unless it bounces again.{% endif %}
