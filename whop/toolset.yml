@@ -1,0 +1,172 @@
+version: 0.0.1
+kind: captain_toolset
+name: Whop
+author: chatwoot
+category: Commerce
+description: Look up customers, memberships, payments, products, and pricing in a Whop business.
+
+secrets:
+  api_key:
+    label: Whop account API key
+    type: password
+    required: true
+
+tools:
+  - id: find_customer_by_email
+    title: Find Customer by Email
+    description: Find a customer of the Whop business by email address. Use this first to get the Whop user ID (starting with user_) that List Memberships and List Payments need. Also shows purchase count, lifetime spend, and member status.
+    http_method: GET
+    endpoint_url: https://api.whop.com/api/v1/people?email={{ email | strip | url_encode }}&first=5
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for person in response.data limit: 5 %}- {{ person.name | default: person.user.name | default: "No name" }} <{{ person.email | default: "no email" }}>
+        User ID: {% if person.user.id %}{{ person.user.id }}{% if person.user.username %} (@{{ person.user.username }}){% endif %}{% else %}none, this person has no Whop account linked{% endif %}
+        Member status: {{ person.member.status | default: "not a member" }}{% if person.member.joined_at %} · joined {{ person.member.joined_at | slice: 0, 10 }}{% endif %}
+        Purchases: {{ person.purchase_count | default: 0 }} · lifetime value: {{ person.ltv | default: 0 }} USD{% if person.last_purchase_at %} · last purchase {{ person.last_purchase_at | slice: 0, 10 }}{% endif %}
+        First seen: {{ person.first_seen_at | slice: 0, 10 }} · last seen: {{ person.last_seen_at | slice: 0, 10 }}{% if person.location.country %} · country: {{ person.location.country }}{% endif %}
+      {% else %}No Whop customer found with this email address.{% endfor %}{% else %}Whop returned an unexpected response.{% endif %}
+
+  - id: list_memberships
+    title: List Memberships
+    description: List a customer's 10 most recent Whop memberships, including canceled and expired ones, with status, renewal date, and product and plan IDs. Use the user ID from Find Customer by Email. Call this when a customer asks about access, renewal, or cancellation.
+    http_method: GET
+    endpoint_url: https://api.whop.com/api/v1/memberships?user_id={{ user_id | strip | url_encode }}&first=10&order=created_at&direction=desc
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: user_id
+        type: string
+        description: The Whop user ID from Find Customer by Email, starting with user_.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for membership in response.data limit: 10 %}- Membership {{ membership.id }} · {{ membership.status | replace: "_", " " }}{% if membership.cancel_at_period_end %} · set to cancel at period end{% endif %}
+        Product ID: {{ membership.product_id }} · plan ID: {{ membership.plan_id }}
+        Started: {{ membership.created_at | slice: 0, 10 }}{% if membership.current_period_end %} · current period ends {{ membership.current_period_end | slice: 0, 10 }}{% endif %}{% if membership.canceled_at %} · canceled {{ membership.canceled_at | slice: 0, 10 }}{% endif %}
+      {% else %}No memberships found for this user.{% endfor %}{% if response.page_info.has_next_page %}Only the 10 most recent memberships are shown.{% endif %}{% else %}Whop returned an unexpected response.{% endif %}
+
+  - id: get_membership
+    title: Get Membership
+    description: Get one Whop membership with its status, billing period, cancellation details, and the link where the customer manages billing. Use a membership ID from List Memberships or List Payments.
+    http_method: GET
+    endpoint_url: https://api.whop.com/api/v1/memberships/{{ membership_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: membership_id
+        type: string
+        description: The Whop membership ID, starting with mem_.
+        required: true
+    response_template: |-
+      {% if response.id %}Membership {{ response.id }} · {{ response.status | replace: "_", " " }}
+      User ID: {{ response.user_id | default: "none" }}
+      Product ID: {{ response.product_id }} · plan ID: {{ response.plan_id }}
+      Started: {{ response.created_at | slice: 0, 10 }}{% if response.current_period_start %}
+      Current period: {{ response.current_period_start | slice: 0, 10 }} to {{ response.current_period_end | slice: 0, 10 }}{% endif %}{% if response.billing_period_days %}
+      Billed every {{ response.billing_period_days }} days{% endif %}
+      Cancels at period end: {% if response.cancel_at_period_end %}yes{% else %}no{% endif %}{% if response.canceled_at %}
+      Canceled: {{ response.canceled_at | slice: 0, 10 }}{% endif %}{% if response.cancellation_reason and response.cancellation_reason != "" %}
+      Cancellation reason: {{ response.cancellation_reason | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 300 }}{% endif %}{% if response.promo_code_id %}
+      Promo code ID: {{ response.promo_code_id }}{% endif %}{% if response.manage_url %}
+      Customer can manage billing at: {{ response.manage_url }}{% endif %}{% else %}Whop returned an unexpected response.{% endif %}
+
+  - id: list_payments
+    title: List Payments
+    description: List a customer's 10 most recent Whop payments with amount, status, failure reason, refunds, and what was bought. Use the user ID from Find Customer by Email. Call this for billing, failed payment, or refund questions.
+    http_method: GET
+    endpoint_url: https://api.whop.com/api/v1/payments?user_id={{ user_id | strip | url_encode }}&first=10&order=created_at&direction=desc
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: user_id
+        type: string
+        description: The Whop user ID from Find Customer by Email, starting with user_.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for payment in response.data limit: 10 %}- {{ payment.created_at | slice: 0, 10 }} · {{ payment.total.amount | default: payment.subtotal.amount | default: "?" }} {{ payment.total.currency | default: payment.currency | upcase }} · {{ payment.substatus | default: payment.status | replace: "_", " " }}{% if payment.billing_reason %} · {{ payment.billing_reason | replace: "_", " " }}{% endif %}
+        Payment ID: {{ payment.id }}{% if payment.membership_id %} · membership ID: {{ payment.membership_id }}{% endif %}{% for line in payment.line_items limit: 3 %}{% if line.product_title or line.label %}
+        Item: {{ line.product_title | default: line.label | truncate: 80 }}{% if line.plan_title %} ({{ line.plan_title }}){% endif %}{% endif %}{% endfor %}{% if payment.failure_message and payment.failure_message != "" %}
+        Failure: {{ payment.failure_message | truncate: 200 }}{% if payment.decline_code %} (decline code: {{ payment.decline_code }}){% endif %}{% endif %}{% if payment.refunded_amount.amount %}
+        Refunded: {{ payment.refunded_amount.amount }} {{ payment.refunded_amount.currency | upcase }}{% if payment.refunded_at %} on {{ payment.refunded_at | slice: 0, 10 }}{% endif %}{% endif %}
+      {% else %}No payments found for this user.{% endfor %}{% if response.page_info.has_next_page %}Only the 10 most recent payments are shown.{% endif %}{% else %}Whop returned an unexpected response.{% endif %}
+
+  - id: get_payment
+    title: Get Payment
+    description: Get one Whop payment in full, with totals, tax, status, failure and retry details, refund state, and dispute alerts. Use a payment ID from List Payments, or one the customer quotes from a receipt.
+    http_method: GET
+    endpoint_url: https://api.whop.com/api/v1/payments/{{ payment_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: payment_id
+        type: string
+        description: The Whop payment ID, starting with pay_.
+        required: true
+    response_template: |-
+      {% if response.id %}Payment {{ response.id }} · {{ response.substatus | default: response.status | replace: "_", " " }}
+      Customer: {{ response.user.name | default: "No name" }}{% if response.customer_email %} <{{ response.customer_email }}>{% endif %}{% if response.user.id %} · user ID {{ response.user.id }}{% endif %}
+      Created: {{ response.created_at | slice: 0, 10 }}{% if response.paid_at %} · paid {{ response.paid_at | slice: 0, 10 }}{% endif %}
+      Total: {{ response.total.amount | default: "?" }} {{ response.total.currency | default: response.currency | upcase }}{% if response.subtotal.amount %} · subtotal {{ response.subtotal.amount }}{% endif %}{% if response.tax_amount.amount %} · tax {{ response.tax_amount.amount }}{% endif %}{% if response.billing_reason %}
+      Reason: {{ response.billing_reason | replace: "_", " " }}{% endif %}{% if response.payment_method_type %}
+      Payment method: {{ response.payment_method_type | replace: "_", " " }}{% endif %}{% for line in response.line_items limit: 10 %}{% if line.product_title or line.label %}
+      Item: {{ line.quantity | default: 1 | round }} x {{ line.product_title | default: line.label | truncate: 80 }}{% if line.plan_title %} ({{ line.plan_title }}){% endif %}{% if line.subtotal.amount %} · {{ line.subtotal.amount }}{% endif %}{% endif %}{% endfor %}{% if response.membership_id %}
+      Membership ID: {{ response.membership_id }}{% endif %}{% if response.product_id %}
+      Product ID: {{ response.product_id }}{% if response.plan_id %} · plan ID: {{ response.plan_id }}{% endif %}{% endif %}{% if response.failure_message and response.failure_message != "" %}
+      Failure: {{ response.failure_message | truncate: 300 }}{% if response.decline_code %} (decline code: {{ response.decline_code }}){% endif %}{% endif %}{% if response.next_payment_attempt_at %}
+      Next retry: {{ response.next_payment_attempt_at | slice: 0, 10 }}{% endif %}
+      Refunded: {% if response.refunded_amount.amount %}{{ response.refunded_amount.amount }} {{ response.refunded_amount.currency | upcase }}{% if response.refunded_at %} on {{ response.refunded_at | slice: 0, 10 }}{% endif %}{% else %}no{% endif %} · can still be refunded: {% if response.refundable %}yes{% else %}no{% endif %}{% if response.dispute_alerted_at %}
+      Dispute alert: {{ response.dispute_alerted_at | slice: 0, 10 }}{% endif %}{% else %}Whop returned an unexpected response.{% endif %}
+
+  - id: get_product
+    title: Get Product
+    description: Get a Whop product's name, headline, description, and visibility. Use a product ID from List Memberships, Get Membership, or Get Payment to tell the customer which product a membership or payment is for.
+    http_method: GET
+    endpoint_url: https://api.whop.com/api/v1/products/{{ product_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: product_id
+        type: string
+        description: The Whop product ID, starting with prod_.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.title | default: "Untitled product" }} (product ID {{ response.id }})
+      Visibility: {{ response.visibility | default: "unknown" }}{% if response.headline and response.headline != "" %}
+      Headline: {{ response.headline | strip_newlines | truncate: 200 }}{% endif %}{% if response.description and response.description != "" %}
+      Description: {{ response.description | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 500 }}{% endif %}{% else %}Whop returned an unexpected response.{% endif %}
+
+  - id: get_plan
+    title: Get Plan
+    description: Get a Whop plan's pricing, with initial and renewal price, billing period, free trial, and access length. Use a plan ID from List Memberships, Get Membership, or Get Payment to explain what the customer is charged and how often.
+    http_method: GET
+    endpoint_url: https://api.whop.com/api/v1/variants/{{ plan_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: plan_id
+        type: string
+        description: The Whop plan ID, starting with plan_.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.title | default: "Untitled plan" }} (plan ID {{ response.id }}){% if response.product.title %}
+      Product: {{ response.product.title }}{% if response.product.id %} (product ID {{ response.product.id }}){% endif %}{% endif %}
+      Type: {% if response.plan_type == "renewal" %}recurring{% else %}{{ response.plan_type | default: "unknown" | replace: "_", " " }}{% endif %}
+      Price: {{ response.formatted_price | default: "unknown" }}
+      Initial price: {{ response.initial_price | default: 0 }} {{ response.currency | upcase }}{% if response.plan_type == "renewal" %}
+      Renewal price: {{ response.renewal_price | default: 0 }} {{ response.currency | upcase }}{% if response.billing_period %} every {{ response.billing_period }} days{% endif %}{% endif %}{% if response.trial_period_days %}
+      Free trial: {{ response.trial_period_days }} days{% endif %}{% if response.expiration_days %}
+      Access lasts: {{ response.expiration_days }} days{% endif %}
+      Visibility: {{ response.visibility | default: "unknown" | replace: "_", " " }}{% if response.description and response.description != "" %}
+      Description: {{ response.description | newline_to_br | strip_newlines | replace: "<br />", " " | truncate: 300 }}{% endif %}{% else %}Whop returned an unexpected response.{% endif %}
