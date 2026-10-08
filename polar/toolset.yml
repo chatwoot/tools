@@ -1,0 +1,186 @@
+version: 0.0.1
+kind: captain_toolset
+name: Polar
+author: chatwoot
+category: Payments & billing
+description: Look up customers, subscriptions, orders, invoices, and benefits in Polar.
+
+headers:
+  Polar-Version: '2026-10'
+
+secrets:
+  access_token:
+    label: Polar organization access token
+    type: password
+    required: true
+
+tools:
+  - id: find_customers
+    title: Find Customers
+    description: Find Polar customers by email address, name, or your own external customer ID. Use this first to get the customer ID the other Polar tools need.
+    http_method: GET
+    endpoint_url: https://api.polar.sh/v1/customers/?query={{ query | strip | url_encode }}&limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: query
+        type: string
+        description: The customer's email address, name, or external ID. Prefer the full email address.
+        required: true
+    response_template: |-
+      {% if response.items %}{% for customer in response.items %}- {{ customer.name | default: "No name" }} <{{ customer.email | default: "no email" }}>
+        Customer ID: {{ customer.id }}{% if customer.external_id %}
+        External ID: {{ customer.external_id }}{% endif %}
+        Type: {{ customer.type }} · customer since {{ customer.created_at | slice: 0, 10 }}{% if customer.deleted_at %} · deleted on {{ customer.deleted_at | slice: 0, 10 }}{% endif %}
+      {% else %}No Polar customer found for this search.
+      {% endfor %}{% if response.pagination.total_count > 10 %}Showing 10 of {{ response.pagination.total_count }} matches. Search with the full email address to narrow this down.{% endif %}{% else %}Polar returned an unexpected response.{% endif %}
+
+  - id: get_customer_state
+    title: Get Customer State
+    description: Get an overview of what a Polar customer currently has, including active subscriptions, granted benefits, and usage meter balances. Use the customer ID from Find Customers.
+    http_method: GET
+    endpoint_url: https://api.polar.sh/v1/customers/{{ customer_id | strip | url_encode }}/state
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Polar customer ID, a UUID from Find Customers.
+        required: true
+    response_template: |-
+      {% if response.id %}{% assign zero_decimal = "bif clp djf gnf jpy kmf krw mga pyg rwf vnd vuv xaf xof xpf" | split: " " %}{{ response.name | default: "No name" }} <{{ response.email | default: "no email" }}> (customer ID {{ response.id }})
+      Active subscriptions:
+      {% for subscription in response.active_subscriptions limit: 10 %}{% assign currency = subscription.currency | downcase %}{% if zero_decimal contains currency %}{% assign divisor = 1 %}{% else %}{% assign divisor = 100.0 %}{% endif %}- Subscription {{ subscription.id }} · {{ subscription.status | replace: "_", " " }} · {{ subscription.amount | divided_by: divisor }} {{ subscription.currency | upcase }} per {{ subscription.recurring_interval }} · product ID {{ subscription.product_id }}
+        Current period ends: {{ subscription.current_period_end | slice: 0, 10 }}{% if subscription.trial_end %}
+        Trial ends: {{ subscription.trial_end | slice: 0, 10 }}{% endif %}{% if subscription.cancel_at_period_end %}
+        Cancels at the end of the current period{% if subscription.ends_at %} ({{ subscription.ends_at | slice: 0, 10 }}){% endif %}{% endif %}{% if subscription.seats %}
+        Seats: {{ subscription.seats }}{% endif %}
+      {% else %}- None
+      {% endfor %}Granted benefits:
+      {% for grant in response.granted_benefits limit: 20 %}- {{ grant.benefit_type | replace: "_", " " }} · granted {{ grant.granted_at | slice: 0, 10 }} · benefit ID {{ grant.benefit_id }}{% if grant.properties.display_key %} · license key {{ grant.properties.display_key }}{% endif %}
+      {% else %}- None
+      {% endfor %}{% if response.active_meters.size > 0 %}Usage meters:
+      {% for meter in response.active_meters limit: 10 %}- Meter {{ meter.meter_id }}: {{ meter.consumed_units }} used of {{ meter.credited_units }} credited, balance {{ meter.balance }}
+      {% endfor %}{% endif %}{% else %}Polar returned an unexpected response.{% endif %}
+
+  - id: list_subscriptions
+    title: List Subscriptions
+    description: List a Polar customer's 10 most recently started subscriptions, including canceled ones, with product, price, renewal date, trial, and cancellation details. Use the customer ID from Find Customers.
+    http_method: GET
+    endpoint_url: https://api.polar.sh/v1/subscriptions/?customer_id={{ customer_id | strip | url_encode }}&limit=10&sorting=-started_at
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Polar customer ID, a UUID from Find Customers.
+        required: true
+    response_template: |-
+      {% if response.items %}{% assign zero_decimal = "bif clp djf gnf jpy kmf krw mga pyg rwf vnd vuv xaf xof xpf" | split: " " %}{% for subscription in response.items %}{% assign currency = subscription.currency | downcase %}{% if zero_decimal contains currency %}{% assign divisor = 1 %}{% else %}{% assign divisor = 100.0 %}{% endif %}- {{ subscription.product.name | default: "Unnamed product" }} · {{ subscription.status | replace: "_", " " }} · {{ subscription.amount | divided_by: divisor }} {{ subscription.currency | upcase }} every {% if subscription.recurring_interval_count > 1 %}{{ subscription.recurring_interval_count }} {{ subscription.recurring_interval }}s{% else %}{{ subscription.recurring_interval }}{% endif %}
+        Subscription ID: {{ subscription.id }}{% if subscription.started_at %}
+        Started: {{ subscription.started_at | slice: 0, 10 }}{% endif %}{% if subscription.ended_at %}
+        Ended: {{ subscription.ended_at | slice: 0, 10 }}{% else %}
+        Current period: {{ subscription.current_period_start | slice: 0, 10 }} to {{ subscription.current_period_end | slice: 0, 10 }}{% if subscription.status == "trialing" and subscription.trial_end %}
+        Trial ends: {{ subscription.trial_end | slice: 0, 10 }}{% endif %}{% if subscription.cancel_at_period_end %}
+        Cancels at the end of the current period{% if subscription.ends_at %} ({{ subscription.ends_at | slice: 0, 10 }}){% endif %}{% endif %}{% if subscription.pause_at_period_end %}
+        Pauses at the end of the current period{% endif %}{% if subscription.past_due_at %}
+        Past due since: {{ subscription.past_due_at | slice: 0, 10 }}{% endif %}{% endif %}{% if subscription.paused_at %}
+        Paused on: {{ subscription.paused_at | slice: 0, 10 }}{% if subscription.resumes_at %}, resumes {{ subscription.resumes_at | slice: 0, 10 }}{% endif %}{% endif %}{% if subscription.canceled_at %}
+        Canceled on: {{ subscription.canceled_at | slice: 0, 10 }}{% if subscription.customer_cancellation_reason %} · reason: {{ subscription.customer_cancellation_reason | replace: "_", " " }}{% endif %}{% if subscription.customer_cancellation_comment %} · comment: {{ subscription.customer_cancellation_comment | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}{% endif %}{% if subscription.seats %}
+        Seats: {{ subscription.seats }}{% endif %}
+      {% else %}No subscriptions found for this customer.
+      {% endfor %}{% else %}Polar returned an unexpected response.{% endif %}
+
+  - id: list_orders
+    title: List Orders
+    description: List a Polar customer's 10 most recent orders, covering one-time purchases and subscription payments, with status, totals, refunds, and invoice numbers. Use the customer ID from Find Customers.
+    http_method: GET
+    endpoint_url: https://api.polar.sh/v1/orders/?customer_id={{ customer_id | strip | url_encode }}&limit=10&sorting=-created_at
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Polar customer ID, a UUID from Find Customers.
+        required: true
+    response_template: |-
+      {% if response.items %}{% assign zero_decimal = "bif clp djf gnf jpy kmf krw mga pyg rwf vnd vuv xaf xof xpf" | split: " " %}{% for order in response.items %}{% assign currency = order.currency | downcase %}{% if zero_decimal contains currency %}{% assign divisor = 1 %}{% else %}{% assign divisor = 100.0 %}{% endif %}- {{ order.created_at | slice: 0, 10 }} · {{ order.description | default: order.product.name | default: "Order" | truncate: 80 }} · {{ order.status | replace: "_", " " }} · total {{ order.total_amount | divided_by: divisor }} {{ order.currency | upcase }}
+        Order ID: {{ order.id }} · {{ order.billing_reason | replace: "_", " " }}{% if order.invoice_number %}
+        Invoice number: {{ order.invoice_number }}{% endif %}{% if order.refunded_amount > 0 %}
+        Refunded: {{ order.refunded_amount | plus: order.refunded_tax_amount | divided_by: divisor }} {{ order.currency | upcase }} including tax{% endif %}{% if order.status == "pending" %}
+        Amount due: {{ order.due_amount | divided_by: divisor }} {{ order.currency | upcase }}{% if order.next_payment_attempt_at %}, next payment attempt {{ order.next_payment_attempt_at | slice: 0, 10 }}{% endif %}{% endif %}
+      {% else %}No orders found for this customer.
+      {% endfor %}{% else %}Polar returned an unexpected response.{% endif %}
+
+  - id: get_order
+    title: Get Order
+    description: Get the full details of one Polar order, including line items, discount, tax, refunds, and whether an invoice has been generated. Use an order ID from List Orders.
+    http_method: GET
+    endpoint_url: https://api.polar.sh/v1/orders/{{ order_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: order_id
+        type: string
+        description: The Polar order ID, a UUID from List Orders.
+        required: true
+    response_template: |-
+      {% if response.id %}{% assign zero_decimal = "bif clp djf gnf jpy kmf krw mga pyg rwf vnd vuv xaf xof xpf" | split: " " %}{% assign currency = response.currency | downcase %}{% if zero_decimal contains currency %}{% assign divisor = 1 %}{% else %}{% assign divisor = 100.0 %}{% endif %}{% assign code = response.currency | upcase %}Order {{ response.id }} · {{ response.status | replace: "_", " " }} · {{ response.created_at | slice: 0, 10 }}
+      {{ response.description | default: response.product.name | default: "Order" | truncate: 120 }} ({{ response.billing_reason | replace: "_", " " }})
+      Customer: {{ response.customer.name | default: "No name" }} <{{ response.customer.email | default: "no email" }}>{% if response.billing_name %}
+      Billing name: {{ response.billing_name }}{% endif %}
+      Items:
+      {% for item in response.items limit: 15 %}- {{ item.label | truncate: 100 }}: {{ item.amount | divided_by: divisor }} {{ code }}{% if item.proration %} (proration){% endif %}
+      {% endfor %}Subtotal: {{ response.subtotal_amount | divided_by: divisor }} {{ code }}{% if response.discount_amount > 0 %}
+      Discount: {{ response.discount_amount | divided_by: divisor }} {{ code }}{% endif %}
+      Tax: {{ response.tax_amount | divided_by: divisor }} {{ code }}
+      Total: {{ response.total_amount | divided_by: divisor }} {{ code }}{% if response.refunded_amount > 0 %}
+      Refunded: {{ response.refunded_amount | plus: response.refunded_tax_amount | divided_by: divisor }} {{ code }} including tax{% endif %}{% if response.status == "pending" %}
+      Amount due: {{ response.due_amount | divided_by: divisor }} {{ code }}{% if response.next_payment_attempt_at %}, next payment attempt {{ response.next_payment_attempt_at | slice: 0, 10 }}{% endif %}{% endif %}{% if response.subscription_id %}
+      Subscription ID: {{ response.subscription_id }}{% endif %}
+      Invoice number: {{ response.invoice_number | default: "not assigned yet" }}
+      Invoice generated: {% if response.is_invoice_generated %}yes{% else %}no{% endif %}{% if response.receipt_number %}
+      Receipt number: {{ response.receipt_number }}{% endif %}{% else %}Polar returned an unexpected response.{% endif %}
+
+  - id: get_order_invoice
+    title: Get Order Invoice
+    description: Get the download link for a Polar order's invoice. Call Get Order first and only use this when it shows the invoice has been generated, otherwise the request fails. Use an order ID from List Orders.
+    http_method: GET
+    endpoint_url: https://api.polar.sh/v1/orders/{{ order_id | strip | url_encode }}/invoice
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: order_id
+        type: string
+        description: The Polar order ID, a UUID from List Orders.
+        required: true
+    response_template: |-
+      {% if response.url %}Invoice link: {{ response.url }}{% else %}Polar returned an unexpected response.{% endif %}
+
+  - id: list_benefit_grants
+    title: List Benefit Grants
+    description: List the 20 most recent benefits granted to a Polar customer, such as license keys, file downloads, or Discord and GitHub access, and whether each is still granted or was revoked. Use the customer ID from Find Customers.
+    http_method: GET
+    endpoint_url: https://api.polar.sh/v1/benefit-grants/?customer_id={{ customer_id | strip | url_encode }}&limit=20&sorting=-created_at
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: customer_id
+        type: string
+        description: The Polar customer ID, a UUID from Find Customers.
+        required: true
+    response_template: |-
+      {% if response.items %}{% for grant in response.items %}- {{ grant.benefit.description | default: "Benefit" | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 100 }} ({{ grant.benefit.type | replace: "_", " " }}) · {% if grant.is_revoked %}revoked {{ grant.revoked_at | slice: 0, 10 }}{% elsif grant.is_granted %}granted {{ grant.granted_at | slice: 0, 10 }}{% else %}not granted yet{% endif %}{% if grant.properties.display_key %}
+        License key: {{ grant.properties.display_key }}{% endif %}{% if grant.subscription_id %}
+        From subscription: {{ grant.subscription_id }}{% elsif grant.order_id %}
+        From order: {{ grant.order_id }}{% endif %}{% if grant.error %}
+        Error: {{ grant.error.message | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% else %}No benefits found for this customer.
+      {% endfor %}{% else %}Polar returned an unexpected response.{% endif %}
