@@ -1,0 +1,119 @@
+version: 0.0.1
+kind: captain_toolset
+name: Pipedrive
+author: chatwoot
+category: CRM
+description: Look up people, deals, notes, and activities in Pipedrive.
+
+secrets:
+  api_token:
+    label: Pipedrive API token
+    type: password
+    required: true
+
+tools:
+  - id: find_person_by_email
+    title: Find Person by Email
+    description: Find a person in Pipedrive by their exact email address. Use this first to get the person ID the other Pipedrive tools need.
+    http_method: GET
+    endpoint_url: https://api.pipedrive.com/api/v2/persons/search?term={{ email | strip | url_encode }}&fields=email&exact_match=true&limit=5
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-api-token
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    response_template: |-
+      {% if response.data.items %}{% for result in response.data.items %}{% assign person = result.item %}- {{ person.name | default: "No name" }} (person ID {{ person.id }}){% if person.emails.size > 0 %}
+        Emails: {{ person.emails | join: ", " }}{% endif %}{% if person.phones.size > 0 %}
+        Phones: {{ person.phones | join: ", " }}{% endif %}{% if person.organization.name %}
+        Organization: {{ person.organization.name }} (organization ID {{ person.organization.id }}){% endif %}
+      {% else %}No Pipedrive person found with this email address.
+      {% endfor %}{% else %}Pipedrive returned an unexpected response.{% endif %}
+
+  - id: list_person_deals
+    title: List Person Deals
+    description: List the 10 most recently updated Pipedrive deals linked to a person, with status, value, and stage ID. Use the person ID from Find Person by Email. Stages are returned as IDs; call List Stages to get their names.
+    http_method: GET
+    endpoint_url: https://api.pipedrive.com/api/v2/deals?person_id={{ person_id | url_encode }}&sort_by=update_time&sort_direction=desc&limit=10
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-api-token
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: person_id
+        type: integer
+        description: The numeric Pipedrive person ID from Find Person by Email.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for deal in response.data %}- {{ deal.title | default: "Untitled deal" }} (deal ID {{ deal.id }}) · {{ deal.status }}{% if deal.value %} · {{ deal.value }} {{ deal.currency }}{% endif %}
+        Pipeline ID: {{ deal.pipeline_id }} · Stage ID: {{ deal.stage_id }}
+        Added: {{ deal.add_time | slice: 0, 10 }}{% if deal.update_time %} · Updated: {{ deal.update_time | slice: 0, 10 }}{% endif %}{% if deal.expected_close_date %} · Expected close: {{ deal.expected_close_date }}{% endif %}{% if deal.status == "won" and deal.won_time %}
+        Won on: {{ deal.won_time | slice: 0, 10 }}{% endif %}{% if deal.status == "lost" %}{% if deal.lost_time %}
+        Lost on: {{ deal.lost_time | slice: 0, 10 }}{% endif %}{% if deal.lost_reason and deal.lost_reason != "" %}
+        Lost reason: {{ deal.lost_reason | truncate: 200 }}{% endif %}{% endif %}
+      {% else %}No deals are linked to this person.
+      {% endfor %}{% elsif response.success %}No deals are linked to this person.{% else %}Pipedrive returned an unexpected response.{% endif %}
+
+  - id: list_stages
+    title: List Stages
+    description: List Pipedrive deal stages with their names and pipeline IDs. Use this to turn the stage IDs from List Person Deals into names.
+    http_method: GET
+    endpoint_url: https://api.pipedrive.com/api/v2/stages?sort_by=order_nr&sort_direction=asc&limit=100
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-api-token
+      key: ${{ secrets.api_token }}
+    response_template: |-
+      {% if response.data %}{% for stage in response.data %}- Stage ID {{ stage.id }}: {{ stage.name }} (pipeline ID {{ stage.pipeline_id }})
+      {% else %}No stages found.
+      {% endfor %}{% elsif response.success %}No stages found.{% else %}Pipedrive returned an unexpected response.{% endif %}
+
+  - id: list_person_notes
+    title: List Person Notes
+    description: Read the 5 most recent notes on a person in Pipedrive, such as call summaries or promises made by the team. Use the person ID from Find Person by Email.
+    http_method: GET
+    endpoint_url: https://api.pipedrive.com/v1/notes?person_id={{ person_id | url_encode }}&sort=add_time%20DESC&limit=5
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-api-token
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: person_id
+        type: integer
+        description: The numeric Pipedrive person ID from Find Person by Email.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for note in response.data limit: 5 %}- {{ note.add_time | slice: 0, 10 }}{% if note.user.name %} · {{ note.user.name }}{% endif %}{% if note.deal.title %} · deal: {{ note.deal.title }}{% endif %}: {{ note.content | newline_to_br | replace: "<br />", " " | replace: "<br>", " " | replace: "</p>", " " | replace: "</div>", " " | replace: "</li>", " " | newline_to_br | replace: "<br />", " " | strip_html | strip_newlines | truncate: 500 }}
+      {% else %}No notes on this person.
+      {% endfor %}{% elsif response.success %}No notes on this person.{% else %}Pipedrive returned an unexpected response.{% endif %}
+
+  - id: list_person_activities
+    title: List Person Activities
+    description: List the 10 most recent or upcoming Pipedrive activities for a person, such as calls, meetings, and tasks, and whether they are done. Use the person ID from Find Person by Email.
+    http_method: GET
+    endpoint_url: https://api.pipedrive.com/api/v2/activities?person_id={{ person_id | url_encode }}&sort_by=due_date&sort_direction=desc&limit=10
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: x-api-token
+      key: ${{ secrets.api_token }}
+    param_schema:
+      - name: person_id
+        type: integer
+        description: The numeric Pipedrive person ID from Find Person by Email.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for activity in response.data %}- {{ activity.subject | default: "No subject" }} (activity ID {{ activity.id }}) · {{ activity.type }} · {% if activity.done %}done{% else %}not done{% endif %}{% if activity.due_date %}
+        Due: {{ activity.due_date }}{% if activity.due_time %} {{ activity.due_time }}{% endif %}{% endif %}{% if activity.deal_id %}
+        Deal ID: {{ activity.deal_id }}{% endif %}{% if activity.note and activity.note != "" %}
+        Note: {{ activity.note | newline_to_br | replace: "<br />", " " | strip_html | strip_newlines | truncate: 300 }}{% endif %}
+      {% else %}No activities found for this person.
+      {% endfor %}{% elsif response.success %}No activities found for this person.{% else %}Pipedrive returned an unexpected response.{% endif %}
