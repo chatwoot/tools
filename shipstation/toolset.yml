@@ -1,0 +1,260 @@
+version: 0.0.1
+kind: captain_toolset
+name: ShipStation
+author: chatwoot
+category: Shipping
+description: Find orders, shipping labels, and package tracking in ShipStation, and validate addresses.
+
+secrets:
+  api_key:
+    label: ShipStation API key (V2)
+    type: password
+    required: true
+
+tools:
+  - id: find_shipments_by_order_number
+    title: Find Shipments by Order Number
+    description: Find ShipStation shipments by the store's order number. Use this first when a customer asks about an order and gives an order number. Returns each shipment's status, recipient, items, and the shipment ID the other ShipStation tools need.
+    http_method: GET
+    endpoint_url: https://api.shipstation.com/v2/shipments?shipment_number={{ order_number | strip | url_encode }}&page_size=10&sort_by=created_at&sort_dir=desc
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: API-Key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: order_number
+        type: string
+        description: The order number exactly as shown to the customer, such as 1001 or ORDER-1001.
+        required: true
+    response_template: |-
+      {% if response.shipments %}{% for shipment in response.shipments limit: 10 %}- Order {{ shipment.shipment_number | default: "(no number)" }} · {{ shipment.shipment_status | replace: "_", " " }} · created {{ shipment.created_at }}
+        Shipment ID: {{ shipment.shipment_id }}
+        Ship to: {{ shipment.ship_to.name | default: "No name" }}{% if shipment.ship_to.email %} <{{ shipment.ship_to.email }}>{% endif %} · {{ shipment.ship_to.city_locality }}, {{ shipment.ship_to.state_province }} {{ shipment.ship_to.country_code }}{% if shipment.ship_date %}
+        Ship date: {{ shipment.ship_date }}{% endif %}{% if shipment.service_code %}
+        Service: {{ shipment.service_code | replace: "_", " " }}{% endif %}{% if shipment.items.size > 0 %}
+        Items: {% for item in shipment.items limit: 5 %}{{ item.quantity }} × {{ item.name | truncate: 60 }}{% unless forloop.last %}; {% endunless %}{% endfor %}{% if shipment.items.size > 5 %}; and {{ shipment.items.size | minus: 5 }} more{% endif %}{% endif %}
+      {% else %}No shipments found with this order number.
+      {% endfor %}{% elsif response.shipments == nil %}ShipStation returned an unexpected response.{% endif %}
+
+  - id: find_shipments_by_recipient
+    title: Find Shipments by Recipient
+    description: Find the 10 most recent ShipStation shipments addressed to a recipient name. Use this when the customer has no order number. Returns each shipment's order number, status, and the shipment ID the other ShipStation tools need.
+    http_method: GET
+    endpoint_url: https://api.shipstation.com/v2/shipments?ship_to_name={{ recipient_name | strip | url_encode }}&page_size=10&sort_by=created_at&sort_dir=desc
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: API-Key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: recipient_name
+        type: string
+        description: The name the order was shipped to, such as Jane Doe.
+        required: true
+    response_template: |-
+      {% if response.shipments %}{% for shipment in response.shipments limit: 10 %}- Order {{ shipment.shipment_number | default: "(no number)" }} · {{ shipment.shipment_status | replace: "_", " " }} · created {{ shipment.created_at }}
+        Shipment ID: {{ shipment.shipment_id }}
+        Ship to: {{ shipment.ship_to.name | default: "No name" }}{% if shipment.ship_to.email %} <{{ shipment.ship_to.email }}>{% endif %} · {{ shipment.ship_to.city_locality }}, {{ shipment.ship_to.state_province }} {{ shipment.ship_to.country_code }}{% if shipment.ship_date %}
+        Ship date: {{ shipment.ship_date }}{% endif %}
+      {% else %}No shipments found for this recipient name.
+      {% endfor %}{% if response.total > 10 %}Showing the 10 most recent of {{ response.total }} shipments.{% endif %}{% elsif response.shipments == nil %}ShipStation returned an unexpected response.{% endif %}
+
+  - id: get_shipment
+    title: Get Shipment
+    description: Get one ShipStation shipment with its status, delivery address, items, requested service, and ship-by dates. Use this after a Find Shipments tool when the customer asks what is in an order or where it is going.
+    http_method: GET
+    endpoint_url: https://api.shipstation.com/v2/shipments/{{ shipment_id | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: API-Key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: shipment_id
+        type: string
+        description: The ShipStation shipment ID from a Find Shipments tool, starting with se-.
+        required: true
+    response_template: |-
+      {% if response.shipment_id %}{% assign to = response.ship_to %}Order {{ response.shipment_number | default: "(no number)" }} · shipment {{ response.shipment_id }}
+      Status: {{ response.shipment_status | replace: "_", " " }}{% if response.is_return %} · return shipment{% endif %}
+      Created: {{ response.created_at }}{% if response.ship_date %} · Ship date: {{ response.ship_date }}{% endif %}
+      {% if response.ship_by_date %}Ship by: {{ response.ship_by_date }}
+      {% endif %}{% if response.deliver_by_date %}Deliver by: {{ response.deliver_by_date }}
+      {% endif %}{% if response.hold_until_date %}On hold until: {{ response.hold_until_date }}
+      {% endif %}Ship to: {{ to.name | default: "No name" }}{% if to.company_name %}, {{ to.company_name }}{% endif %}{% if to.email %} <{{ to.email }}>{% endif %}
+      Address: {{ to.address_line1 }}{% if to.address_line2 %}, {{ to.address_line2 }}{% endif %}, {{ to.city_locality }}, {{ to.state_province }} {{ to.postal_code }} {{ to.country_code }}
+      {% if response.service_code %}Service: {{ response.service_code | replace: "_", " " }}
+      {% elsif response.requested_shipment_service %}Requested service: {{ response.requested_shipment_service }}
+      {% endif %}{% if response.amount_paid.amount %}Amount paid: {{ response.amount_paid.amount }} {{ response.amount_paid.currency | upcase }}{% if response.shipping_paid.amount %} (shipping {{ response.shipping_paid.amount }}){% endif %}
+      {% endif %}{% if response.notes_from_buyer and response.notes_from_buyer != "" %}Buyer note: {{ response.notes_from_buyer | truncate: 200 }}
+      {% endif %}Items:
+      {% for item in response.items limit: 15 %}- {{ item.quantity }} × {{ item.name | truncate: 80 }}{% if item.sku and item.sku != "" %} · SKU {{ item.sku }}{% endif %}
+      {% else %}- No items listed.
+      {% endfor %}{% else %}ShipStation returned an unexpected response.{% endif %}
+
+  - id: list_shipment_labels
+    title: List Shipment Labels
+    description: List the shipping labels created for a ShipStation shipment, with carrier, tracking number, tracking status, and label ID. Use this after a Find Shipments tool to check whether an order has shipped and to get its tracking number.
+    http_method: GET
+    endpoint_url: https://api.shipstation.com/v2/labels?shipment_id={{ shipment_id | strip | url_encode }}&page_size=10&sort_by=created_at&sort_dir=desc
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: API-Key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: shipment_id
+        type: string
+        description: The ShipStation shipment ID from a Find Shipments tool, starting with se-.
+        required: true
+    response_template: |-
+      {% if response.labels %}{% for label in response.labels limit: 10 %}- Label {{ label.label_id }} · {{ label.status }}{% if label.voided and label.status != "voided" %} · voided{% endif %}{% if label.is_return_label %} · return label{% endif %} · created {{ label.created_at }}
+        Carrier: {{ label.carrier_code | default: "unknown" }}{% if label.service_code %} · {{ label.service_code | replace: "_", " " }}{% endif %}{% if label.ship_date %} · ship date {{ label.ship_date }}{% endif %}
+        Tracking: {{ label.tracking_number | default: "none" }} · {{ label.tracking_status | default: "unknown" | replace: "_", " " }}{% if label.tracking_url %}
+        Track: {{ label.tracking_url }}{% endif %}
+      {% else %}No label has been created for this shipment yet, so it has not shipped.
+      {% endfor %}{% elsif response.labels == nil %}ShipStation returned an unexpected response.{% endif %}
+
+  - id: find_labels_by_tracking_number
+    title: Find Labels by Tracking Number
+    description: Find ShipStation shipping labels by tracking number. Use this when a customer gives a tracking number and you need the label ID, carrier, or the shipment it belongs to. Then call Track Label for scan events.
+    http_method: GET
+    endpoint_url: 'https://api.shipstation.com/v2/labels?tracking_number={{ tracking_number | strip | remove: " " | url_encode }}&page_size=5'
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: API-Key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: tracking_number
+        type: string
+        description: The carrier's tracking number.
+        required: true
+    response_template: |-
+      {% if response.labels %}{% for label in response.labels limit: 5 %}- Label {{ label.label_id }} · {{ label.status }}{% if label.voided and label.status != "voided" %} · voided{% endif %}{% if label.is_return_label %} · return label{% endif %} · created {{ label.created_at }}
+        Shipment ID: {{ label.shipment_id }}
+        Carrier: {{ label.carrier_code | default: "unknown" }}{% if label.service_code %} · {{ label.service_code | replace: "_", " " }}{% endif %}{% if label.ship_date %} · ship date {{ label.ship_date }}{% endif %}
+        Tracking: {{ label.tracking_number | default: "none" }} · {{ label.tracking_status | default: "unknown" | replace: "_", " " }}{% if label.tracking_url %}
+        Track: {{ label.tracking_url }}{% endif %}
+      {% else %}No label found with this tracking number.
+      {% endfor %}{% elsif response.labels == nil %}ShipStation returned an unexpected response.{% endif %}
+
+  - id: track_label
+    title: Track Label
+    description: Get the current tracking status, delivery dates, and the 8 most recent scan events for a label created in ShipStation. Use this when a customer asks where their package is and you have a label ID from List Shipment Labels or Find Labels by Tracking Number.
+    http_method: GET
+    endpoint_url: https://api.shipstation.com/v2/labels/{{ label_id | strip | url_encode }}/track
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: API-Key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: label_id
+        type: string
+        description: The ShipStation label ID, starting with se-.
+        required: true
+    response_template: |-
+      {% if response.tracking_number or response.status_code %}Tracking {{ response.tracking_number }}{% if response.carrier_code %} ({{ response.carrier_code }}){% endif %}
+      Status: {{ response.status_description | default: response.status_code }}{% if response.status_detail_description %} · {{ response.status_detail_description }}{% endif %}{% if response.carrier_status_description %} · carrier says: {{ response.carrier_status_description | truncate: 140 }}{% endif %}
+      {% if response.exception_description %}Exception: {{ response.exception_description | truncate: 200 }}
+      {% endif %}{% if response.ship_date %}Shipped: {{ response.ship_date }}
+      {% endif %}{% if response.actual_delivery_date %}Delivered: {{ response.actual_delivery_date }}
+      {% elsif response.estimated_delivery_date %}Estimated delivery: {{ response.estimated_delivery_date }}
+      {% endif %}{% if response.tracking_url %}Track: {{ response.tracking_url }}
+      {% endif %}{% if response.events.size > 0 %}{% assign events = response.events | sort: "occurred_at" | reverse %}Recent events:
+      {% for event in events limit: 8 %}- {{ event.occurred_at }} · {{ event.description | default: event.status_description | truncate: 140 }}{% if event.city_locality and event.city_locality != "" %} ({{ event.city_locality }}{% if event.state_province and event.state_province != "" %}, {{ event.state_province }}{% endif %}{% if event.country_code and event.country_code != "" %} {{ event.country_code }}{% endif %}){% endif %}{% if event.signer %} · signed by {{ event.signer }}{% endif %}
+      {% endfor %}{% else %}No scan events yet.{% endif %}{% else %}ShipStation returned an unexpected response.{% endif %}
+
+  - id: track_package
+    title: Track Package
+    description: Get the tracking status and the 8 most recent scan events for any package by carrier code and tracking number, including packages not shipped through ShipStation. Prefer Track Label when you have a ShipStation label ID.
+    http_method: GET
+    endpoint_url: 'https://api.shipstation.com/v2/tracking?carrier_code={{ carrier_code | strip | downcase | url_encode }}&tracking_number={{ tracking_number | strip | remove: " " | url_encode }}'
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: API-Key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: carrier_code
+        type: string
+        description: The ShipStation carrier code, such as stamps_com (USPS), ups, fedex, or dhl_express. Label tools and List Carriers return it.
+        required: true
+      - name: tracking_number
+        type: string
+        description: The carrier's tracking number.
+        required: true
+    response_template: |-
+      {% if response.tracking_number or response.status_code %}Tracking {{ response.tracking_number }}{% if response.carrier_code %} ({{ response.carrier_code }}){% endif %}
+      Status: {{ response.status_description | default: response.status_code }}{% if response.status_detail_description %} · {{ response.status_detail_description }}{% endif %}{% if response.carrier_status_description %} · carrier says: {{ response.carrier_status_description | truncate: 140 }}{% endif %}
+      {% if response.exception_description %}Exception: {{ response.exception_description | truncate: 200 }}
+      {% endif %}{% if response.ship_date %}Shipped: {{ response.ship_date }}
+      {% endif %}{% if response.actual_delivery_date %}Delivered: {{ response.actual_delivery_date }}
+      {% elsif response.estimated_delivery_date %}Estimated delivery: {{ response.estimated_delivery_date }}
+      {% endif %}{% if response.tracking_url %}Track: {{ response.tracking_url }}
+      {% endif %}{% if response.events.size > 0 %}{% assign events = response.events | sort: "occurred_at" | reverse %}Recent events:
+      {% for event in events limit: 8 %}- {{ event.occurred_at }} · {{ event.description | default: event.status_description | truncate: 140 }}{% if event.city_locality and event.city_locality != "" %} ({{ event.city_locality }}{% if event.state_province and event.state_province != "" %}, {{ event.state_province }}{% endif %}{% if event.country_code and event.country_code != "" %} {{ event.country_code }}{% endif %}){% endif %}{% if event.signer %} · signed by {{ event.signer }}{% endif %}
+      {% endfor %}{% else %}No scan events yet.{% endif %}{% else %}ShipStation returned an unexpected response.{% endif %}
+
+  - id: validate_address
+    title: Validate Address
+    description: Check whether a shipping address is valid and get the corrected, standardized version. Use this when a customer gives or changes a delivery address, or when a package was returned as undeliverable. This does not change any order.
+    http_method: POST
+    endpoint_url: https://api.shipstation.com/v2/addresses/validate
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: API-Key
+      key: ${{ secrets.api_key }}
+    param_schema:
+      - name: address_line1
+        type: string
+        description: The street address, such as 525 S Winchester Blvd.
+        required: true
+      - name: address_line2
+        type: string
+        description: Apartment, suite, or unit, if any.
+        required: false
+      - name: city
+        type: string
+        description: The city or locality.
+        required: true
+      - name: state
+        type: string
+        description: The state, province, or region, such as CA.
+        required: true
+      - name: postal_code
+        type: string
+        description: The postal or ZIP code.
+        required: false
+      - name: country_code
+        type: string
+        description: The two-letter ISO country code, such as US.
+        required: true
+    request_template: |-
+      {% capture bs %}\{% endcapture %}{% capture escaped_bs %}\\\\{% endcapture %}{% capture escaped_quote %}\"{% endcapture %}{% assign address_line1 = address_line1 | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign address_line2 = address_line2 | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign city = city | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign state = state | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign postal_code = postal_code | strip_newlines | strip | replace: bs, escaped_bs | replace: '"', escaped_quote %}{% assign country_code = country_code | strip_newlines | strip | upcase | replace: bs, escaped_bs | replace: '"', escaped_quote %}[{"address_line1":"{{ address_line1 }}"{% if address_line2 != "" %},"address_line2":"{{ address_line2 }}"{% endif %},"city_locality":"{{ city }}","state_province":"{{ state }}"{% if postal_code != "" %},"postal_code":"{{ postal_code }}"{% endif %},"country_code":"{{ country_code }}"}]
+    response_template: |-
+      {% assign result = response.first %}{% if result.status %}Result: {{ result.status }}
+      {% if result.matched_address %}{% assign match = result.matched_address %}Matched address: {{ match.address_line1 }}{% if match.address_line2 and match.address_line2 != "" %}, {{ match.address_line2 }}{% endif %}, {{ match.city_locality }}, {{ match.state_province }} {{ match.postal_code }} {{ match.country_code }}
+      {% if match.address_residential_indicator == "yes" %}Type: residential
+      {% elsif match.address_residential_indicator == "no" %}Type: commercial
+      {% endif %}{% else %}No matching address was found.
+      {% endif %}{% for message in result.messages limit: 5 %}- {{ message.type }}: {{ message.message | truncate: 200 }}
+      {% endfor %}{% else %}ShipStation returned an unexpected response.{% endif %}
+
+  - id: list_carriers
+    title: List Carriers
+    description: List the carriers connected to the ShipStation account, with the carrier code Track Package needs. Use this when a customer asks which carriers the business ships with, or to find the right carrier code.
+    http_method: GET
+    endpoint_url: https://api.shipstation.com/v2/carriers?include_extended_details=false&page_size=50
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: API-Key
+      key: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.carriers %}{% for carrier in response.carriers limit: 50 %}- {{ carrier.friendly_name | default: carrier.carrier_code }}{% if carrier.nickname and carrier.nickname != "" %} "{{ carrier.nickname | truncate: 40 }}"{% endif %} (carrier code: {{ carrier.carrier_code }}){% if carrier.primary %} · primary{% endif %}{% if carrier.connection_status and carrier.connection_status != "approved" %} · {{ carrier.connection_status | replace: "_", " " }}{% endif %}
+      {% else %}No carriers are connected.
+      {% endfor %}{% elsif response.carriers == nil %}ShipStation returned an unexpected response.{% endif %}
