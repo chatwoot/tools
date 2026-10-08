@@ -1,0 +1,221 @@
+version: 0.0.1
+kind: captain_toolset
+name: Shippo
+author: chatwoot
+category: Shipping
+description: Track packages, look up orders and shipping labels, and validate addresses in Shippo.
+
+headers:
+  Shippo-API-Version: '2018-02-08'
+
+secrets:
+  api_token:
+    label: Shippo API token
+    type: password
+    required: true
+
+tools:
+  - id: track_package
+    title: Track Package
+    description: Get the current status, estimated delivery date, and recent scan history for a package. Use this when a customer asks where their package is. Needs the carrier and the tracking number; if the customer only has an order, use List Orders and Get Order first to find them.
+    http_method: GET
+    endpoint_url: 'https://api.goshippo.com/tracks/{{ carrier | strip | downcase | url_encode }}/{{ tracking_number | strip | remove: " " | url_encode }}'
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ShippoToken ${{ secrets.api_token }}
+    param_schema:
+      - name: carrier
+        type: string
+        description: The Shippo carrier token in lowercase, such as usps, ups, fedex, dhl_express, canada_post, or royal_mail. Label tools return it as the carrier.
+        required: true
+      - name: tracking_number
+        type: string
+        description: The carrier's tracking number.
+        required: true
+    response_template: |-
+      {% if response.tracking_number %}{% assign current = response.tracking_status %}Tracking {{ response.tracking_number }} ({{ response.carrier }})
+      {% if current.status %}Status: {{ current.status | replace: "_", " " | downcase }}{% if current.substatus.text %} · {{ current.substatus.text }}{% endif %}{% if current.substatus.action_required %} · action required{% endif %}
+      {% if current.status_details and current.status_details != "" %}Details: {{ current.status_details | truncate: 200 }}
+      {% endif %}{% if current.status_date %}Last update: {{ current.status_date }}{% if current.location.city %} · {{ current.location.city }}{% if current.location.state and current.location.state != "" %}, {{ current.location.state }}{% endif %} {{ current.location.country }}{% endif %}
+      {% endif %}{% else %}Status: no tracking information is available for this tracking number yet.
+      {% endif %}{% if response.eta %}Estimated delivery: {{ response.eta }}
+      {% endif %}{% if response.servicelevel.name %}Service: {{ response.servicelevel.name }}
+      {% endif %}{% if response.address_to.city %}Destination: {{ response.address_to.city }}{% if response.address_to.state and response.address_to.state != "" %}, {{ response.address_to.state }}{% endif %} {{ response.address_to.zip }} {{ response.address_to.country }}
+      {% endif %}{% if response.tracking_history.size > 0 %}{% assign events = response.tracking_history | reverse %}Recent events:
+      {% for event in events limit: 6 %}- {{ event.status_date }} · {{ event.status | replace: "_", " " | downcase }}{% if event.status_details and event.status_details != "" %} · {{ event.status_details | truncate: 140 }}{% endif %}{% if event.location.city %} ({{ event.location.city }}{% if event.location.state and event.location.state != "" %}, {{ event.location.state }}{% endif %}){% endif %}
+      {% endfor %}{% endif %}{% else %}Shippo returned an unexpected response.{% endif %}
+
+  - id: list_orders
+    title: List Orders
+    description: List up to 25 Shippo orders placed within a date range, with order number, status, recipient, and order ID. Use this to find a customer's order when you know roughly when it was placed, then call Get Order with the order ID. Shippo cannot search orders by order number or email, so keep the date range narrow and match on the recipient or order number in the results.
+    http_method: GET
+    endpoint_url: https://api.goshippo.com/orders?start_date={{ start_date | strip | url_encode }}T00:00:00&end_date={{ end_date | strip | url_encode }}T23:59:59&results=25&page={{ page | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ShippoToken ${{ secrets.api_token }}
+    param_schema:
+      - name: start_date
+        type: string
+        description: The first day the order may have been placed, in YYYY-MM-DD format (UTC).
+        required: true
+      - name: end_date
+        type: string
+        description: The last day the order may have been placed, in YYYY-MM-DD format (UTC).
+        required: true
+      - name: page
+        type: integer
+        description: The page of results to read, starting at 1.
+        required: true
+    response_template: |-
+      {% if response.results %}{% for order in response.results limit: 25 %}- Order {{ order.order_number | default: "(no number)" }} · {{ order.order_status | replace: "_", " " | downcase }} · placed {{ order.placed_at | default: "unknown" }}
+        Recipient: {{ order.to_address.name | default: "No name" }}{% if order.to_address.email and order.to_address.email != "" %} <{{ order.to_address.email }}>{% endif %}{% if order.to_address.city %} · {{ order.to_address.city }}, {{ order.to_address.country }}{% endif %}
+        Total: {{ order.total_price }} {{ order.currency }} · Labels: {{ order.transactions.size | default: 0 }}
+        Order ID: {{ order.object_id }}
+      {% else %}No orders found in this date range.
+      {% endfor %}{% if response.next %}More orders are available on the next page.{% endif %}{% elsif response.results == nil %}Shippo returned an unexpected response.{% endif %}
+
+  - id: get_order
+    title: Get Order
+    description: Get one Shippo order with its status, recipient address, items, and the shipping labels bought for it, including tracking numbers. Use this after List Orders to answer questions about a specific order.
+    http_method: GET
+    endpoint_url: https://api.goshippo.com/orders/{{ order_id | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ShippoToken ${{ secrets.api_token }}
+    param_schema:
+      - name: order_id
+        type: string
+        description: The Shippo order ID (object_id) from List Orders. This is not the store's order number.
+        required: true
+    response_template: |-
+      {% if response.object_id %}{% assign to = response.to_address %}Order {{ response.order_number | default: "(no number)" }} · {{ response.order_status | replace: "_", " " | downcase }}
+      Placed: {{ response.placed_at | default: "unknown" }}{% if response.shop_app %} · Source: {{ response.shop_app }}{% endif %}
+      Recipient: {{ to.name | default: "No name" }}{% if to.email and to.email != "" %} <{{ to.email }}>{% endif %}
+      Ship to: {{ to.street1 }}{% if to.street2 and to.street2 != "" %}, {{ to.street2 }}{% endif %}, {{ to.city }}{% if to.state and to.state != "" %}, {{ to.state }}{% endif %} {{ to.zip }} {{ to.country }}
+      Total: {{ response.total_price }} {{ response.currency }}{% if response.shipping_method and response.shipping_method != "" %} · Shipping method: {{ response.shipping_method }}{% endif %}{% if response.shipping_cost %} ({{ response.shipping_cost }} {{ response.shipping_cost_currency }}){% endif %}
+      {% if response.notes and response.notes != "" %}Notes: {{ response.notes | truncate: 200 }}
+      {% endif %}Items:
+      {% for item in response.line_items limit: 15 %}- {{ item.quantity }} × {{ item.title | truncate: 80 }}{% if item.variant_title and item.variant_title != "" %} ({{ item.variant_title }}){% endif %}{% if item.sku and item.sku != "" %} · SKU {{ item.sku }}{% endif %}
+      {% else %}- No items listed.
+      {% endfor %}Labels:
+      {% for label in response.transactions limit: 10 %}- Label ID {{ label.object_id }}{% if label.object_status %} · {{ label.object_status | downcase }}{% elsif label.status %} · {{ label.status | downcase }}{% endif %}{% if label.tracking_number and label.tracking_number != "" %} · tracking {{ label.tracking_number }}{% endif %}{% if label.tracking_status %} · {{ label.tracking_status | replace: "_", " " | downcase }}{% endif %}{% if label.tracking_url_provider and label.tracking_url_provider != "" %}
+        Track: {{ label.tracking_url_provider }}{% endif %}
+      {% else %}- No shipping label has been bought for this order yet.
+      {% endfor %}{% else %}Shippo returned an unexpected response.{% endif %}
+
+  - id: list_labels
+    title: List Labels
+    description: List 10 shipping labels bought in Shippo that are in a given tracking state, with tracking number, label status, and label ID. Use this to find shipments that are stuck, returned, or failed. Call Get Label with a label ID for full details.
+    http_method: GET
+    endpoint_url: https://api.goshippo.com/transactions?tracking_status={{ tracking_status | strip | upcase | url_encode }}&results=10&page={{ page | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ShippoToken ${{ secrets.api_token }}
+    param_schema:
+      - name: tracking_status
+        type: string
+        description: The tracking state to filter by. One of UNKNOWN, PRE_TRANSIT, TRANSIT, DELIVERED, RETURNED, or FAILURE.
+        required: true
+      - name: page
+        type: integer
+        description: The page of results to read, starting at 1.
+        required: true
+    response_template: |-
+      {% if response.results %}{% for label in response.results limit: 10 %}- Label ID {{ label.object_id }} · created {{ label.object_created }} · {{ label.status | downcase }}
+        Tracking: {{ label.tracking_number | default: "none" }} · {{ label.tracking_status | default: "UNKNOWN" | replace: "_", " " | downcase }}{% if label.eta %} · ETA {{ label.eta }}{% endif %}{% if label.tracking_url_provider and label.tracking_url_provider != "" %}
+        Track: {{ label.tracking_url_provider }}{% endif %}
+      {% else %}No labels found with this tracking status.
+      {% endfor %}{% if response.next %}More labels are available on the next page.{% endif %}{% elsif response.results == nil %}Shippo returned an unexpected response.{% endif %}
+
+  - id: get_label
+    title: Get Label
+    description: Get one Shippo shipping label by ID, with its purchase status, tracking number, tracking status, carrier tracking link, and any carrier error messages. Use this after Get Order or List Labels when a customer asks whether their order has shipped.
+    http_method: GET
+    endpoint_url: https://api.goshippo.com/transactions/{{ label_id | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ShippoToken ${{ secrets.api_token }}
+    param_schema:
+      - name: label_id
+        type: string
+        description: The Shippo label (transaction) ID from Get Order or List Labels.
+        required: true
+    response_template: |-
+      {% if response.object_id %}Label {{ response.object_id }}
+      Label status: {{ response.status | downcase }}{% if response.object_state %} ({{ response.object_state | downcase }}){% endif %}
+      Created: {{ response.object_created }}
+      Tracking number: {{ response.tracking_number | default: "none" }}
+      Tracking status: {{ response.tracking_status | default: "UNKNOWN" | replace: "_", " " | downcase }}
+      {% if response.eta %}Estimated delivery: {{ response.eta }}
+      {% endif %}{% if response.tracking_url_provider and response.tracking_url_provider != "" %}Track: {{ response.tracking_url_provider }}
+      {% endif %}{% if response.test %}This is a test label.
+      {% endif %}{% for message in response.messages limit: 5 %}Message{% if message.source %} from {{ message.source }}{% endif %}: {{ message.text | truncate: 200 }}
+      {% endfor %}{% else %}Shippo returned an unexpected response.{% endif %}
+
+  - id: validate_address
+    title: Validate Address
+    description: Check whether a shipping address is valid and get Shippo's recommended corrected address. Use this when a customer gives or changes a delivery address, or when a package was returned as undeliverable. For US addresses give the street with either a postal code or a city and state.
+    http_method: GET
+    endpoint_url: https://api.goshippo.com/v2/addresses/validate?address_line_1={{ address_line_1 | strip | url_encode }}&address_line_2={{ address_line_2 | strip | url_encode }}&city_locality={{ city | strip | url_encode }}&state_province={{ state | strip | url_encode }}&postal_code={{ postal_code | strip | url_encode }}&country_code={{ country_code | strip | upcase | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ShippoToken ${{ secrets.api_token }}
+    param_schema:
+      - name: address_line_1
+        type: string
+        description: The street address, such as 731 Market Street.
+        required: true
+      - name: address_line_2
+        type: string
+        description: Apartment, suite, or unit, if any.
+        required: false
+      - name: city
+        type: string
+        description: The city or locality.
+        required: true
+      - name: state
+        type: string
+        description: The state or province code, such as CA.
+        required: false
+      - name: postal_code
+        type: string
+        description: The postal or ZIP code.
+        required: false
+      - name: country_code
+        type: string
+        description: The two-letter ISO country code, such as US.
+        required: true
+    response_template: |-
+      {% if response.analysis %}{% assign result = response.analysis.validation_result %}Result: {{ result.value | replace: "_", " " }}{% if response.analysis.address_type %} · address type: {{ response.analysis.address_type | replace: "_", " " }}{% endif %}
+      {% for reason in result.reasons limit: 5 %}- {{ reason.description | default: reason.code | truncate: 200 }}
+      {% endfor %}{% if response.recommended_address %}{% assign rec = response.recommended_address %}Recommended address: {% if rec.complete_address %}{{ rec.complete_address }}{% else %}{{ rec.address_line_1 }}{% if rec.address_line_2 %}, {{ rec.address_line_2 }}{% endif %}, {{ rec.city_locality }}{% if rec.state_province %}, {{ rec.state_province }}{% endif %} {{ rec.postal_code }} {{ rec.country_code }}{% endif %}
+      Confidence: {{ rec.confidence_result.score }}{% if rec.confidence_result.description %} · {{ rec.confidence_result.description | truncate: 200 }}{% endif %}
+      {% else %}No recommended address was returned.
+      {% endif %}{% if response.analysis.changed_attributes.size > 0 %}Changed fields: {{ response.analysis.changed_attributes | join: ", " | replace: "_", " " }}{% endif %}{% else %}Shippo returned an unexpected response.{% endif %}
+
+  - id: list_carrier_accounts
+    title: List Carrier Accounts
+    description: List the carriers connected to the Shippo account and whether each is active. Use this to learn which carriers the business ships with and the carrier token to pass to Track Package.
+    http_method: GET
+    endpoint_url: https://api.goshippo.com/carrier_accounts?results=100
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: ShippoToken ${{ secrets.api_token }}
+    response_template: |-
+      {% if response.results %}{% for account in response.results limit: 40 %}- {{ account.carrier_name | default: account.carrier }} (carrier token: {{ account.carrier }}) · {% if account.active %}active{% else %}inactive{% endif %}{% if account.is_shippo_account %} · Shippo-provided account{% endif %}{% if account.test %} · test{% endif %}
+      {% else %}No carrier accounts are connected.
+      {% endfor %}{% elsif response.results == nil %}Shippo returned an unexpected response.{% endif %}
