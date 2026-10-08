@@ -1,0 +1,117 @@
+version: 0.0.1
+kind: captain_toolset
+name: Paystack
+author: chatwoot
+category: Payments & billing
+description: Check customer transactions, refunds, and subscriptions in Paystack.
+
+secrets:
+  secret_key:
+    label: Paystack secret key
+    type: password
+    required: true
+
+tools:
+  - id: find_customer_by_email
+    title: Find Customer by Email
+    description: Find a Paystack customer by email address. Use this first to get the numeric customer ID that List Transactions and List Subscriptions need. An error from this tool usually means no customer exists with that email address.
+    http_method: GET
+    endpoint_url: https://api.paystack.co/customer/{{ email | strip | downcase | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The customer's email address.
+        required: true
+    response_template: |-
+      {% if response.status == true and response.data.customer_code %}{% assign customer = response.data %}{% capture name %}{{ customer.first_name }} {{ customer.last_name }}{% endcapture %}{% assign name = name | strip %}{{ name | default: "No name" }} <{{ customer.email }}>
+      Customer ID: {{ customer.id }} · customer code {{ customer.customer_code }}
+      Customer since: {{ customer.createdAt | default: customer.created_at | date: "%Y-%m-%d" }}{% if customer.phone and customer.phone != "" %} · phone {{ customer.phone }}{% endif %}{% if customer.risk_action and customer.risk_action != "default" %}
+      Risk setting: {{ customer.risk_action }}{% endif %}{% for card in customer.authorizations limit: 3 %}
+      Saved payment method: {{ card.brand | default: card.channel }}{% if card.last4 %} ending {{ card.last4 }}{% endif %}{% if card.exp_month and card.exp_year %}, expires {{ card.exp_month }}/{{ card.exp_year }}{% endif %}{% if card.bank %} · {{ card.bank }}{% endif %}{% endfor %}{% else %}Paystack returned an unexpected response.{% endif %}
+
+  - id: list_transactions
+    title: List Transactions
+    description: Check a customer's 10 most recent Paystack transactions, with reference, amount, status, channel, and the gateway's response for failures. Use the numeric customer ID from Find Customer by Email. Pass a reference to Verify Transaction or List Refunds for more detail.
+    http_method: GET
+    endpoint_url: https://api.paystack.co/transaction?customer={{ customer_id | url_encode }}&perPage=10&page=1
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_key }}
+    param_schema:
+      - name: customer_id
+        type: integer
+        description: The numeric Paystack customer ID from Find Customer by Email. This is not the customer code starting with CUS_.
+        required: true
+    response_template: |-
+      {% if response.status == true and response.data %}{% for transaction in response.data limit: 10 %}- {{ transaction.paid_at | default: transaction.created_at | default: transaction.createdAt | date: "%Y-%m-%d" }} · {{ transaction.amount | divided_by: 100.0 }} {{ transaction.currency }} · {{ transaction.status }}{% if transaction.channel %} · {{ transaction.channel | replace: "_", " " }}{% endif %}
+        Reference: {{ transaction.reference }}{% if transaction.gateway_response and transaction.gateway_response != "" %}
+        Gateway response: {{ transaction.gateway_response | truncate: 200 }}{% endif %}{% if transaction.authorization.last4 %}
+        Card: {{ transaction.authorization.brand | default: "card" }} ending {{ transaction.authorization.last4 }}{% if transaction.authorization.bank %} · {{ transaction.authorization.bank }}{% endif %}{% endif %}
+      {% else %}No transactions found for this customer.
+      {% endfor %}{% else %}Paystack returned an unexpected response.{% endif %}
+
+  - id: verify_transaction
+    title: Verify Transaction
+    description: Check one Paystack transaction by its reference, including status, amount, channel, payment method, and the gateway's response. Use this when a customer gives a transaction reference or asks whether a payment went through.
+    http_method: GET
+    endpoint_url: https://api.paystack.co/transaction/verify/{{ reference | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_key }}
+    param_schema:
+      - name: reference
+        type: string
+        description: The transaction reference from List Transactions or from the customer's receipt.
+        required: true
+    response_template: |-
+      {% if response.status == true and response.data.reference %}{% assign transaction = response.data %}Transaction {{ transaction.reference }} · {{ transaction.status }} · {{ transaction.amount | divided_by: 100.0 }} {{ transaction.currency }}
+      Started: {{ transaction.created_at | default: transaction.createdAt | date: "%Y-%m-%d" }}{% if transaction.paid_at %} · paid {{ transaction.paid_at | date: "%Y-%m-%d" }}{% endif %}{% if transaction.gateway_response and transaction.gateway_response != "" %}
+      Gateway response: {{ transaction.gateway_response | truncate: 200 }}{% endif %}{% if transaction.channel %}
+      Channel: {{ transaction.channel | replace: "_", " " }}{% if transaction.authorization.last4 %} · {{ transaction.authorization.brand | default: "card" }} ending {{ transaction.authorization.last4 }}{% endif %}{% if transaction.authorization.bank %} · {{ transaction.authorization.bank }}{% endif %}{% endif %}{% if transaction.customer.email %}
+      Customer: {{ transaction.customer.email }} (customer ID {{ transaction.customer.id }}){% endif %}
+      Transaction ID: {{ transaction.id }}{% else %}Paystack returned an unexpected response.{% endif %}
+
+  - id: list_refunds
+    title: List Refunds
+    description: Check the refunds for one Paystack transaction, with amount, status, and when the refund is expected or was completed. Use the transaction reference from List Transactions or the customer's receipt. Confirm each result shows the same transaction reference before relying on it.
+    http_method: GET
+    endpoint_url: https://api.paystack.co/refund?reference={{ reference | strip | url_encode }}&perPage=10&page=1
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_key }}
+    param_schema:
+      - name: reference
+        type: string
+        description: The reference of the transaction that was refunded.
+        required: true
+    response_template: |-
+      {% if response.status == true and response.data %}{% for refund in response.data limit: 10 %}- Refund {{ refund.id }} · {{ refund.status }} · {{ refund.amount | divided_by: 100.0 }} {{ refund.currency }}{% if refund.transaction_reference %}
+        Transaction reference: {{ refund.transaction_reference }}{% endif %}
+        Requested: {{ refund.createdAt | default: refund.created_at | date: "%Y-%m-%d" }}{% if refund.refunded_at %} · refunded {{ refund.refunded_at | date: "%Y-%m-%d" }}{% elsif refund.expected_at %} · expected by {{ refund.expected_at | date: "%Y-%m-%d" }}{% endif %}{% if refund.customer_note and refund.customer_note != "" %}
+        Note to customer: {{ refund.customer_note | truncate: 200 }}{% endif %}
+      {% else %}No refunds found for this transaction.
+      {% endfor %}{% else %}Paystack returned an unexpected response.{% endif %}
+
+  - id: list_subscriptions
+    title: List Subscriptions
+    description: Check a customer's 10 most recent Paystack subscriptions, with plan, amount, billing interval, status, and next payment date. Use the numeric customer ID from Find Customer by Email.
+    http_method: GET
+    endpoint_url: https://api.paystack.co/subscription?customer={{ customer_id | url_encode }}&perPage=10&page=1
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.secret_key }}
+    param_schema:
+      - name: customer_id
+        type: integer
+        description: The numeric Paystack customer ID from Find Customer by Email. This is not the customer code starting with CUS_.
+        required: true
+    response_template: |-
+      {% if response.status == true and response.data %}{% for subscription in response.data limit: 10 %}{% assign currency = subscription.plan.currency | default: "" %}- Subscription {{ subscription.subscription_code }} · {{ subscription.status }}{% if subscription.plan.name %} · {{ subscription.plan.name }}{% endif %}
+        Price: {{ subscription.amount | divided_by: 100.0 }} {{ currency }}{% if subscription.plan.interval %} · billed {{ subscription.plan.interval }}{% endif %}{% if subscription.quantity > 1 %} × {{ subscription.quantity }}{% endif %}
+        Started: {{ subscription.createdAt | default: subscription.created_at | date: "%Y-%m-%d" }}{% if subscription.next_payment_date %} · next payment {{ subscription.next_payment_date | date: "%Y-%m-%d" }}{% endif %}{% if subscription.authorization.last4 %}
+        Card: {{ subscription.authorization.brand | default: "card" }} ending {{ subscription.authorization.last4 }}{% if subscription.authorization.exp_month and subscription.authorization.exp_year %}, expires {{ subscription.authorization.exp_month }}/{{ subscription.authorization.exp_year }}{% endif %}{% endif %}
+      {% else %}No subscriptions found for this customer.
+      {% endfor %}{% else %}Paystack returned an unexpected response.{% endif %}
