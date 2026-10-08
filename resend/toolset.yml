@@ -1,0 +1,151 @@
+version: 0.0.1
+kind: captain_toolset
+name: Resend
+author: chatwoot
+category: Others
+description: Check sent emails, delivery status, suppressions, contacts, and sending domains in Resend.
+
+headers:
+  User-Agent: chatwoot-captain-tools
+
+secrets:
+  api_key:
+    label: Resend API key
+    type: password
+    required: true
+
+tools:
+  - id: list_recent_emails
+    enabled: false
+    title: List Recent Emails
+    description: List the 50 most recent emails sent from the Resend account, with recipients, subject, and last delivery event. Resend cannot search by recipient, so scan the list for the customer's address and use the email ID with Get Email. Never share other recipients' details with the customer.
+    http_method: GET
+    endpoint_url: https://api.resend.com/emails?limit=50
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.data %}{% for email in response.data limit: 50 %}- {{ email.created_at | slice: 0, 16 }} · {{ email.last_event | default: "unknown" | replace: "_", " " }} · to {{ email.to | join: ", " | truncate: 100 }} · {{ email.subject | default: "No subject" | truncate: 60 }} · ID {{ email.id }}
+      {% else %}No sent emails found.
+      {% endfor %}{% if response.has_more %}Older emails exist but are not shown.{% endif %}{% else %}Resend returned an unexpected response.{% endif %}
+
+  - id: get_email
+    title: Get Email
+    description: Get one sent email's recipients, subject, and last delivery event, such as delivered, bounced, complained, delivery delayed, or suppressed. Use an email ID from List Recent Emails, or the source email ID from Check Suppression.
+    http_method: GET
+    endpoint_url: https://api.resend.com/emails/{{ email_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email_id
+        type: string
+        description: The Resend email ID, a UUID from List Recent Emails or Check Suppression.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.subject | default: "No subject" | truncate: 120 }}
+      From: {{ response.from }}
+      To: {{ response.to | join: ", " | truncate: 200 }}{% if response.cc.size > 0 %}
+      Cc: {{ response.cc | join: ", " | truncate: 200 }}{% endif %}
+      Created: {{ response.created_at | slice: 0, 19 }} UTC{% if response.scheduled_at %}
+      Scheduled for: {{ response.scheduled_at }}{% endif %}
+      Last event: {{ response.last_event | default: "unknown" | replace: "_", " " }}{% else %}Resend returned an unexpected response.{% endif %}
+
+  - id: check_suppression
+    title: Check Suppression
+    description: Check whether an email address is on the Resend suppression list, which makes Resend stop sending to it, and whether a bounce, a spam complaint, or a manual entry caused it. Resend answers with an error when the address is not suppressed, so treat an error from this tool as "not on the suppression list" if other Resend tools work.
+    http_method: GET
+    endpoint_url: https://api.resend.com/suppressions/{{ email | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address to check.
+        required: true
+    response_template: |-
+      {% if response.email %}{{ response.email }} is on the suppression list, so Resend is not sending to it.
+      Cause: {{ response.origin }}
+      Since: {{ response.created_at | slice: 0, 19 }} UTC{% if response.source_id %}
+      Source email ID: {{ response.source_id }}{% endif %}{% else %}Resend returned an unexpected response.{% endif %}
+
+  - id: list_suppressions
+    title: List Suppressions
+    description: List up to 10 addresses from the Resend suppression list, with the cause of each. Use this to check whether a delivery problem affects many recipients rather than one customer.
+    http_method: GET
+    endpoint_url: https://api.resend.com/suppressions?limit=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.data %}{% for suppression in response.data limit: 10 %}- {{ suppression.created_at | slice: 0, 16 }} · {{ suppression.email }} · {{ suppression.origin }}{% if suppression.source_id %} · source email ID {{ suppression.source_id }}{% endif %}
+      {% else %}The suppression list is empty.
+      {% endfor %}{% if response.has_more %}More suppressions exist but are not shown.{% endif %}{% else %}Resend returned an unexpected response.{% endif %}
+
+  - id: get_contact
+    title: Get Contact
+    description: Look up a Resend contact by email address to see whether they unsubscribed from broadcast emails. Use this when a customer stopped receiving newsletters or announcements. Resend answers with an error when no contact has this address.
+    http_method: GET
+    endpoint_url: https://api.resend.com/contacts/{{ email | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The contact's email address.
+        required: true
+    response_template: |-
+      {% if response.email %}{% capture name %}{{ response.first_name }} {{ response.last_name }}{% endcapture %}{% assign name = name | strip %}{{ response.email }}{% if name != "" %} ({{ name }}){% endif %}
+      Broadcast emails: {% if response.unsubscribed %}unsubscribed{% else %}subscribed{% endif %}
+      Contact since: {{ response.created_at | slice: 0, 10 }}{% else %}Resend returned an unexpected response.{% endif %}
+
+  - id: list_domains
+    title: List Domains
+    description: List the sending domains in the Resend account and whether each is verified. Use this when emails from a domain fail for many recipients. Returns the domain ID that Get Domain needs.
+    http_method: GET
+    endpoint_url: https://api.resend.com/domains?limit=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.data %}{% for domain in response.data limit: 20 %}- {{ domain.name }} · {{ domain.status | replace: "_", " " }} · region {{ domain.region }}{% if domain.capabilities.sending %} · sending {{ domain.capabilities.sending }}{% endif %} · domain ID {{ domain.id }}
+      {% else %}No domains found.
+      {% endfor %}{% else %}Resend returned an unexpected response.{% endif %}
+
+  - id: get_domain
+    title: Get Domain
+    description: Get a Resend sending domain's verification status and the status of each DNS record, such as SPF and DKIM. Use the domain ID from List Domains.
+    http_method: GET
+    endpoint_url: https://api.resend.com/domains/{{ domain_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: domain_id
+        type: string
+        description: The Resend domain ID, a UUID from List Domains.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.name }} · {{ response.status | replace: "_", " " }} · region {{ response.region }}{% if response.capabilities.sending %}
+      Sending: {{ response.capabilities.sending }} · Receiving: {{ response.capabilities.receiving }}{% endif %}
+      DNS records:{% for record in response.records limit: 15 %}
+      - {{ record.record }} {{ record.type }} {{ record.name }}: {{ record.status | replace: "_", " " }}{% else %}
+      No DNS records returned.{% endfor %}{% else %}Resend returned an unexpected response.{% endif %}
+
+  - id: remove_suppression
+    title: Remove Suppression
+    description: Remove an email address from the Resend suppression list so Resend sends to it again. Only use this after Check Suppression shows the address is suppressed and the customer confirms the mailbox works and they want the emails. Returns an error if the address is not suppressed.
+    http_method: DELETE
+    endpoint_url: https://api.resend.com/suppressions/{{ email | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: email
+        type: string
+        description: The email address to remove from the suppression list.
+        required: true
+    response_template: |-
+      {% if response.deleted %}Removed the address from the suppression list. Resend will send to it again.{% elsif response.object == "suppression" %}Resend did not remove the address from the suppression list.{% else %}Resend returned an unexpected response.{% endif %}
