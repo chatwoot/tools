@@ -1,0 +1,106 @@
+version: 0.0.1
+kind: captain_toolset
+name: Slite
+author: chatwoot
+category: Others
+description: Search Slite notes, read their content, and ask Slite's AI questions about your knowledge base.
+
+secrets:
+  api_key:
+    label: Slite API key
+    type: password
+    required: true
+
+tools:
+  - id: search_notes
+    title: Search Notes
+    description: Search Slite notes by keywords and get the 10 best matches with note IDs and matching excerpts. Use this first when a customer asks something the knowledge base may answer, then call Get Note to read the full text.
+    http_method: GET
+    endpoint_url: https://api.slite.com/v1/search-notes?query={{ query | strip | url_encode }}&hitsPerPage=10
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: query
+        type: string
+        description: Keywords to search for, such as "refund policy" or "SSO setup".
+        required: true
+    response_template: |-
+      {% if response.hits %}{% for hit in response.hits %}- {{ hit.title | default: "Untitled note" }} (note ID {{ hit.id }}){% if hit.type and hit.type != "rich_text" %} · {{ hit.type }}{% endif %}{% if hit.reviewState %} · {{ hit.reviewState }}{% endif %}{% if hit.updatedAt %} · updated {{ hit.updatedAt | slice: 0, 10 }}{% endif %}{% if hit.parentNotes.size > 0 %}
+        In: {% for parent in hit.parentNotes %}{{ parent.title }}{% unless forloop.last %} > {% endunless %}{% endfor %}{% endif %}{% assign excerpt = hit.highlight | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | strip %}{% if excerpt != "" %}
+        {{ excerpt | truncate: 300 }}{% endif %}
+      {% else %}No Slite notes matched this search.
+      {% endfor %}{% else %}Slite returned an unexpected response.{% endif %}
+
+  - id: get_note
+    title: Get Note
+    description: Read a Slite note's title and content as Markdown. Use the note ID from Search Notes, List Notes, or List Child Notes. Long notes are cut off after about 6,000 characters.
+    http_method: GET
+    endpoint_url: https://api.slite.com/v1/notes/{{ note_id | strip | url_encode }}?format=md
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: note_id
+        type: string
+        description: The Slite note ID, such as S1TSuHnZf.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.title | default: "Untitled note" }} (note ID {{ response.id }}){% if response.reviewState %}
+      Review state: {{ response.reviewState }}{% endif %}{% if response.archivedAt %}
+      Archived on {{ response.archivedAt | slice: 0, 10 }}{% endif %}{% if response.updatedAt %}
+      Last updated: {{ response.updatedAt | slice: 0, 10 }}{% endif %}{% if response.url %}
+      Link: {{ response.url }}{% endif %}
+
+      {% assign text = response.content | strip %}{% if text == "" %}This note has no text content.{% else %}{{ text | truncate: 6000 }}{% endif %}{% else %}Slite returned an unexpected response.{% endif %}
+
+  - id: list_notes
+    title: List Notes
+    description: List the 30 most recently edited Slite notes the API key can access, with note IDs. Use this to browse what the knowledge base covers when a search finds nothing.
+    http_method: GET
+    endpoint_url: https://api.slite.com/v1/notes?orderBy=lastEditedAt_DESC
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    response_template: |-
+      {% if response.notes %}{% for note in response.notes limit: 30 %}- {{ note.title | default: "Untitled note" }} (note ID {{ note.id }}){% if note.reviewState %} · {{ note.reviewState }}{% endif %}{% if note.lastEditedAt %} · edited {{ note.lastEditedAt | slice: 0, 10 }}{% endif %}{% if note.parentNoteId %} · parent note ID {{ note.parentNoteId }}{% endif %}
+      {% else %}No Slite notes are visible to this API key.
+      {% endfor %}{% if response.hasNextPage or response.notes.size > 30 %}More notes exist; only the first 30 are shown.{% endif %}{% else %}Slite returned an unexpected response.{% endif %}
+
+  - id: list_child_notes
+    title: List Child Notes
+    description: List up to 50 notes directly under a Slite note or channel, in sidebar order. Use a note ID from Search Notes or List Notes. Call Get Note to read one of them.
+    http_method: GET
+    endpoint_url: https://api.slite.com/v1/notes/{{ note_id | strip | url_encode }}/children?orderBy=listPosition&orderDirection=desc
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: note_id
+        type: string
+        description: The ID of the parent Slite note.
+        required: true
+    response_template: |-
+      {% if response.notes %}{% for note in response.notes limit: 50 %}- {{ note.title | default: "Untitled note" }} (note ID {{ note.id }}){% if note.reviewState %} · {{ note.reviewState }}{% endif %}{% if note.lastEditedAt %} · edited {{ note.lastEditedAt | slice: 0, 10 }}{% endif %}
+      {% else %}This note has no child notes.
+      {% endfor %}{% if response.hasNextPage %}More child notes exist; only the first 50 are shown.{% endif %}{% else %}Slite returned an unexpected response.{% endif %}
+
+  - id: ask_question
+    title: Ask Question
+    description: Ask Slite's AI a question in natural language and get an answer written from your notes, with the source notes. Use this for how-to and policy questions. If it fails or is still processing, fall back to Search Notes and Get Note.
+    http_method: GET
+    endpoint_url: https://api.slite.com/v1/ask?question={{ question | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.api_key }}
+    param_schema:
+      - name: question
+        type: string
+        description: The customer's question as a full sentence, such as "How do I change my billing email?".
+        required: true
+    response_template: |-
+      {% if response.status == "processing" %}Slite is still preparing this answer. Use Search Notes and Get Note instead.{% elsif response.sources %}{% assign answer = response.answer | strip %}{% if answer == "" %}Slite could not find an answer in your notes.{% else %}{{ answer | truncate: 4000 }}{% endif %}{% if response.sources.size > 0 %}
+
+      Sources:
+      {% for source in response.sources limit: 5 %}- {{ source.title | default: "Untitled note" }} (note ID {{ source.id }}){% if source.url %}: {{ source.url }}{% endif %}
+      {% endfor %}{% endif %}{% else %}Slite returned an unexpected response.{% endif %}
