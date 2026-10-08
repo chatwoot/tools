@@ -1,0 +1,126 @@
+version: 0.0.1
+kind: captain_toolset
+name: PandaDoc
+author: chatwoot
+category: Others
+description: Look up contacts and check the status, recipients, and signing progress of quotes, proposals, and contracts in PandaDoc.
+
+secrets:
+  api_key:
+    label: PandaDoc API key
+    type: password
+    required: true
+
+tools:
+  - id: find_contact_by_email
+    title: Find Contact by Email
+    description: Find a PandaDoc contact by exact email address. Use this first to get the contact ID that List Documents for Contact needs.
+    http_method: GET
+    endpoint_url: https://api.pandadoc.com/public/v1/contacts?email={{ email | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: 'API-Key ${{ secrets.api_key }}'
+    param_schema:
+      - name: email
+        type: string
+        description: The contact's email address. Must match exactly.
+        required: true
+    response_template: |-
+      {% if response.results %}{% for contact in response.results limit: 5 %}{% capture full_name %}{{ contact.first_name }} {{ contact.last_name }}{% endcapture %}{% assign full_name = full_name | strip %}- {{ full_name | default: "No name" }} <{{ contact.email | default: "no email" }}> · contact ID {{ contact.id }}{% if contact.company and contact.company != "" %}
+        Company: {{ contact.company }}{% if contact.job_title and contact.job_title != "" %} · {{ contact.job_title }}{% endif %}{% endif %}
+      {% else %}No PandaDoc contact found with this email address.{% endfor %}{% else %}PandaDoc returned an unexpected response.{% endif %}
+
+  - id: list_documents_for_contact
+    title: List Documents for Contact
+    description: List the 10 most recently created PandaDoc documents where a contact is a recipient or approver, with status and dates. Use the contact ID from Find Contact by Email. Call this when a customer asks about a quote, proposal, or contract sent to them.
+    http_method: GET
+    endpoint_url: https://api.pandadoc.com/public/v1/documents?contact_id={{ contact_id | strip | url_encode }}&count=10&order_by=-date_created
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: 'API-Key ${{ secrets.api_key }}'
+    param_schema:
+      - name: contact_id
+        type: string
+        description: The PandaDoc contact ID from Find Contact by Email.
+        required: true
+    response_template: |-
+      {% if response.results %}{% for doc in response.results limit: 10 %}- {{ doc.name | default: "Untitled document" | truncate: 120 }} · {{ doc.status | remove: "document." | replace: "_", " " }}
+        Document ID: {{ doc.id }}
+        Created: {{ doc.date_created | slice: 0, 10 }}{% if doc.date_completed %} · completed {{ doc.date_completed | slice: 0, 10 }}{% endif %}{% if doc.expiration_date %} · expires {{ doc.expiration_date | slice: 0, 10 }}{% endif %}
+      {% else %}No documents found for this contact.{% endfor %}{% else %}PandaDoc returned an unexpected response.{% endif %}
+
+  - id: search_documents
+    title: Search Documents
+    description: Search PandaDoc documents by document name or reference number and list the 10 most recently created matches with status and dates. Use this when the customer gives a document name or reference number, or when Find Contact by Email finds no contact.
+    http_method: GET
+    endpoint_url: https://api.pandadoc.com/public/v1/documents?q={{ query | strip | url_encode }}&count=10&order_by=-date_created
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: 'API-Key ${{ secrets.api_key }}'
+    param_schema:
+      - name: query
+        type: string
+        description: Part of the document name, or its reference number.
+        required: true
+    response_template: |-
+      {% if response.results %}{% for doc in response.results limit: 10 %}- {{ doc.name | default: "Untitled document" | truncate: 120 }} · {{ doc.status | remove: "document." | replace: "_", " " }}
+        Document ID: {{ doc.id }}
+        Created: {{ doc.date_created | slice: 0, 10 }}{% if doc.date_completed %} · completed {{ doc.date_completed | slice: 0, 10 }}{% endif %}{% if doc.expiration_date %} · expires {{ doc.expiration_date | slice: 0, 10 }}{% endif %}
+      {% else %}No documents match this search.{% endfor %}{% else %}PandaDoc returned an unexpected response.{% endif %}
+
+  - id: get_document_status
+    title: Get Document Status
+    description: Check the current status of one PandaDoc document, such as draft, sent, viewed, completed, declined, or voided. Use a document ID from List Documents for Contact or Search Documents. Use Get Document Details when you also need recipients or the total.
+    http_method: GET
+    endpoint_url: https://api.pandadoc.com/public/v1/documents/{{ document_id | strip | url_encode }}
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: 'API-Key ${{ secrets.api_key }}'
+    param_schema:
+      - name: document_id
+        type: string
+        description: The PandaDoc document ID from List Documents for Contact or Search Documents.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.name | default: "Untitled document" }} · {{ response.status | remove: "document." | replace: "_", " " }}
+      Document ID: {{ response.id }}
+      Created: {{ response.date_created | slice: 0, 10 }}{% if response.date_modified %} · last changed {{ response.date_modified | slice: 0, 10 }}{% endif %}{% if response.date_completed %}
+      Completed: {{ response.date_completed | slice: 0, 10 }}{% endif %}{% if response.expiration_date %}
+      Expires: {{ response.expiration_date | slice: 0, 10 }}{% endif %}{% else %}PandaDoc returned an unexpected response.{% endif %}
+
+  - id: get_document_details
+    title: Get Document Details
+    description: Get one PandaDoc document in detail, with status, sent and completion dates, total amount, source template, and each recipient's role and whether they have signed. Use a document ID from List Documents for Contact or Search Documents. Call this when a customer asks who still needs to sign or what a quote totals.
+    http_method: GET
+    endpoint_url: https://api.pandadoc.com/public/v1/documents/{{ document_id | strip | url_encode }}/details
+    auth_type: api_key
+    auth_config:
+      location: header
+      name: Authorization
+      key: 'API-Key ${{ secrets.api_key }}'
+    param_schema:
+      - name: document_id
+        type: string
+        description: The PandaDoc document ID from List Documents for Contact or Search Documents.
+        required: true
+    response_template: |-
+      {% if response.id %}{{ response.name | default: "Untitled document" }} · {{ response.status | remove: "document." | replace: "_", " " }}
+      Document ID: {{ response.id }}{% if response.ref_number and response.ref_number != "" %} · reference number: {{ response.ref_number }}{% endif %}
+      Created: {{ response.date_created | slice: 0, 10 }}{% if response.date_sent %} · sent {{ response.date_sent | slice: 0, 10 }}{% endif %}{% if response.date_completed %} · completed {{ response.date_completed | slice: 0, 10 }}{% endif %}{% if response.expiration_date %}
+      Expires: {{ response.expiration_date | slice: 0, 10 }}{% endif %}{% if response.grand_total.amount %}
+      Total: {{ response.grand_total.amount }} {{ response.grand_total.currency }}{% endif %}{% if response.template.name %}
+      Template: {{ response.template.name | truncate: 100 }}{% endif %}{% if response.sent_by.email %}{% capture sender %}{{ response.sent_by.first_name }} {{ response.sent_by.last_name }}{% endcapture %}
+      Sent by: {{ sender | strip }} <{{ response.sent_by.email }}>{% endif %}{% if response.tags.size > 0 %}
+      Tags: {{ response.tags | join: ", " | truncate: 200 }}{% endif %}
+      Recipients:{% for recipient in response.recipients limit: 15 %}{% if recipient.type == "recipient_group" %}
+      - Group {{ recipient.name | default: "unnamed" }} · {{ recipient.recipient_type | default: "recipient" | downcase }} · {% if recipient.has_completed %}completed{% else %}not completed{% endif %}{% else %}{% capture person %}{{ recipient.first_name }} {{ recipient.last_name }}{% endcapture %}{% assign person = person | strip %}
+      - {{ person | default: "No name" }} <{{ recipient.email | default: "no email" }}> · {{ recipient.recipient_type | default: "recipient" | downcase }}{% if recipient.role and recipient.role != "" %} ({{ recipient.role }}){% endif %}{% if recipient.signing_order %} · signing order {{ recipient.signing_order }}{% endif %} · {% if recipient.has_completed %}completed{% if recipient.signature_date %} {{ recipient.signature_date | slice: 0, 10 }}{% endif %}{% else %}not completed{% endif %}{% endif %}{% else %}
+      No recipients on this document.{% endfor %}{% else %}PandaDoc returned an unexpected response.{% endif %}
