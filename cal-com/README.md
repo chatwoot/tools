@@ -8,7 +8,11 @@ Connect a Cal.com API key to help Captain find a customer's bookings and open ap
 
 ## Tools
 
-- **Find Bookings by Email:** Find a customer's 10 most recent bookings using their email address. Each result includes the time, status, hosts, and location, plus reschedule and cancel links for active bookings.
+- **Find Bookings by Email:** Find a customer's 10 most recent bookings using the customer's verified email address. Each result includes the time, status, hosts, and location, plus reschedule and cancel links for active bookings.
 - **Get Available Slots:** Check open times for the configured event type within a date range, in the customer's time zone.
 
 These tools set `cal-api-version: 2024-08-13` for all requests. That version supports booking search by email and the `/v2/slots/available` endpoint, which lets both tools share one API version.
+
+## Notes
+
+- Find Bookings by Email runs only after the customer verifies their email with a one-time code in the conversation, and always uses that verified email.
