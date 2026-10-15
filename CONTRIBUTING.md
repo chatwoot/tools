@@ -34,6 +34,7 @@ The [publishing guide](https://www.chatwoot.com/captain/tools/publish) is the fu
 - **Use `response_template`.** Turn the response into short plain text with only the fields Captain needs. Limit long lists and truncate long text. Fall back to a message such as `Stripe returned an unexpected response.` when the expected fields are missing.
 - **Keep `endpoint_url` a literal URL.** `endpoint_url` must be a literal https:// URL. Use `{{ }}` placeholders with `url_encode` for dynamic parts; don't use `{% %}` tags in `endpoint_url`. Put any logic in `request_template` or `response_template` instead.
 - **Escape values in request bodies.** Call-time values are inserted into `request_template` as-is, so a quote in a parameter breaks the JSON. See `context-dev/toolset.yml` for a pattern that escapes quotes, backslashes, and newlines and passes the validator.
+- **Protect customer data.** If a tool returns or changes a customer's own data, such as billing, bookings, or CRM records, add `requires_email_verification: true` so it runs only after the customer verifies their email with a one-time code. If the tool looks the customer up by email, give that parameter `source: verified.email` instead. Chatwoot then fills in the verified email, and Captain can't pass a different one.
 
 Captain's limits also shape what works:
 
@@ -104,6 +105,7 @@ Fix every issue until the response has `"valid": true`. The validator runs the s
 - [ ] The README covers setup, required permissions, and every tool.
 - [ ] `version` is bumped (for updates to an existing integration).
 - [ ] The root README table and `.env.example` include the integration (for new integrations).
+- [ ] Tools that return or change a customer's own data require email verification, and email lookups use `source: verified.email`.
 
 In the pull request description, say which tools you added or changed and how you tested them.
 
