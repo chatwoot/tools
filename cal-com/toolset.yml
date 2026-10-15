@@ -24,7 +24,7 @@ secrets:
 tools:
   - id: find_bookings_by_email
     title: Find Bookings by Email
-    description: Find the customer's Cal.com bookings using their verified email address. Use this when a customer asks about an appointment, its status, or how to reschedule or cancel it.
+    description: Find a customer's Cal.com bookings using their email address. Use this when a customer asks about an appointment, its status, or how to reschedule or cancel it.
     http_method: GET
     endpoint_url: https://api.cal.com/v2/bookings?attendeeEmail={{ attendee_email | url_encode }}&sortStart=desc&take=10
     auth_type: bearer
@@ -33,7 +33,7 @@ tools:
     param_schema:
       - name: attendee_email
         type: string
-        description: The customer's verified email address. Chatwoot fills this in.
+        description: The email address used for the booking.
         required: true
         source: verified.email
     response_template: |-

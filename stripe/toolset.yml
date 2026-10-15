@@ -17,7 +17,7 @@ secrets:
 tools:
   - id: find_customers_by_email
     title: Find Customers by Email
-    description: Find the Stripe customers for the customer's verified email address, ignoring case. Use this first to get the customer ID the other Stripe tools need.
+    description: Find Stripe customers by email address, ignoring case. Use this first to get the customer ID the other Stripe tools need.
     http_method: GET
     endpoint_url: 'https://api.stripe.com/v1/customers/search?query=email%3A%22{{ email | strip | remove: ''"'' | url_encode }}%22&limit=10'
     auth_type: bearer
@@ -26,7 +26,7 @@ tools:
     param_schema:
       - name: email
         type: string
-        description: The customer's verified email address. Chatwoot fills this in.
+        description: The customer's email address.
         required: true
         source: verified.email
     response_template: |-

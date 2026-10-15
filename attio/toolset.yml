@@ -14,7 +14,7 @@ secrets:
 tools:
   - id: find_person
     title: Find Person
-    description: Find the person in Attio for the customer's verified email address. Use this first to get the person ID and company ID the other Attio tools need.
+    description: Find a person in Attio by email address. Use this first to get the person ID and company ID the other Attio tools need.
     http_method: POST
     endpoint_url: https://api.attio.com/v2/objects/people/records/query
     auth_type: bearer
@@ -23,7 +23,7 @@ tools:
     param_schema:
       - name: email
         type: string
-        description: The customer's verified email address. Chatwoot fills this in.
+        description: The person's email address.
         required: true
         source: verified.email
     request_template: |-
