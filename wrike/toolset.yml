@@ -1,0 +1,178 @@
+version: 0.0.1
+kind: captain_toolset
+name: Wrike
+author: chatwoot
+category: Others
+description: Search Wrike tasks and projects, check task status and comments, and add comments to tasks.
+
+inputs:
+  host:
+    label: Wrike API host
+    type: select
+    options:
+      - www.wrike.com
+      - app-eu.wrike.com
+      - app-us2.wrike.com
+    required: true
+
+secrets:
+  access_token:
+    label: Wrike permanent access token
+    type: password
+    required: true
+
+tools:
+  - id: search_tasks
+    title: Search Tasks
+    description: Search Wrike tasks whose title contains the given text, such as a bug or request a customer mentions. Use this first to find the task ID the other tools need. Returns the 10 most recently updated matches.
+    http_method: GET
+    endpoint_url: https://${{ inputs.host }}/api/v4/tasks?title={{ title | strip | url_encode }}&sortField=UpdatedDate&sortOrder=Desc&limit=10&fields=%5B%22briefDescription%22%5D
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: title
+        type: string
+        description: Text to look for in task titles. Use one or two distinctive words.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for task in response.data limit: 10 %}- {{ task.title | truncate: 150 }} (task ID {{ task.id }}) · {{ task.status }} · {{ task.importance }} importance{% if task.dates.due %} · Due {{ task.dates.due | slice: 0, 10 }}{% endif %} · Updated {{ task.updatedDate | slice: 0, 10 }}
+        Custom status ID: {{ task.customStatusId | default: "none" }}
+        {{ task.permalink }}{% if task.briefDescription and task.briefDescription != "" %}
+        {{ task.briefDescription | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% else %}No tasks found with that text in the title.
+      {% endfor %}{% else %}Wrike returned an unexpected response.{% endif %}
+
+  - id: find_task_by_permalink
+    title: Find Task by Permalink
+    description: Find a Wrike task from its permalink, the task link copied from Wrike that looks like https://www.wrike.com/open.htm?id=123456789. Use this when you have a task link instead of a task ID.
+    http_method: GET
+    endpoint_url: https://${{ inputs.host }}/api/v4/tasks?permalink={{ permalink | strip | url_encode }}&fields=%5B%22briefDescription%22%5D
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: permalink
+        type: string
+        description: The full Wrike task permalink URL, exactly as copied from Wrike.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for task in response.data limit: 5 %}- {{ task.title | truncate: 150 }} (task ID {{ task.id }}) · {{ task.status }} · {{ task.importance }} importance{% if task.dates.due %} · Due {{ task.dates.due | slice: 0, 10 }}{% endif %} · Updated {{ task.updatedDate | slice: 0, 10 }}
+        Custom status ID: {{ task.customStatusId | default: "none" }}
+        {{ task.permalink }}{% if task.briefDescription and task.briefDescription != "" %}
+        {{ task.briefDescription | strip_html | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 200 }}{% endif %}
+      {% else %}No task found with that permalink.
+      {% endfor %}{% else %}Wrike returned an unexpected response.{% endif %}
+
+  - id: get_task
+    title: Get Task
+    description: Get one Wrike task's details, including its status, importance, dates, and description. Use a task ID from Search Tasks, Find Task by Permalink, or List Folder Tasks. Call List Statuses to turn the custom status ID into a name.
+    http_method: GET
+    endpoint_url: https://${{ inputs.host }}/api/v4/tasks/{{ task_id | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: task_id
+        type: string
+        description: The Wrike task ID from Search Tasks, a letter-and-number code such as IEAAAAAQKQAB5FKP. This is not the number in the task link.
+        required: true
+    response_template: |-
+      {% if response.data.size == 0 %}No task found with this ID.{% elsif response.data[0].id %}{% assign task = response.data[0] %}{{ task.title }} (task ID {{ task.id }})
+      Status: {{ task.status }}{% if task.customStatusId %} (custom status ID {{ task.customStatusId }}){% endif %}
+      Importance: {{ task.importance }}{% if task.dates.start %}
+      Start: {{ task.dates.start | slice: 0, 10 }}{% endif %}{% if task.dates.due %}
+      Due: {{ task.dates.due | slice: 0, 10 }}{% endif %}
+      Created: {{ task.createdDate | slice: 0, 10 }} · Updated: {{ task.updatedDate | slice: 0, 10 }}{% if task.completedDate %} · Completed: {{ task.completedDate | slice: 0, 10 }}{% endif %}{% if task.subTaskIds.size > 0 %}
+      Subtasks: {{ task.subTaskIds.size }}{% endif %}{% if task.parentIds.size > 0 %}
+      Folder IDs: {{ task.parentIds | join: ", " | truncate: 200 }}{% endif %}
+      Link: {{ task.permalink }}{% if task.description and task.description != "" %}
+      Description: {{ task.description | replace: "<br />", " " | replace: "<br>", " " | strip_html | truncate: 1500 }}{% endif %}{% else %}Wrike returned an unexpected response.{% endif %}
+
+  - id: list_task_comments
+    title: List Task Comments
+    description: Read the 10 most recent comments on a Wrike task, such as progress updates from the team. Use a task ID from Search Tasks or Find Task by Permalink.
+    http_method: GET
+    endpoint_url: https://${{ inputs.host }}/api/v4/tasks/{{ task_id | strip | url_encode }}/comments?plainText=true
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: task_id
+        type: string
+        description: The Wrike task ID from Search Tasks, a letter-and-number code such as IEAAAAAQKQAB5FKP.
+        required: true
+    response_template: |-
+      {% if response.data %}{% assign comments = response.data | sort: "createdDate" | reverse %}{% for comment in comments limit: 10 %}- {{ comment.createdDate | slice: 0, 10 }}: {{ comment.text | newline_to_br | replace: "<br />", " " | strip_newlines | truncate: 500 }}
+      {% else %}No comments on this task.
+      {% endfor %}{% else %}Wrike returned an unexpected response.{% endif %}
+
+  - id: find_folders
+    title: Find Folders and Projects
+    description: Find Wrike folders and projects whose title contains the given text, to get the folder ID that List Folder Tasks needs or to check a project's status and dates. Returns up to 20 matches.
+    http_method: GET
+    endpoint_url: https://${{ inputs.host }}/api/v4/folders?title={{ title | strip | url_encode }}&pageSize=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: title
+        type: string
+        description: Text to look for in folder and project titles. Must not be blank.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for folder in response.data limit: 20 %}- {{ folder.title | truncate: 150 }} (folder ID {{ folder.id }}) · {% if folder.project %}project · {{ folder.project.status }}{% if folder.project.startDate %} · Starts {{ folder.project.startDate | slice: 0, 10 }}{% endif %}{% if folder.project.endDate %} · Ends {{ folder.project.endDate | slice: 0, 10 }}{% endif %}{% else %}folder{% endif %}
+      {% else %}No folders or projects found with that text in the title.
+      {% endfor %}{% else %}Wrike returned an unexpected response.{% endif %}
+
+  - id: list_folder_tasks
+    title: List Folder Tasks
+    description: List the 20 most recently updated tasks in a Wrike folder or project, including tasks in its subfolders. Use a folder ID from Find Folders and Projects.
+    http_method: GET
+    endpoint_url: https://${{ inputs.host }}/api/v4/folders/{{ folder_id | strip | url_encode }}/tasks?descendants=true&sortField=UpdatedDate&sortOrder=Desc&limit=20
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: folder_id
+        type: string
+        description: The Wrike folder or project ID from Find Folders and Projects.
+        required: true
+    response_template: |-
+      {% if response.data %}{% for task in response.data limit: 20 %}- {{ task.title | truncate: 150 }} (task ID {{ task.id }}) · {{ task.status }} · {{ task.importance }} importance{% if task.dates.due %} · Due {{ task.dates.due | slice: 0, 10 }}{% endif %} · Updated {{ task.updatedDate | slice: 0, 10 }}
+      {% else %}No tasks in this folder or project.
+      {% endfor %}{% else %}Wrike returned an unexpected response.{% endif %}
+
+  - id: list_statuses
+    title: List Statuses
+    description: List the account-wide Wrike workflows and the name of each custom status ID. Use this to turn the custom status ID from Search Tasks or Get Task into a name such as In Review.
+    http_method: GET
+    endpoint_url: https://${{ inputs.host }}/api/v4/workflows
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    response_template: |-
+      {% if response.data %}{% for workflow in response.data limit: 15 %}{% unless workflow.hidden %}{{ workflow.name }}:
+      {% for status in workflow.customStatuses limit: 30 %}{% unless status.hidden %}- {{ status.name }} (custom status ID {{ status.id }}, {{ status.group }})
+      {% endunless %}{% endfor %}{% endunless %}{% else %}No workflows found.
+      {% endfor %}{% else %}Wrike returned an unexpected response.{% endif %}
+
+  - id: add_task_comment
+    title: Add Task Comment
+    description: Add a plain-text comment to a Wrike task, for example to note that another customer reported the same issue, with a short summary. Use a task ID from Search Tasks or Find Task by Permalink. Only add a comment when the conversation needs one.
+    http_method: POST
+    endpoint_url: https://${{ inputs.host }}/api/v4/tasks/{{ task_id | strip | url_encode }}/comments?plainText=true&text={{ text | strip | url_encode }}
+    auth_type: bearer
+    auth_config:
+      token: ${{ secrets.access_token }}
+    param_schema:
+      - name: task_id
+        type: string
+        description: The Wrike task ID from Search Tasks, a letter-and-number code such as IEAAAAAQKQAB5FKP.
+        required: true
+      - name: text
+        type: string
+        description: The comment text, up to about 1,000 characters. Plain text only; it cannot be empty.
+        required: true
+    response_template: |-
+      {% if response.data[0].id %}Added the comment to the task.{% else %}Wrike returned an unexpected response.{% endif %}
