@@ -14,7 +14,7 @@ import sys
 import urllib.error
 import urllib.request
 
-VALIDATE_URL = os.environ.get("CAPTAIN_VALIDATE_URL", "https://chatwoot.com/api/captain/tools/validate")
+VALIDATE_URL = os.environ.get("CAPTAIN_VALIDATE_URL", "https://www.chatwoot.com/api/captain/tools/validate")
 TIMEOUT = 30
 
 
