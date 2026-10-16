@@ -1,0 +1,19 @@
+name: Validate all manifests
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate every manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate every manifest in the repository
+        run: |
+          mapfile -t manifests < <(git ls-files -- '*toolset.yml')
+          python3 .github/scripts/validate_manifests.py "${manifests[@]}"
