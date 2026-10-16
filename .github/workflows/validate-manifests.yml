@@ -16,8 +16,6 @@ permissions:
 jobs:
   pull-request:
     name: Validate changed manifests (pull request)
-    # Disabled for now. Remove this line to turn the check on.
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -34,8 +32,6 @@ jobs:
 
   default-branch:
     name: Validate changed manifests (main)
-    # Disabled for now. Remove this line to turn the check on.
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
