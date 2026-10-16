@@ -1,4 +1,4 @@
-version: 0.0.1
+version: 0.1.0
 kind: captain_toolset
 name: Stripe
 author: chatwoot
@@ -28,6 +28,7 @@ tools:
         type: string
         description: The customer's email address.
         required: true
+        source: verified.email
     response_template: |-
       {% if response.object == "search_result" %}{% for customer in response.data %}- {{ customer.name | default: "No name" }} <{{ customer.email }}>
         Customer ID: {{ customer.id }}
@@ -40,6 +41,7 @@ tools:
     title: List Payments
     description: Check a customer's 10 most recent payments, including failures, decline reasons, refunds, and receipt links.
     http_method: GET
+    requires_email_verification: true
     endpoint_url: https://api.stripe.com/v1/payment_intents?customer={{ customer_id | url_encode }}&limit=10&expand%5B%5D=data.latest_charge
     auth_type: bearer
     auth_config:
@@ -63,6 +65,7 @@ tools:
     title: List Invoices
     description: Check a customer's 10 most recent finalized invoices, amounts due, and links to view, pay, or download them.
     http_method: GET
+    requires_email_verification: true
     endpoint_url: https://api.stripe.com/v1/invoices?customer={{ customer_id | url_encode }}&limit=100
     auth_type: bearer
     auth_config:
@@ -83,6 +86,7 @@ tools:
     title: List Subscriptions
     description: Check a customer's subscriptions, including plan, price, renewal date, trial, and cancellation status.
     http_method: GET
+    requires_email_verification: true
     endpoint_url: https://api.stripe.com/v1/subscriptions?customer={{ customer_id | url_encode }}&status=all&limit=10
     auth_type: bearer
     auth_config:

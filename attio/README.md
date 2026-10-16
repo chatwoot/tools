@@ -10,7 +10,7 @@ A workspace admin can create an access token in Attio under **Workspace settings
 
 ## Tools
 
-- **Find Person:** Find people by email address or phone number. Returns the person ID and company ID the other tools need.
+- **Find Person:** Find the person for the customer's verified email address. Returns the person ID and company ID the other tools need.
 - **Get Company:** Check a company's details, including custom fields such as plan, tier, or renewal date.
 - **List Deals:** Check the 10 most recent deals linked to a person or company, with stage and value.
 - **List Notes:** Read the 5 most recent notes on a person, company, or deal.
@@ -20,5 +20,6 @@ Start with Find Person, then use the person or company ID with the other tools.
 
 ## Notes
 
+- Every tool runs only after the customer verifies their email with a one-time code in the conversation. Find Person always uses that verified email.
 - Find Person, Get Company, and List Deals return every field on the record, including custom fields, so Captain sees your workspace's own attributes. Owner and creator fields are left out because Attio returns them as member IDs, not names.
 - List Deals needs the Deals object to be enabled in your workspace.

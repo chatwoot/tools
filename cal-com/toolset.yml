@@ -1,4 +1,4 @@
-version: 0.0.1
+version: 0.1.0
 kind: captain_toolset
 name: Cal.com
 author: chatwoot
@@ -35,6 +35,7 @@ tools:
         type: string
         description: The email address used for the booking.
         required: true
+        source: verified.email
     response_template: |-
       {% if response.status != "success" %}Cal.com returned an unexpected response.{% elsif response.data.size == 0 %}No bookings found for this email address.{% else %}{% for booking in response.data %}- {{ booking.title }}
         Status: {{ booking.status }}
